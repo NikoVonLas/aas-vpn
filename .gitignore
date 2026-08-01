@@ -1,0 +1,7 @@
+.env
+data/
+backups/
+*.db
+*.conf
+*.tar*
+!examples/*.conf.example

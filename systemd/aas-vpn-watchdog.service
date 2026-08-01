@@ -1,0 +1,8 @@
+[Unit]
+Description=Check and recover AAS VPN
+After=aas-vpn.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/aas-vpn/scripts/watchdog.sh
+TimeoutStartSec=90

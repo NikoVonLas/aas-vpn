@@ -1,0 +1,46 @@
+{
+  "log": { "level": "warn", "timestamp": true },
+  "dns": {
+    "servers": [
+      { "type": "udp", "tag": "quad9", "server": "9.9.9.9", "server_port": 53 },
+      { "type": "udp", "tag": "cloudflare-security", "server": "1.1.1.2", "server_port": 53 }
+    ],
+    "rules": [{ "action": "route", "server": "quad9" }],
+    "final": "cloudflare-security",
+    "strategy": "ipv4_only",
+    "reverse_mapping": true,
+    "cache_capacity": 4096
+  },
+  "inbounds": [
+    {
+      "type": "direct",
+      "tag": "adguard-dns",
+      "listen": "10.42.42.1",
+      "listen_port": 5353
+    },
+    {
+      "type": "tun",
+      "tag": "vpn-clients",
+      "interface_name": "sbtun0",
+      "address": ["172.19.0.1/30"],
+      "mtu": 1380,
+      "auto_route": true,
+      "auto_redirect": true,
+      "strict_route": false,
+      "include_interface": ["aas-vpn0"],
+      "route_exclude_address": [
+        "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"
+      ]
+    }
+  ],
+  "outbounds": [{ "type": "direct", "tag": "direct" }],
+  "route": {
+    "auto_detect_interface": true,
+    "default_domain_resolver": "quad9",
+    "rules": [
+      { "inbound": "adguard-dns", "action": "hijack-dns" },
+      { "inbound": "vpn-clients", "action": "bypass" }
+    ],
+    "final": "direct"
+  }
+}
