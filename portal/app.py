@@ -189,23 +189,29 @@ document.addEventListener('submit',async event=>{
 });
 </script>""" if phone_widget else ""
     share_script = """<script>
+const shareFiles=new WeakMap();
 const shareProbe=typeof File==='function'?new File([''], 'settings.conf', {type:'text/plain'}):null;
 if(navigator.share&&navigator.canShare&&shareProbe&&navigator.canShare({files:[shareProbe]})){
-  document.querySelectorAll('.share-button').forEach(button=>button.style.display='inline-flex');
+  document.querySelectorAll('.share-button').forEach(async button=>{
+    try{
+      const id=button.dataset.deviceId;
+      const [configResponse,qrResponse]=await Promise.all([fetch(`/device/${id}/config`),fetch(`/device/${id}/qr`)]);
+      if(!configResponse.ok||!qrResponse.ok)return;
+      const configFile=new File([await configResponse.blob()],'settings.conf',{type:'text/plain'});
+      const qrFile=new File([await qrResponse.blob()],'qr-code.png',{type:'image/png'});
+      const both=[configFile,qrFile];
+      shareFiles.set(button,navigator.canShare({files:both})?both:[configFile]);
+      button.style.display='inline-flex';
+    }catch{}
+  });
 }
-document.addEventListener('click',async event=>{
+document.addEventListener('click',event=>{
   const button=event.target.closest('.share-button');if(!button)return;
+  const files=shareFiles.get(button);if(!files)return;
   button.disabled=true;
-  try{
-    const id=button.dataset.deviceId;
-    const [configResponse,qrResponse]=await Promise.all([fetch(`/device/${id}/config`),fetch(`/device/${id}/qr`)]);
-    if(!configResponse.ok||!qrResponse.ok)throw new Error('Не удалось подготовить файлы');
-    const configFile=new File([await configResponse.blob()],'settings.conf',{type:'text/plain'});
-    const qrFile=new File([await qrResponse.blob()],'qr-code.png',{type:'image/png'});
-    const both=[configFile,qrFile];
-    const files=navigator.canShare({files:both})?both:[configFile];
-    await navigator.share({title:button.dataset.deviceName,text:'Настройки подключения',files});
-  }catch(error){if(error.name!=='AbortError')alert(error.message)}finally{button.disabled=false}
+  navigator.share({title:button.dataset.deviceName,text:'Настройки подключения',files})
+    .catch(error=>{if(error.name!=='AbortError')alert(error.message)})
+    .finally(()=>button.disabled=false);
 });
 </script>"""
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
@@ -474,7 +480,7 @@ def cabinet(request: Request):
     rows = "".join(f"""<div class=device-card><div class=device-name>{html.escape(x['name'])}</div><div class=device-actions><a class=btn href='/device/{x['id']}/qr'>QR</a><a class=btn href='/device/{x['id']}/config'>Файл</a><button type=button class='secondary share-button' data-device-id='{x['id']}' data-device-name='{html.escape(x['name'], quote=True)}'>Поделиться</button><form method=post action='/device/{x['id']}/delete' onsubmit="return confirm('Удалить это устройство? Его настройки сразу перестанут работать.')"><button class=danger-soft>Удалить</button></form></div></div>""" for x in devices)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Телефон Лены' required></label><button>Добавить устройство</button></form>"
     guide = """<details class='card guide'><summary>Как подключиться</summary><h3>1. Сначала на этом сайте</h3><ol><li>В поле <b>«Название устройства»</b> напишите любое понятное название, например <b>Телефон Лены</b>.</li><li>Нажмите <b>«Добавить устройство»</b>. Ниже появятся кнопки QR и Файл.</li></ol><p class=muted>Название нужно только для удобства — можно написать что угодно.</p><h3>2. Затем в приложении</h3><ol><li>Установите <b>AmneziaWG</b> на телефон или компьютер, который хотите подключить.</li><li>Если сайт открыт на другом экране — нажмите <b>QR</b> и отсканируйте код через AmneziaWG.</li><li>Если сайт открыт на подключаемом устройстве — нажмите <b>Файл</b>, затем откройте скачанный файл через AmneziaWG.</li></ol></details>"""
-    return page(f"Привет, {user['name']}", f"{guide}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>{create}", show_header=True)
+    return page(f"Привет, {user['name']}", f"{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
 
 
 @app.post("/device")
