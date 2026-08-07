@@ -190,17 +190,15 @@ document.addEventListener('submit',async event=>{
 </script>""" if phone_widget else ""
     share_script = """<script>
 const shareFiles=new WeakMap();
-const shareProbe=typeof File==='function'?new File([''], 'settings.conf', {type:'text/plain'}):null;
+const shareProbe=typeof File==='function'?new File([''], 'qr-code.png', {type:'image/png'}):null;
 if(navigator.share&&navigator.canShare&&shareProbe&&navigator.canShare({files:[shareProbe]})){
   document.querySelectorAll('.share-button').forEach(async button=>{
     try{
       const id=button.dataset.deviceId;
-      const [configResponse,qrResponse]=await Promise.all([fetch(`/device/${id}/config`),fetch(`/device/${id}/qr`)]);
-      if(!configResponse.ok||!qrResponse.ok)return;
-      const configFile=new File([await configResponse.blob()],'settings.conf',{type:'text/plain'});
+      const qrResponse=await fetch(`/device/${id}/qr`);
+      if(!qrResponse.ok)return;
       const qrFile=new File([await qrResponse.blob()],'qr-code.png',{type:'image/png'});
-      const both=[configFile,qrFile];
-      shareFiles.set(button,navigator.canShare({files:both})?both:[configFile]);
+      shareFiles.set(button,[qrFile]);
       button.style.display='inline-flex';
     }catch{}
   });
@@ -209,7 +207,7 @@ document.addEventListener('click',event=>{
   const button=event.target.closest('.share-button');if(!button)return;
   const files=shareFiles.get(button);if(!files)return;
   button.disabled=true;
-  navigator.share({title:button.dataset.deviceName,text:'Настройки подключения',files})
+  navigator.share({files})
     .catch(error=>{if(error.name!=='AbortError')alert(error.message)})
     .finally(()=>button.disabled=false);
 });
@@ -477,7 +475,7 @@ def cabinet(request: Request):
         devices = con.execute("SELECT * FROM devices WHERE phone=? ORDER BY id", (phone,)).fetchall()
     if not user:
         raise HTTPException(403)
-    rows = "".join(f"""<div class=device-card><div class=device-name>{html.escape(x['name'])}</div><div class=device-actions><a class=btn href='/device/{x['id']}/qr'>QR</a><a class=btn href='/device/{x['id']}/config'>Файл</a><button type=button class='secondary share-button' data-device-id='{x['id']}' data-device-name='{html.escape(x['name'], quote=True)}'>Поделиться</button><form method=post action='/device/{x['id']}/delete' onsubmit="return confirm('Удалить это устройство? Его настройки сразу перестанут работать.')"><button class=danger-soft>Удалить</button></form></div></div>""" for x in devices)
+    rows = "".join(f"""<div class=device-card><div class=device-name>{html.escape(x['name'])}</div><div class=device-actions><a class=btn href='/device/{x['id']}/qr'>QR</a><a class=btn href='/device/{x['id']}/config'>Файл</a><button type=button class='secondary share-button' data-device-id='{x['id']}' data-device-name='{html.escape(x['name'], quote=True)}'>Поделиться QR</button><form method=post action='/device/{x['id']}/delete' onsubmit="return confirm('Удалить это устройство? Его настройки сразу перестанут работать.')"><button class=danger-soft>Удалить</button></form></div></div>""" for x in devices)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Вася Пупкин' required></label><button>Добавить устройство</button></form>"
     guide = """<details class='card guide'><summary>Как подключиться</summary><h3>На сайте</h3><ul><li>Под этой инструкцией найдите поле <b>«Название устройства»</b>.</li><li>Напишите любое понятное название, например <b>Вася Пупкин</b>, и нажмите <b>«Добавить устройство»</b>.</li><li>Ниже появится карточка устройства с кнопками.</li></ul><h3>Если сайт открыт на телефоне или компьютере, на который нужно установить VPN</h3><ul><li>Установите <b>AmneziaWG</b>.</li><li>В карточке устройства на этом сайте нажмите <b>«Файл»</b>.</li><li>Откройте AmneziaWG и нажмите кнопку добавления подключения.</li><li>Выберите импорт из файла, найдите скачанный файл настроек и откройте его.</li></ul><h3>Если сайт открыт на другом устройстве</h3><ul><li>Установите и откройте <b>AmneziaWG</b> на подключаемом устройстве.</li><li>Нажмите в приложении кнопку добавления подключения и выберите сканирование QR-кода.</li><li>На этом сайте нажмите <b>«QR»</b> в карточке устройства.</li><li>Отсканируйте появившийся код.</li></ul></details>"""
     return page(f"Привет, {user['name']}", f"{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
