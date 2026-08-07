@@ -145,7 +145,7 @@ def make_wg_cookie(user_id, remember=False):
 
 
 def page(title, body, show_header=False, phone_widget=False):
-    heading = f"<div class=topbar><div class=brand><span class=logo>W</span><span>AAS VPN · WG Easy</span></div></div><h1>{html.escape(title)}</h1>" if show_header else ""
+    heading = f"<div class=topbar><div class=brand><span class=logo>W</span><span>AAS VPN</span></div></div><h1>{html.escape(title)}</h1>" if show_header else ""
     phone_head = '<link rel=stylesheet href=/assets/css/intlTelInput.min.css>' if phone_widget else ""
     phone_script = """<script src=/assets/js/intlTelInputWithUtils.min.js></script><script>
 const regionNames=typeof Intl.DisplayNames==='function'?new Intl.DisplayNames(['ru'],{type:'region'}):null;
