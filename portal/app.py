@@ -145,10 +145,23 @@ def make_wg_cookie(user_id, remember=False):
 def page(title, body):
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
 <meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>
-<style>body{{font:16px system-ui;max-width:620px;margin:40px auto;padding:0 18px;background:#101418;color:#eef}}
-.card{{background:#1a2027;padding:24px;border-radius:18px}}input,button{{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #455;background:#111820;color:#fff}}
-button,.btn{{background:#2478ff;border:0;cursor:pointer;text-decoration:none;display:inline-block;text-align:center;padding:13px;box-sizing:border-box;border-radius:10px;color:white}}small{{color:#aab}} table{{width:100%}}td{{padding:6px}}</style>
-<main><h1>{html.escape(title)}</h1><div class=card>{body}</div></main></html>""")
+<style>
+:root{{--bg:#f5f5f5;--card:#fff;--text:#262626;--muted:#737373;--line:#e5e5e5;--input:#fff;--red:#b91c1c;--red-hover:#991b1b;--soft:#f5f5f5}}
+*{{box-sizing:border-box}} body{{font:15px Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;max-width:920px;margin:0 auto;padding:38px 18px 70px;background:var(--bg);color:var(--text)}}
+h1{{font-size:30px;margin:0 0 22px;font-weight:650}} h2{{font-size:17px;margin:0 0 16px}} p{{line-height:1.55}} small,.muted{{color:var(--muted)}}
+.card{{background:var(--card);padding:22px;border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 3px #0000000d;margin-bottom:16px}}
+.grid{{display:grid;grid-template-columns:2fr 2fr 1fr auto;gap:10px;align-items:end}} .stack{{display:grid;gap:10px}} .section-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}}
+label{{display:grid;gap:6px;font-size:13px;color:var(--muted)}} input,textarea,select{{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #d4d4d4;background:var(--input);color:var(--text);font:inherit;outline:none}}
+input:focus,textarea:focus{{border-color:var(--red);box-shadow:0 0 0 3px #b91c1c1a}} textarea{{resize:vertical;min-height:92px}}
+button,.btn{{border:0;border-radius:8px;background:var(--red);color:#fff;font:inherit;font-size:14px;font-weight:600;padding:10px 14px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}}
+button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e5e5e5;color:#262626}} .secondary:hover{{background:#d4d4d4}} .danger-soft{{background:#fee2e2;color:#991b1b}} .danger-soft:hover{{background:#fecaca}}
+.users{{display:grid;gap:10px}} .user{{display:grid;grid-template-columns:2fr 1.5fr 100px auto;gap:10px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}}
+.actions{{display:flex;gap:7px}} .actions button{{padding:9px 11px}} .badge{{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:12px;background:#dcfce7;color:#166534}} .badge.off{{background:#fee2e2;color:#991b1b}}
+.topbar{{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}} .brand{{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--muted)}} .logo{{width:32px;height:32px;border-radius:50%;background:var(--red);display:grid;place-items:center;color:#fff;font-weight:800}}
+@media(max-width:720px){{body{{padding-top:24px}} .grid,.user{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button{{width:100%}}}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#171717;--card:#262626;--text:#f5f5f5;--muted:#a3a3a3;--line:#404040;--input:#171717;--soft:#303030}} .secondary{{background:#404040;color:#f5f5f5}} .secondary:hover{{background:#525252}}}}
+</style>
+<main><div class=topbar><div class=brand><span class=logo>W</span><span>AAS VPN · WG Easy</span></div></div><h1>{html.escape(title)}</h1>{body}</main></html>""")
 
 
 def phone_signer():
@@ -198,7 +211,7 @@ def require_admin(request):
 
 
 def next_dial_number():
-    numbers = [phone_normalize(value) for value in os.getenv("ZVONOK_DIAL_NUMBERS", "").split(",") if value.strip()]
+    numbers = dial_numbers()
     if not numbers:
         return ""
     with db() as con:
@@ -209,9 +222,16 @@ def next_dial_number():
     return numbers[index % len(numbers)]
 
 
+def dial_numbers():
+    with db() as con:
+        row = con.execute("SELECT value FROM settings WHERE key='dial_numbers'").fetchone()
+    source = row[0] if row else os.getenv("ZVONOK_DIAL_NUMBERS", "")
+    return [phone_normalize(value) for value in re.split(r"[,\n]+", source) if value.strip()]
+
+
 @app.get("/admin/login")
 def admin_login_form():
-    return page("Вход администратора", "<p><small>Используйте учётную запись WG Easy.</small></p><form method=post><input name=username autocomplete=username placeholder='Логин' required><input name=password type=password autocomplete=current-password placeholder='Пароль' required><input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code placeholder='Код 2FA'><label><input style='width:auto' type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form>")
+    return page("Вход администратора", "<section class=card><p class=muted>Используйте учётную запись WG Easy.</p><form class=stack method=post><label>Логин<input name=username autocomplete=username required></label><label>Пароль<input name=password type=password autocomplete=current-password required></label><label>Код 2FA<input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code></label><label style='display:flex;grid-template-columns:auto 1fr;align-items:center'><input style='width:auto' type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form></section>")
 
 
 @app.post("/admin/login")
@@ -382,19 +402,53 @@ async def qr(request: Request, device_id: int):
 def admin(request: Request):
     require_admin(request)
     with db() as con:
-        users = con.execute("SELECT * FROM users ORDER BY name").fetchall()
-    rows = "".join(f"<tr><td>{html.escape(x['name'])}<br><small>{html.escape(x['phone'])}</small></td><td>{x['device_limit']}</td><td><form method=post action='/admin/toggle/{html.escape(x['phone'])}'><button>{'Отключить' if x['enabled'] else 'Включить'}</button></form></td></tr>" for x in users)
-    return page("Доступ к VPN", f"<form method=post><input name=name placeholder='Имя' required><input name=phone type=tel placeholder='+79991234567' required><input name=device_limit type=number min=1 max=20 value=2 required><button>Добавить или обновить</button></form><table>{rows}</table>")
+        users = con.execute("SELECT u.*,count(d.id) device_count FROM users u LEFT JOIN devices d ON d.phone=u.phone GROUP BY u.phone ORDER BY u.name").fetchall()
+    rows = "".join(f"""<form class=user method=post action=/admin/user>
+      <input type=hidden name=original_phone value='{html.escape(x['phone'])}'>
+      <label>Имя<input name=name maxlength=80 value='{html.escape(x['name'])}' required></label>
+      <label>Телефон<input name=phone type=tel value='{html.escape(x['phone'])}' required></label>
+      <label>Лимит<input name=device_limit type=number min=1 max=20 value='{x['device_limit']}' required><small>{x['device_count']} выдано</small></label>
+      <div><span class='badge{' off' if not x['enabled'] else ''}'>{'Активен' if x['enabled'] else 'Отключён'}</span><div class=actions><button>Сохранить</button><button class=secondary formaction='/admin/toggle/{html.escape(x['phone'])}'>{'Отключить' if x['enabled'] else 'Включить'}</button></div></div>
+    </form>""" for x in users)
+    numbers = "\n".join(dial_numbers())
+    body = f"""
+    <section class=card><div class=section-head><div><h2>Добавить человека</h2><div class=muted>Номер должен совпадать с номером входящего звонка.</div></div></div>
+      <form class=grid method=post action=/admin/user><label>Имя<input name=name placeholder='Например, Мама' required></label><label>Телефон<input name=phone type=tel placeholder='+7 999 123-45-67' required></label><label>Устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить</button></form>
+    </section>
+    <section class=card><div class=section-head><div><h2>Разрешённые пользователи</h2><div class=muted>{len(users)} пользователей · изменения сохраняются отдельно для каждой строки</div></div></div><div class=users>{rows or '<div class=muted>Список пока пуст.</div>'}</div></section>
+    <section class=card><div class=section-head><div><h2>Номера подтверждения Zvonok</h2><div class=muted>Выдаются последовательно по кругу.</div></div></div><form class=stack method=post action=/admin/settings/dial-numbers><label>По одному номеру в строке<textarea name=numbers required>{html.escape(numbers)}</textarea></label><div><button>Сохранить номера</button></div></form></section>
+    <form method=post action=/admin/logout><button class='secondary'>Выйти</button></form>"""
+    return page("Управление доступом", body)
 
 
+@app.post("/admin/user")
 @app.post("/admin")
-def admin_save(request: Request, name: str = Form(...), phone: str = Form(...), device_limit: int = Form(...)):
+def admin_save(request: Request, name: str = Form(...), phone: str = Form(...), device_limit: int = Form(...), original_phone: str = Form("")):
     require_admin(request)
     phone = phone_normalize(phone)
+    original_phone = phone_normalize(original_phone) if original_phone else ""
     if not 1 <= device_limit <= 20:
         raise HTTPException(400)
     with db() as con:
-        con.execute("INSERT INTO users(phone,name,device_limit,enabled,created_at) VALUES(?,?,?,1,?) ON CONFLICT(phone) DO UPDATE SET name=excluded.name,device_limit=excluded.device_limit,enabled=1", (phone, name.strip()[:80], device_limit, int(time.time())))
+        if original_phone and original_phone != phone:
+            if con.execute("SELECT 1 FROM users WHERE phone=?", (phone,)).fetchone():
+                raise HTTPException(409, "Новый номер уже используется")
+            con.execute("UPDATE users SET phone=? WHERE phone=?", (phone, original_phone))
+            con.execute("UPDATE devices SET phone=? WHERE phone=?", (phone, original_phone))
+            con.execute("UPDATE verifications SET phone=? WHERE phone=?", (phone, original_phone))
+        con.execute("INSERT INTO users(phone,name,device_limit,enabled,created_at) VALUES(?,?,?,1,?) ON CONFLICT(phone) DO UPDATE SET name=excluded.name,device_limit=excluded.device_limit", (phone, name.strip()[:80], device_limit, int(time.time())))
+    return RedirectResponse("/admin", 303)
+
+
+@app.post("/admin/settings/dial-numbers")
+def admin_dial_numbers(request: Request, numbers: str = Form(...)):
+    require_admin(request)
+    normalized = [phone_normalize(value) for value in re.split(r"[,\n]+", numbers) if value.strip()]
+    if not 1 <= len(normalized) <= 20:
+        raise HTTPException(400, "Укажите от 1 до 20 номеров")
+    with db() as con:
+        con.execute("INSERT INTO settings(key,value) VALUES('dial_numbers',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("\n".join(dict.fromkeys(normalized)),))
+        con.execute("INSERT INTO settings(key,value) VALUES('dial_number_index','0') ON CONFLICT(key) DO UPDATE SET value='0'")
     return RedirectResponse("/admin", 303)
 
 
