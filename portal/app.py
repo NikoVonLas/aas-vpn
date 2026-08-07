@@ -631,7 +631,7 @@ async def config(request: Request, device_id: int):
     filename = f"{device_name}.conf"
     fallback = f"{latin_slug(device_name, f'device-{device_id}')}.conf"
     disposition = f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
-    return Response(data, media_type="text/plain", headers={"Content-Disposition": disposition, "Cache-Control": "no-store"})
+    return Response(data, media_type="application/x-wireguard-profile", headers={"Content-Disposition": disposition, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/device/{device_id}/qr")
