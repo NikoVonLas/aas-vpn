@@ -472,12 +472,17 @@ async def zvonok_status(row):
         for call in calls:
             if not isinstance(call, dict):
                 continue
-            try:
-                created = datetime.fromisoformat(str(call.get("created", "")).replace("Z", "+00:00")).timestamp()
-            except ValueError:
+            timestamps = []
+            for field in ("created", "updated"):
+                try:
+                    timestamps.append(datetime.fromisoformat(str(call.get(field, "")).replace("Z", "+00:00")).timestamp())
+                except ValueError:
+                    pass
+            if not timestamps:
                 continue
-            if row["created_at"] - 5 <= created <= row["created_at"] + 600:
-                candidates.append((created, call))
+            activity = max(timestamps)
+            if row["created_at"] - 5 <= activity <= row["created_at"] + 600:
+                candidates.append((activity, call))
         if not candidates:
             return False
         _, result = min(candidates, key=lambda item: item[0])
