@@ -161,6 +161,13 @@ function initPhone(input){
 selectedCountryAriaLabel:'Изменить страну, выбрана ${countryName} (${dialCode})',noCountrySelected:'Выберите страну',countryListAriaLabel:'Список стран',searchPlaceholder:'Поиск',clearSearchAriaLabel:'Очистить поиск',searchEmptyState:'Ничего не найдено',searchSummaryAria:(count)=>`Найдено: ${count}`
   }});
   phoneWidgets.set(input,iti);
+  const formatPasted=()=>{const normalized=iti.getNumber();if(normalized)iti.setNumber(normalized)};
+  input.addEventListener('paste',()=>setTimeout(formatPasted,0));
+  input.addEventListener('input',event=>{
+    if(event.inputType==='insertFromPaste'||event.inputType==='insertReplacementText'){
+      requestAnimationFrame(formatPasted);
+    }
+  });
   input.form?.addEventListener('submit',()=>{const normalized=iti.getNumber();if(input.dataset.target){document.getElementById(input.dataset.target).value=normalized||input.value}else{input.value=normalized||input.value}});
 }
 document.querySelectorAll('.phone-input').forEach(initPhone);
