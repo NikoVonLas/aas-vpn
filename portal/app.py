@@ -194,7 +194,19 @@ def admin_ok(request):
 
 def require_admin(request):
     if not admin_ok(request):
-        raise HTTPException(401, "Сначала войдите в /admin/login")
+        raise HTTPException(303, headers={"Location": "/admin/login"})
+
+
+def next_dial_number():
+    numbers = [phone_normalize(value) for value in os.getenv("ZVONOK_DIAL_NUMBERS", "").split(",") if value.strip()]
+    if not numbers:
+        return ""
+    with db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute("SELECT value FROM settings WHERE key='dial_number_index'").fetchone()
+        index = int(row[0]) if row else 0
+        con.execute("INSERT INTO settings(key,value) VALUES('dial_number_index',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str((index + 1) % len(numbers)),))
+    return numbers[index % len(numbers)]
 
 
 @app.get("/admin/login")
@@ -255,7 +267,7 @@ async def start(phone: str = Form(...)):
         response.raise_for_status()
         result = response.json()
     call_id = str(result.get("call_id") or result.get("id") or "")
-    dial = str(result.get("confirm_phone") or result.get("phone_to_call") or result.get("verification_phone") or result.get("call_phone") or "")
+    dial = next_dial_number() or str(result.get("confirm_phone") or result.get("phone_to_call") or result.get("verification_phone") or result.get("call_phone") or "")
     with db() as con:
         con.execute("INSERT INTO verifications(token,phone,call_id,dial_phone,created_at) VALUES(?,?,?,?,?)", (token, phone, call_id, dial, int(time.time())))
     return RedirectResponse(f"/verify/{token}", 303)
