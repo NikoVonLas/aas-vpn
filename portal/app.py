@@ -258,7 +258,7 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
   .grid{{grid-template-columns:2fr 2fr 1fr}} .grid>button{{grid-column:1/-1;justify-self:end}}
   .user{{grid-template-columns:2fr 1.5fr 100px}} .user>.actions{{grid-column:1/-1;justify-content:flex-end}}
 }}
-@media(max-width:720px){{body{{padding-top:24px}} .grid,.user,.device-form,.device-card{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button,.dial-save button,.device-form button{{width:100%}} .device-actions{{display:grid;grid-template-columns:1fr 1fr}} .device-actions>*{{width:100%}} .device-actions .btn,.device-actions button{{width:100%}}}}
+@media(max-width:720px){{body{{padding-top:24px}} input,textarea,select{{font-size:16px}} .grid,.user,.device-form,.device-card{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button,.dial-save button,.device-form button{{width:100%}} .device-actions{{display:grid;grid-template-columns:1fr 1fr}} .device-actions>*{{width:100%}} .device-actions .btn,.device-actions button{{width:100%}}}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#171717;--card:#262626;--text:#f5f5f5;--muted:#a3a3a3;--line:#404040;--input:#171717;--soft:#303030}} .secondary{{background:#404040;color:#f5f5f5}} .secondary:hover{{background:#525252}} .device-count{{background:#404040;color:#d4d4d4}}}}
 </style>
 <main>{heading}{body}</main><dialog id=qr-dialog class=qr-dialog><img id=qr-image alt='QR-код подключения'><button type=button onclick="this.closest('dialog').close()">Закрыть</button></dialog>{phone_script}{share_script}</html>""")
