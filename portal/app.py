@@ -196,6 +196,14 @@ document.addEventListener('submit',async event=>{
 });
 </script>""" if phone_widget else ""
     share_script = """<script>
+const qrDialog=document.getElementById('qr-dialog');
+const qrImage=document.getElementById('qr-image');
+document.addEventListener('click',event=>{
+  const button=event.target.closest('.qr-button');if(!button)return;
+  if(qrDialog?.showModal){qrImage.src=button.dataset.qrUrl;qrDialog.showModal()}
+  else{window.open(button.dataset.qrUrl,'_blank','noopener')}
+});
+qrDialog?.addEventListener('click',event=>{if(event.target===qrDialog)qrDialog.close()});
 const shareFiles=new WeakMap();
 const shareProbe=typeof File==='function'?new File([''], 'qr-code.png', {type:'image/png'}):null;
 if(navigator.share&&navigator.canShare&&shareProbe&&navigator.canShare({files:[shareProbe]})){
@@ -243,6 +251,7 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 .device-form{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-top:16px}}
 .device-actions{{display:flex;align-items:center;gap:7px;flex-wrap:wrap}} .device-actions form{{display:inline;margin:0}} .share-button{{display:none}}
 .devices{{display:grid;gap:10px}} .device-card{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}} .device-name{{font-weight:600;overflow-wrap:anywhere}}
+.qr-dialog{{border:0;border-radius:14px;padding:18px;background:var(--card);color:var(--text);box-shadow:0 20px 60px #0008}} .qr-dialog::backdrop{{background:#0009}} .qr-dialog img{{display:block;width:min(76vw,420px);height:auto;border-radius:8px;background:#fff}} .qr-dialog button{{width:100%;margin-top:12px}}
 .guide summary{{cursor:pointer;font-size:17px;font-weight:650;list-style-position:inside}} .guide[open] summary{{margin-bottom:18px}} .guide h3{{font-size:15px;margin:16px 0 6px}} .guide ul{{list-style:none;margin:0;padding:0}} .guide li{{position:relative;padding-left:16px;margin-bottom:7px;line-height:1.5}} .guide li::before{{content:'•';position:absolute;left:0;color:var(--red);font-weight:800}}
 @media(min-width:721px) and (max-width:1920px){{
   .grid{{grid-template-columns:2fr 2fr 1fr}} .grid>button{{grid-column:1/-1;justify-self:end}}
@@ -251,7 +260,7 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 @media(max-width:720px){{body{{padding-top:24px}} .grid,.user,.device-form,.device-card{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button,.dial-save button,.device-form button{{width:100%}} .device-actions{{display:grid;grid-template-columns:1fr 1fr}} .device-actions>*{{width:100%}} .device-actions .btn,.device-actions button{{width:100%}}}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#171717;--card:#262626;--text:#f5f5f5;--muted:#a3a3a3;--line:#404040;--input:#171717;--soft:#303030}} .secondary{{background:#404040;color:#f5f5f5}} .secondary:hover{{background:#525252}} .device-count{{background:#404040;color:#d4d4d4}}}}
 </style>
-<main>{heading}{body}</main>{phone_script}{share_script}</html>""")
+<main>{heading}{body}</main><dialog id=qr-dialog class=qr-dialog><img id=qr-image alt='QR-код подключения'><button type=button onclick="this.closest('dialog').close()">Закрыть</button></dialog>{phone_script}{share_script}</html>""")
 
 
 def phone_signer():
@@ -482,7 +491,7 @@ def cabinet(request: Request):
         devices = con.execute("SELECT * FROM devices WHERE phone=? ORDER BY id", (phone,)).fetchall()
     if not user:
         raise HTTPException(403)
-    rows = "".join(f"""<div class=device-card><div class=device-name>{html.escape(x['name'])}</div><div class=device-actions><a class=btn href='/device/{x['id']}/qr'>QR</a><a class=btn href='/device/{x['id']}/config'>Файл</a><button type=button class='secondary share-button' data-device-id='{x['id']}' data-device-name='{html.escape(x['name'], quote=True)}'>Поделиться QR</button><form method=post action='/device/{x['id']}/delete' onsubmit="return confirm('Удалить это устройство? Его настройки сразу перестанут работать.')"><button class=danger-soft>Удалить</button></form></div></div>""" for x in devices)
+    rows = "".join(f"""<div class=device-card><div class=device-name>{html.escape(x['name'])}</div><div class=device-actions><button type=button class='qr-button' data-qr-url='/device/{x['id']}/qr'>QR</button><a class=btn href='/device/{x['id']}/config'>Файл</a><button type=button class='secondary share-button' data-device-id='{x['id']}' data-device-name='{html.escape(x['name'], quote=True)}'>Поделиться QR</button><form method=post action='/device/{x['id']}/delete' onsubmit="return confirm('Удалить это устройство? Его настройки сразу перестанут работать.')"><button class=danger-soft>Удалить</button></form></div></div>""" for x in devices)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Вася Пупкин' required></label><button>Добавить устройство</button></form>"
     guide = """<details class='card guide'><summary>Как подключиться</summary><h3>На сайте</h3><ul><li>Под этой инструкцией найдите поле <b>«Название устройства»</b>.</li><li>Напишите любое понятное название, например <b>Вася Пупкин</b>, и нажмите <b>«Добавить устройство»</b>.</li><li>Ниже появится карточка устройства с кнопками.</li></ul><h3>Если сайт открыт на телефоне или компьютере, на который нужно установить VPN</h3><ul><li>Установите <b>AmneziaWG</b>.</li><li>В карточке устройства на этом сайте нажмите <b>«Файл»</b>.</li><li>Откройте AmneziaWG и нажмите кнопку добавления подключения.</li><li>Выберите импорт из файла, найдите скачанный файл настроек и откройте его.</li><li>Либо нажмите <b>«Поделиться QR»</b>, отправьте картинку на другое устройство, откройте её там и отсканируйте этим телефоном через AmneziaWG.</li></ul><h3>Если сайт открыт на другом устройстве</h3><ul><li>Установите и откройте <b>AmneziaWG</b> на подключаемом устройстве.</li><li>Нажмите в приложении кнопку добавления подключения и выберите сканирование QR-кода.</li><li>На этом сайте нажмите <b>«QR»</b> в карточке устройства.</li><li>Отсканируйте появившийся код.</li></ul></details>"""
     return page(f"Привет, {user['name']}", f"{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
