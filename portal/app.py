@@ -21,9 +21,11 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+app.mount("/assets", StaticFiles(directory="static"), name="assets")
 DB = os.getenv("PORTAL_DB", "/data/portal.db")
 ZVONOK = "https://zvonok.com/manager/cabapi_external/api/v1/phones"
 WG_AUTH_SNAPSHOT = os.getenv("WG_AUTH_SNAPSHOT", "/data/wg-auth.json")
@@ -142,10 +144,18 @@ def make_wg_cookie(user_id, remember=False):
     return iron_seal(payload, cached["session_password"], cached["session_timeout"] if remember else 0)
 
 
-def page(title, body, show_header=False):
+def page(title, body, show_header=False, phone_widget=False):
     heading = f"<div class=topbar><div class=brand><span class=logo>W</span><span>AAS VPN · WG Easy</span></div></div><h1>{html.escape(title)}</h1>" if show_header else ""
+    phone_head = '<link rel=stylesheet href=/assets/css/intlTelInput.min.css>' if phone_widget else ""
+    phone_script = """<script src=/assets/js/intlTelInputWithUtils.min.js></script><script>
+const phoneInput=document.getElementById('phone-input');
+const phoneValue=document.getElementById('phone-value');
+const phoneForm=document.getElementById('phone-form');
+const iti=window.intlTelInput(phoneInput,{initialCountry:'ru',nationalMode:true,formatAsYouType:true,strictMode:true});
+phoneForm.addEventListener('submit',()=>{const normalized=iti.getNumber();phoneValue.value=normalized||phoneInput.value;});
+</script>""" if phone_widget else ""
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
-<meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>
+<meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>{phone_head}
 <style>
 :root{{--bg:#f5f5f5;--card:#fff;--text:#262626;--muted:#737373;--line:#e5e5e5;--input:#fff;--red:#b91c1c;--red-hover:#991b1b;--soft:#f5f5f5}}
 *{{box-sizing:border-box}} body{{font:15px Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;max-width:920px;margin:0 auto;padding:38px 18px 70px;background:var(--bg);color:var(--text)}}
@@ -159,10 +169,11 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 .users{{display:grid;gap:10px}} .user{{display:grid;grid-template-columns:2fr 1.5fr 100px auto;gap:10px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}}
 .actions{{display:flex;gap:7px}} .actions button{{padding:9px 11px}} .badge{{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:12px;background:#dcfce7;color:#166534}} .badge.off{{background:#fee2e2;color:#991b1b}}
 .topbar{{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}} .brand{{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--muted)}} .logo{{width:32px;height:32px;border-radius:50%;background:var(--red);display:grid;place-items:center;color:#fff;font-weight:800}}
+.iti{{width:100%}} .iti input{{width:100%}} .iti__dropdown-content{{background:var(--card);color:var(--text);border-color:var(--line)}} .iti__search-input{{background:var(--input);color:var(--text)}}
 @media(max-width:720px){{body{{padding-top:24px}} .grid,.user{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button{{width:100%}}}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#171717;--card:#262626;--text:#f5f5f5;--muted:#a3a3a3;--line:#404040;--input:#171717;--soft:#303030}} .secondary{{background:#404040;color:#f5f5f5}} .secondary:hover{{background:#525252}}}}
 </style>
-<main>{heading}{body}</main></html>""")
+<main>{heading}{body}</main>{phone_script}</html>""")
 
 
 def phone_signer():
@@ -268,7 +279,7 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return page("", "<section class=card><p>Введите разрешённый номер телефона.</p><form class=stack method=post action=/start><label>Телефон<input name=phone type=tel autocomplete=tel placeholder='+7 999 123-45-67' required></label><button>Продолжить</button></form></section>", show_header=False)
+    return page("", "<section class=card><form id=phone-form class=stack method=post action=/start><input id=phone-input type=tel autocomplete=tel inputmode=tel aria-label='Номер телефона' placeholder='Номер телефона' required><input id=phone-value name=phone type=hidden><button>Продолжить</button></form></section>", phone_widget=True)
 
 
 @app.post("/start")
