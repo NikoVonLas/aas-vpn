@@ -149,8 +149,10 @@ def page(title, body, show_header=False, phone_widget=False):
     phone_head = '<link rel=stylesheet href=/assets/css/intlTelInput.min.css>' if phone_widget else ""
     phone_script = """<script src=/assets/js/intlTelInputWithUtils.min.js></script><script>
 const regionNames=typeof Intl.DisplayNames==='function'?new Intl.DisplayNames(['ru'],{type:'region'}):null;
-const localizedCountries=Object.fromEntries(window.intlTelInput.getCountryData().map(({iso2,name})=>{
-  try{return [iso2,regionNames?.of(iso2.toUpperCase())||name]}catch{return [iso2,name]}
+const countryCodes='ad ae af ag ai al am ao ar as at au aw ax az ba bb bd be bf bg bh bi bj bl bm bn bo bq br bs bt bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg eh er es et fi fj fk fm fo fr ga gb gd ge gf gg gh gi gl gm gn gp gq gr gt gu gw gy hk hn hr ht hu id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mf mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sj sk sl sm sn so sr ss st sv sx sy sz tc td tg th tj tk tl tm tn to tr tt tv tw tz ua ug us uy uz va vc ve vg vi vn vu wf ws xk ye yt za zm zw'.split(' ');
+const localizedCountries=Object.fromEntries(countryCodes.map(iso2=>{
+  if(iso2==='xk')return [iso2,'Косово'];
+  try{return [iso2,regionNames?.of(iso2.toUpperCase())||iso2.toUpperCase()]}catch{return [iso2,iso2.toUpperCase()]}
 }));
 const phoneWidgets=new WeakMap();
 function initPhone(input){
@@ -162,12 +164,29 @@ selectedCountryAriaLabel:'Изменить страну, выбрана ${countr
   input.form?.addEventListener('submit',()=>{const normalized=iti.getNumber();if(input.dataset.target){document.getElementById(input.dataset.target).value=normalized||input.value}else{input.value=normalized||input.value}});
 }
 document.querySelectorAll('.phone-input').forEach(initPhone);
-document.getElementById('add-dial-number')?.addEventListener('click',()=>{
+document.addEventListener('click',event=>{if(event.target.id==='add-dial-number'){
   const row=document.createElement('div');row.className='dial-number-row';
   row.innerHTML='<input class="phone-input" name="numbers" type="tel" autocomplete="off" inputmode="tel" placeholder="+7 999 123-45-67" required><button type="button" class="secondary remove-number" aria-label="Удалить номер">Удалить</button>';
   document.getElementById('dial-numbers').append(row);initPhone(row.querySelector('input'));
-});
+}});
 document.addEventListener('click',event=>{if(event.target.classList.contains('remove-number'))event.target.closest('.dial-number-row').remove()});
+let adminSaving=false;
+document.addEventListener('submit',async event=>{
+  const form=event.target;
+  const action=new URL(event.submitter?.formAction||form.action,location.href);
+  if(adminSaving||action.origin!==location.origin||(!action.pathname.startsWith('/admin/')&&action.pathname!=='/admin')||action.pathname==='/admin/login'||action.pathname==='/admin/logout')return;
+  event.preventDefault();adminSaving=true;
+  const submitter=event.submitter;submitter?.setAttribute('disabled','');
+  try{
+    const response=await fetch(action,{method:(form.method||'post').toUpperCase(),body:new FormData(form)});
+    if(!response.ok)throw new Error((await response.text())||`Ошибка ${response.status}`);
+    const pageResponse=await fetch('/admin',{headers:{Accept:'text/html'}});
+    if(!pageResponse.ok)throw new Error('Не удалось обновить данные');
+    const documentNew=new DOMParser().parseFromString(await pageResponse.text(),'text/html');
+    document.querySelector('main').replaceWith(documentNew.querySelector('main'));
+    document.querySelectorAll('.phone-input').forEach(initPhone);
+  }catch(error){alert(error.message)}finally{adminSaving=false;submitter?.removeAttribute('disabled')}
+});
 </script>""" if phone_widget else ""
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
 <meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>{phone_head}
