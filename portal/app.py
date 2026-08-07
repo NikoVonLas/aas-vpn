@@ -23,7 +23,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-app = FastAPI(docs_url=None, redoc_url=None)
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 DB = os.getenv("PORTAL_DB", "/data/portal.db")
 ZVONOK = "https://zvonok.com/manager/cabapi_external/api/v1/phones"
 WG_AUTH_SNAPSHOT = os.getenv("WG_AUTH_SNAPSHOT", "/data/wg-auth.json")
@@ -90,7 +90,7 @@ def auth_cache(refresh=False):
     with db() as con:
         row = con.execute("SELECT * FROM auth_cache WHERE singleton=1").fetchone()
     if not row:
-        raise HTTPException(503, "Авторизация ещё не синхронизирована с WG Easy")
+        raise HTTPException(503, "Сервис авторизации временно недоступен")
     return row
 
 
@@ -142,9 +142,10 @@ def make_wg_cookie(user_id, remember=False):
     return iron_seal(payload, cached["session_password"], cached["session_timeout"] if remember else 0)
 
 
-def page(title, body):
+def page(title, body, show_header=False):
+    heading = f"<div class=topbar><div class=brand><span class=logo>W</span><span>AAS VPN · WG Easy</span></div></div><h1>{html.escape(title)}</h1>" if show_header else ""
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
-<meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>
+<meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>
 <style>
 :root{{--bg:#f5f5f5;--card:#fff;--text:#262626;--muted:#737373;--line:#e5e5e5;--input:#fff;--red:#b91c1c;--red-hover:#991b1b;--soft:#f5f5f5}}
 *{{box-sizing:border-box}} body{{font:15px Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;max-width:920px;margin:0 auto;padding:38px 18px 70px;background:var(--bg);color:var(--text)}}
@@ -161,7 +162,7 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 @media(max-width:720px){{body{{padding-top:24px}} .grid,.user{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button{{width:100%}}}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#171717;--card:#262626;--text:#f5f5f5;--muted:#a3a3a3;--line:#404040;--input:#171717;--soft:#303030}} .secondary{{background:#404040;color:#f5f5f5}} .secondary:hover{{background:#525252}}}}
 </style>
-<main><div class=topbar><div class=brand><span class=logo>W</span><span>AAS VPN · WG Easy</span></div></div><h1>{html.escape(title)}</h1>{body}</main></html>""")
+<main>{heading}{body}</main></html>""")
 
 
 def phone_signer():
@@ -231,7 +232,7 @@ def dial_numbers():
 
 @app.get("/admin/login")
 def admin_login_form():
-    return page("Вход администратора", "<section class=card><p class=muted>Используйте учётную запись WG Easy.</p><form class=stack method=post><label>Логин<input name=username autocomplete=username required></label><label>Пароль<input name=password type=password autocomplete=current-password required></label><label>Код 2FA<input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code></label><label style='display:flex;grid-template-columns:auto 1fr;align-items:center'><input style='width:auto' type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form></section>")
+    return page("Вход", "<section class=card><p class=muted>Используйте учётную запись администратора.</p><form class=stack method=post><label>Логин<input name=username autocomplete=username required></label><label>Пароль<input name=password type=password autocomplete=current-password required></label><label>Код 2FA<input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code></label><label style='display:flex;grid-template-columns:auto 1fr;align-items:center'><input style='width:auto' type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form></section>")
 
 
 @app.post("/admin/login")
@@ -267,7 +268,7 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return page("Получить VPN", "<p>Введите номер, который владелец сервера добавил в список.</p><form method=post action=/start><input name=phone type=tel autocomplete=tel placeholder='+7 999 123-45-67' required><button>Продолжить</button></form>")
+    return page("", "<section class=card><p>Введите разрешённый номер телефона.</p><form class=stack method=post action=/start><label>Телефон<input name=phone type=tel autocomplete=tel placeholder='+7 999 123-45-67' required></label><button>Продолжить</button></form></section>", show_header=False)
 
 
 @app.post("/start")
@@ -328,7 +329,7 @@ async def verify(token: str, check: int = 0):
         response.set_cookie("aas_session", phone_signer().dumps({"phone": row["phone"]}), httponly=True, secure=True, samesite="lax", max_age=2592000)
         return response
     dial = html.escape(row["dial_phone"] or "номер, указанный в кампании Zvonok")
-    return page("Подтверждение", f"<p>Позвоните со своего телефона на:</p><h2>{dial}</h2><p><small>Отвечать никто не будет. После звонка нажмите кнопку.</small></p><a class=btn href='/verify/{token}?check=1'>Я позвонил — проверить</a>")
+    return page("Подтверждение", f"<section class=card><p>Позвоните со своего телефона на:</p><h2>{dial}</h2><p class=muted>Отвечать никто не будет. После звонка нажмите кнопку.</p><a class=btn href='/verify/{token}?check=1'>Я позвонил — проверить</a></section>")
 
 
 async def wg_session():
@@ -348,7 +349,7 @@ def cabinet(request: Request):
         raise HTTPException(403)
     rows = "".join(f"<tr><td>{html.escape(x['name'])}</td><td><a class=btn href='/device/{x['id']}/qr'>QR</a> <a class=btn href='/device/{x['id']}/config'>Файл</a></td></tr>" for x in devices)
     create = "" if len(devices) >= user["device_limit"] else "<form method=post action=/device><input name=name maxlength=40 placeholder='Например, iPhone' required><button>Добавить устройство</button></form>"
-    return page(f"Привет, {user['name']}", f"<p>Устройств: {len(devices)} из {user['device_limit']}</p><table>{rows}</table>{create}")
+    return page(f"Привет, {user['name']}", f"<p>Устройств: {len(devices)} из {user['device_limit']}</p><table>{rows}</table>{create}", show_header=True)
 
 
 @app.post("/device")
@@ -418,7 +419,7 @@ def admin(request: Request):
     <section class=card><div class=section-head><div><h2>Разрешённые пользователи</h2><div class=muted>{len(users)} пользователей · изменения сохраняются отдельно для каждой строки</div></div></div><div class=users>{rows or '<div class=muted>Список пока пуст.</div>'}</div></section>
     <section class=card><div class=section-head><div><h2>Номера подтверждения Zvonok</h2><div class=muted>Выдаются последовательно по кругу.</div></div></div><form class=stack method=post action=/admin/settings/dial-numbers><label>По одному номеру в строке<textarea name=numbers required>{html.escape(numbers)}</textarea></label><div><button>Сохранить номера</button></div></form></section>
     <form method=post action=/admin/logout><button class='secondary'>Выйти</button></form>"""
-    return page("Управление доступом", body)
+    return page("Управление доступом", body, show_header=True)
 
 
 @app.post("/admin/user")
