@@ -237,6 +237,17 @@ def phone_normalize(value):
     return "+" + digits
 
 
+def latin_slug(value, fallback):
+    translit = str.maketrans({
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo", "ж": "zh",
+        "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p",
+        "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts", "ч": "ch",
+        "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    })
+    value = value.lower().translate(translit)
+    return re.sub(r"[^a-z0-9]+", "-", value).strip("-")[:30] or fallback
+
+
 def session_phone(request):
     raw = request.cookies.get("aas_session", "")
     try:
@@ -452,8 +463,15 @@ async def create_device(request: Request, name: str = Form(...)):
         count = con.execute("SELECT count(*) FROM devices WHERE phone=?", (phone,)).fetchone()[0]
     if not user or count >= user["device_limit"]:
         raise HTTPException(403, "Лимит устройств исчерпан")
-    wg_name = f"portal-{phone[-4:]}-{secrets.token_hex(3)}-{name}"
+    wg_base_name = f"{latin_slug(user['name'], 'user')}-{latin_slug(name, 'device')}"
     async with await wg_session() as client:
+        clients = (await client.get("/api/client")).json()
+        existing_names = {client["name"] for client in clients}
+        wg_name = wg_base_name
+        suffix = 2
+        while wg_name in existing_names:
+            wg_name = f"{wg_base_name[:61]}-{suffix}"
+            suffix += 1
         response = await client.post("/api/client", json={"name": wg_name, "expiresAt": None})
         response.raise_for_status()
         clients = (await client.get("/api/client")).json()
