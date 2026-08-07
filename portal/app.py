@@ -12,6 +12,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
+from urllib.parse import quote
 
 import httpx
 import pyotp
@@ -626,7 +627,11 @@ async def config(request: Request, device_id: int):
     row = owned_device(request, device_id)
     async with await wg_session() as client:
         data = (await client.get(f"/api/client/{row['wg_client_id']}/configuration")).content
-    return Response(data, media_type="text/plain", headers={"Content-Disposition": f'attachment; filename="vpn-{device_id}.conf"', "Cache-Control": "no-store"})
+    device_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "-", row["name"]).strip(" .") or f"device-{device_id}"
+    filename = f"{device_name}.conf"
+    fallback = f"{latin_slug(device_name, f'device-{device_id}')}.conf"
+    disposition = f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
+    return Response(data, media_type="text/plain", headers={"Content-Disposition": disposition, "Cache-Control": "no-store"})
 
 
 @app.get("/device/{device_id}/qr")
