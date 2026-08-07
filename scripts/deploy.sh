@@ -21,7 +21,6 @@ source .env
 set +a
 : "${VPN_DOMAIN:?Set VPN_DOMAIN in .env}"
 : "${PORTAL_DOMAIN:?Set PORTAL_DOMAIN in .env}"
-: "${PORTAL_SESSION_SECRET:?Set PORTAL_SESSION_SECRET in .env}"
 : "${COOKIE_DOMAIN:?Set COOKIE_DOMAIN in .env}"
 if [[ "$VPN_DOMAIN" == "vpn.example.com" ]]; then
   echo "Replace vpn.example.com in .env first." >&2

@@ -32,10 +32,9 @@ sudo ./scripts/deploy.sh
 - `VPN_DOMAIN` — домен панели wg-easy;
 - `PORTAL_DOMAIN` — публичный портал (можно корневой домен);
 - `ZVONOK_PUBLIC_KEY` и `ZVONOK_CAMPAIGN_ID` кампании «Звонок на проверочный номер»;
-- `COOKIE_DOMAIN` — общий cookie-domain с ведущей точкой, например `.example.com`;
-- длинный `PORTAL_SESSION_SECRET` только для телефонных сессий родственников.
+- `COOKIE_DOMAIN` — общий cookie-domain с ведущей точкой, например `.example.com`.
 
-Сгенерировать session secret можно командой `openssl rand -hex 32`. Пароль и TOTP администратора берутся из WG Easy и отдельно в `.env` не сохраняются. `.env` исключён из Git.
+Секрет телефонных сессий портал генерирует сам и сохраняет в persistent volume. Пароль и TOTP администратора берутся из WG Easy и отдельно в `.env` не сохраняются. `.env` исключён из Git.
 
 ## Первый запуск
 

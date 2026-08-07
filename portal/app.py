@@ -25,7 +25,6 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 app = FastAPI(docs_url=None, redoc_url=None)
 DB = os.getenv("PORTAL_DB", "/data/portal.db")
-signer = URLSafeTimedSerializer(os.environ["PORTAL_SESSION_SECRET"], salt="aas-portal")
 ZVONOK = "https://zvonok.com/manager/cabapi_external/api/v1/phones"
 WG_AUTH_SNAPSHOT = os.getenv("WG_AUTH_SNAPSHOT", "/data/wg-auth.json")
 COOKIE_DOMAIN = os.environ["COOKIE_DOMAIN"]
@@ -62,7 +61,9 @@ def startup():
             totp_verified INTEGER NOT NULL, enabled INTEGER NOT NULL,
             session_password TEXT NOT NULL, session_timeout INTEGER NOT NULL,
             synced_at INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
+        con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('session_secret',?)", (secrets.token_hex(32),))
     sync_auth_cache()
 
 
@@ -150,6 +151,12 @@ button,.btn{{background:#2478ff;border:0;cursor:pointer;text-decoration:none;dis
 <main><h1>{html.escape(title)}</h1><div class=card>{body}</div></main></html>""")
 
 
+def phone_signer():
+    with db() as con:
+        secret = con.execute("SELECT value FROM settings WHERE key='session_secret'").fetchone()[0]
+    return URLSafeTimedSerializer(secret, salt="aas-portal")
+
+
 def phone_normalize(value):
     digits = re.sub(r"\D", "", value)
     if len(digits) == 11 and digits[0] in "78":
@@ -162,7 +169,7 @@ def phone_normalize(value):
 def session_phone(request):
     raw = request.cookies.get("aas_session", "")
     try:
-        return signer.loads(raw, max_age=30 * 24 * 3600)["phone"]
+        return phone_signer().loads(raw, max_age=30 * 24 * 3600)["phone"]
     except BadSignature:
         raise HTTPException(401, "Войдите повторно")
 
@@ -286,7 +293,7 @@ async def verify(token: str, check: int = 0):
         with db() as con:
             con.execute("UPDATE verifications SET verified_at=? WHERE token=?", (int(time.time()), token))
         response = RedirectResponse("/cabinet", 303)
-        response.set_cookie("aas_session", signer.dumps({"phone": row["phone"]}), httponly=True, secure=True, samesite="lax", max_age=2592000)
+        response.set_cookie("aas_session", phone_signer().dumps({"phone": row["phone"]}), httponly=True, secure=True, samesite="lax", max_age=2592000)
         return response
     dial = html.escape(row["dial_phone"] or "номер, указанный в кампании Zvonok")
     return page("Подтверждение", f"<p>Позвоните со своего телефона на:</p><h2>{dial}</h2><p><small>Отвечать никто не будет. После звонка нажмите кнопку.</small></p><a class=btn href='/verify/{token}?check=1'>Я позвонил — проверить</a>")

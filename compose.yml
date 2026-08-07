@@ -87,7 +87,6 @@ services:
     container_name: aas-portal
     environment:
       PORTAL_DB: /data/portal.db
-      PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN}
       ZVONOK_PUBLIC_KEY: ${ZVONOK_PUBLIC_KEY}
       ZVONOK_CAMPAIGN_ID: ${ZVONOK_CAMPAIGN_ID}
