@@ -20,7 +20,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
@@ -379,19 +379,46 @@ async def zvonok_status(row):
 
 
 @app.get("/verify/{token}")
-async def verify(token: str, check: int = 0):
+async def verify(token: str):
     with db() as con:
         row = con.execute("SELECT * FROM verifications WHERE token=?", (token,)).fetchone()
     if not row or time.time() - row["created_at"] > 600:
         raise HTTPException(410, "Попытка устарела")
-    if check and await zvonok_status(row):
+    dial = html.escape(row["dial_phone"] or "номер, указанный в кампании Zvonok")
+    return page("Подтверждение", f"""<section class=card><p>Позвоните со своего телефона на:</p><h2>{dial}</h2><p class=muted>Робот ответит на звонок. После ответа звонок можно завершить — страница продолжит автоматически.</p><div id=call-status class=muted>Ожидаем подтверждение звонка…</div></section><script>
+const statusNode=document.getElementById('call-status');
+async function pollCall(){{
+  try{{
+    const response=await fetch('/verify/{token}/status',{{cache:'no-store'}});
+    const result=await response.json();
+    if(result.verified){{statusNode.textContent='Звонок подтверждён';location.replace('/cabinet');return}}
+    statusNode.textContent='Ожидаем подтверждение звонка…';
+  }}catch{{statusNode.textContent='Проверяем звонок…'}}
+  setTimeout(pollCall,4000);
+}}
+setTimeout(pollCall,1500);
+</script>""")
+
+
+@app.get("/verify/{token}/status")
+async def verify_status(token: str):
+    with db() as con:
+        row = con.execute("SELECT * FROM verifications WHERE token=?", (token,)).fetchone()
+    if not row or time.time() - row["created_at"] > 600:
+        raise HTTPException(410, "Попытка устарела")
+    confirmed = bool(row["verified_at"])
+    if not confirmed:
+        try:
+            confirmed = await zvonok_status(row)
+        except (httpx.HTTPError, ValueError):
+            confirmed = False
+    if confirmed and not row["verified_at"]:
         with db() as con:
             con.execute("UPDATE verifications SET verified_at=? WHERE token=?", (int(time.time()), token))
-        response = RedirectResponse("/cabinet", 303)
+    response = JSONResponse({"verified": confirmed}, headers={"Cache-Control": "no-store"})
+    if confirmed:
         response.set_cookie("aas_session", phone_signer().dumps({"phone": row["phone"]}), httponly=True, secure=True, samesite="lax", max_age=2592000)
-        return response
-    dial = html.escape(row["dial_phone"] or "номер, указанный в кампании Zvonok")
-    return page("Подтверждение", f"<section class=card><p>Позвоните со своего телефона на:</p><h2>{dial}</h2><p class=muted>Отвечать никто не будет. После звонка нажмите кнопку.</p><a class=btn href='/verify/{token}?check=1'>Я позвонил — проверить</a></section>")
+    return response
 
 
 async def wg_session():
