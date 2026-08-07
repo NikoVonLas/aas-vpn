@@ -365,7 +365,7 @@ async def zvonok_status(row):
         endpoint = "call_by_id/"
     async with httpx.AsyncClient(timeout=15) as client:
         result = (await client.get(f"{ZVONOK}/{endpoint}", params=params)).json()
-    success = {x.strip().lower() for x in os.getenv("ZVONOK_SUCCESS_STATUSES", "processed,success,confirmed").split(",")}
+    success = {x.strip().lower() for x in os.getenv("ZVONOK_SUCCESS_STATUSES", "processed,success,confirmed,pincode_ok").split(",")}
     def values(value):
         if isinstance(value, dict):
             for key, item in value.items():

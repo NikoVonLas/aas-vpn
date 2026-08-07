@@ -71,7 +71,7 @@ services:
       ZVONOK_PUBLIC_KEY: ${ZVONOK_PUBLIC_KEY}
       ZVONOK_CAMPAIGN_ID: ${ZVONOK_CAMPAIGN_ID}
       ZVONOK_DIAL_NUMBERS: ${ZVONOK_DIAL_NUMBERS}
-      ZVONOK_SUCCESS_STATUSES: ${ZVONOK_SUCCESS_STATUSES:-processed,success,confirmed}
+      ZVONOK_SUCCESS_STATUSES: ${ZVONOK_SUCCESS_STATUSES:-processed,success,confirmed,pincode_ok}
       AWG_API_URL: http://awg2:51821
     volumes:
       - portal_data:/data
