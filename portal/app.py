@@ -239,7 +239,7 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 .device-actions{{display:flex;align-items:center;gap:7px;flex-wrap:wrap}} .device-actions form{{display:inline;margin:0}} .share-button{{display:none}}
 .devices{{display:grid;gap:10px}} .device-card{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}} .device-name{{font-weight:600;overflow-wrap:anywhere}}
 .guide summary{{cursor:pointer;font-size:17px;font-weight:650;list-style-position:inside}} .guide[open] summary{{margin-bottom:18px}} .guide h3{{font-size:15px;margin:16px 0 8px}} .guide ol{{margin:0;padding:0;list-style-position:inside}} .guide li{{margin:0 0 8px;line-height:1.5}}
-@media(min-width:721px) and (max-width:1200px){{
+@media(min-width:721px) and (max-width:1920px){{
   .grid{{grid-template-columns:2fr 2fr 1fr}} .grid>button{{grid-column:1/-1;justify-self:end}}
   .user{{grid-template-columns:2fr 1.5fr 100px}} .user>.actions{{grid-column:1/-1;justify-content:flex-end}}
 }}
