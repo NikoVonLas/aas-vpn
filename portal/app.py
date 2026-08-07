@@ -650,6 +650,8 @@ def admin(request: Request):
     require_admin(request)
     with db() as con:
         users = con.execute("SELECT u.*,count(d.id) device_count FROM users u LEFT JOIN devices d ON d.phone=u.phone GROUP BY u.phone ORDER BY u.name").fetchall()
+    issued_total = sum(user["device_count"] for user in users)
+    allowed_total = sum(user["device_limit"] for user in users)
     rows = "".join(f"""<form class=user method=post action=/admin/user>
       <input type=hidden name=original_phone value='{html.escape(x['phone'])}'>
       <label>Имя<input name=name maxlength=80 value='{html.escape(x['name'])}' required></label>
@@ -662,7 +664,7 @@ def admin(request: Request):
     <section class=card><div class=section-head><div><h2>Добавить человека</h2><div class=muted>Номер должен совпадать с номером входящего звонка.</div></div></div>
       <form class=grid method=post action=/admin/user><label>Имя<input name=name placeholder='Вася Пупкин' required></label><label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel placeholder='999 123-45-67' required></label><label>Устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить</button></form>
     </section>
-    <section class=card><div class=section-head><div><h2>Разрешённые пользователи</h2><div class=muted>{len(users)} пользователей · изменения сохраняются отдельно для каждой строки</div></div></div><div class=users>{rows or '<div class=muted>Список пока пуст.</div>'}</div></section>
+    <section class=card><div class=section-head><div><h2>Разрешённые пользователи</h2><div class=muted>{len(users)} пользователей · выдано {issued_total} из {allowed_total} конфигураций · изменения сохраняются отдельно для каждой строки</div></div></div><div class=users>{rows or '<div class=muted>Список пока пуст.</div>'}</div></section>
     <section class=card><div class=section-head><div><h2>Номера подтверждения Zvonok</h2><div class=muted>Выдаются последовательно по кругу.</div></div><button id=add-dial-number type=button class=secondary>Добавить номер</button></div><form class=stack method=post action=/admin/settings/dial-numbers><div id=dial-numbers>{number_fields}</div><div class=dial-save><button>Сохранить номера</button></div></form></section>
     <form method=post action=/admin/logout><button class='secondary'>Выйти</button></form>"""
     return page("Управление доступом", body, show_header=True, phone_widget=True)
