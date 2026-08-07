@@ -439,7 +439,8 @@ def cabinet(request: Request):
         raise HTTPException(403)
     rows = "".join(f"<tr><td>{html.escape(x['name'])}</td><td><a class=btn href='/device/{x['id']}/qr'>QR</a> <a class=btn href='/device/{x['id']}/config'>Файл</a></td></tr>" for x in devices)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><input name=name maxlength=40 placeholder='iPhone' required><button>Добавить устройство</button></form>"
-    return page(f"Привет, {user['name']}", f"<p>Устройств: {len(devices)} из {user['device_limit']}</p><table>{rows}</table>{create}", show_header=True)
+    guide = """<section class=card><h2>Как подключиться</h2><ol><li>Установите приложение <b>AmneziaWG</b> на своё устройство.</li><li>Напишите ниже название устройства, например <b>iPhone</b>, и нажмите «Добавить устройство».</li><li>Добавьте настройки в AmneziaWG: отсканируйте <b>QR</b> или импортируйте <b>Файл</b>.</li></ol></section>"""
+    return page(f"Привет, {user['name']}", f"{guide}<p>Устройств: {len(devices)} из {user['device_limit']}</p><table>{rows}</table>{create}", show_header=True)
 
 
 @app.post("/device")
