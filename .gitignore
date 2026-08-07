@@ -4,4 +4,6 @@ backups/
 *.db
 *.conf
 *.tar*
+__pycache__/
+*.py[cod]
 !examples/*.conf.example

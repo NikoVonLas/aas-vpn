@@ -1,0 +1,8 @@
+fastapi==0.116.1
+uvicorn==0.35.0
+httpx==0.28.1
+pyotp==2.9.0
+qrcode==8.2
+pillow==11.3.0
+python-multipart==0.0.20
+itsdangerous==2.2.0

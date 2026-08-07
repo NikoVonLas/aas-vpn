@@ -10,6 +10,7 @@ healthy() {
   docker inspect --format '{{.State.Running}}' adguard-home 2>/dev/null | grep -qx true &&
   docker inspect --format '{{.State.Running}}' sing-box 2>/dev/null | grep -qx true &&
   docker inspect --format '{{.State.Running}}' caddy 2>/dev/null | grep -qx true
+  docker inspect --format '{{.State.Running}}' aas-portal 2>/dev/null | grep -qx true
 }
 
 if healthy; then

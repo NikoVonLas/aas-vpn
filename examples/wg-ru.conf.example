@@ -1,0 +1,11 @@
+[Interface]
+PrivateKey = REPLACE_WITH_PRIVATE_KEY
+Address = 10.0.0.2/32
+Table = off
+
+[Peer]
+PublicKey = REPLACE_WITH_RU_SERVER_PUBLIC_KEY
+PresharedKey = REPLACE_IF_USED
+Endpoint = RU_SERVER_IP:PORT
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25

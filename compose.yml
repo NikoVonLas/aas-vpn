@@ -12,7 +12,7 @@ services:
       - awg_wireguard:/etc/wireguard
       - /lib/modules:/lib/modules:ro
     ports:
-      - "${AWG_PORT:-585}:585/udp"
+      - "${AWG_PORT:-443}:585/udp"
     networks:
       vpn:
         ipv4_address: 10.42.42.43
@@ -33,7 +33,7 @@ services:
     container_name: adguard-home
     volumes:
       - adguard_work:/opt/adguardhome/work
-      - adguard_conf:/opt/adguardhome/conf
+      - ./config/adguard:/opt/adguardhome/conf
     ports:
       # Administration is reachable only through an SSH tunnel.
       - "127.0.0.1:3000:3000"
@@ -69,16 +69,43 @@ services:
     container_name: caddy
     environment:
       VPN_DOMAIN: ${VPN_DOMAIN}
+      PORTAL_DOMAIN: ${PORTAL_DOMAIN}
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp"
     volumes:
       - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks: [vpn]
-    depends_on: [awg-easy]
+    depends_on: [awg-easy, portal]
+    restart: unless-stopped
+
+  portal:
+    build: ./portal
+    container_name: aas-portal
+    environment:
+      PORTAL_DB: /data/portal.db
+      PORTAL_ADMIN_USER: ${PORTAL_ADMIN_USER}
+      PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD}
+      PORTAL_ADMIN_TOTP_SECRET: ${PORTAL_ADMIN_TOTP_SECRET}
+      PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
+      ZVONOK_PUBLIC_KEY: ${ZVONOK_PUBLIC_KEY}
+      ZVONOK_CAMPAIGN_ID: ${ZVONOK_CAMPAIGN_ID}
+      ZVONOK_SUCCESS_STATUSES: ${ZVONOK_SUCCESS_STATUSES:-processed,success,confirmed}
+      AWG_API_URL: ${AWG_API_URL:-http://awg-easy:51821}
+      AWG_ADMIN_USERNAME: ${AWG_ADMIN_USERNAME}
+      AWG_ADMIN_PASSWORD: ${AWG_ADMIN_PASSWORD}
+      AWG_ADMIN_TOTP_SECRET: ${AWG_ADMIN_TOTP_SECRET:-}
+    volumes:
+      - portal_data:/data
+    networks:
+      vpn:
+        ipv4_address: 10.42.42.46
+    depends_on:
+      awg-easy:
+        condition: service_started
+    security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
 networks:
@@ -94,6 +121,6 @@ networks:
 volumes:
   awg_wireguard:
   adguard_work:
-  adguard_conf:
   caddy_data:
   caddy_config:
+  portal_data:
