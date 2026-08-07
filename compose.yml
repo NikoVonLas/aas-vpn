@@ -70,6 +70,7 @@ services:
     environment:
       VPN_DOMAIN: ${VPN_DOMAIN}
       PORTAL_DOMAIN: ${PORTAL_DOMAIN}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN}
     ports:
       - "80:80"
       - "443:443"
@@ -86,26 +87,32 @@ services:
     container_name: aas-portal
     environment:
       PORTAL_DB: /data/portal.db
-      PORTAL_ADMIN_USER: ${PORTAL_ADMIN_USER}
-      PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD}
-      PORTAL_ADMIN_TOTP_SECRET: ${PORTAL_ADMIN_TOTP_SECRET}
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN}
       ZVONOK_PUBLIC_KEY: ${ZVONOK_PUBLIC_KEY}
       ZVONOK_CAMPAIGN_ID: ${ZVONOK_CAMPAIGN_ID}
       ZVONOK_SUCCESS_STATUSES: ${ZVONOK_SUCCESS_STATUSES:-processed,success,confirmed}
       AWG_API_URL: ${AWG_API_URL:-http://awg-easy:51821}
-      AWG_ADMIN_USERNAME: ${AWG_ADMIN_USERNAME}
-      AWG_ADMIN_PASSWORD: ${AWG_ADMIN_PASSWORD}
-      AWG_ADMIN_TOTP_SECRET: ${AWG_ADMIN_TOTP_SECRET:-}
     volumes:
       - portal_data:/data
     networks:
       vpn:
         ipv4_address: 10.42.42.46
-    depends_on:
-      awg-easy:
-        condition: service_started
     security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  auth-sync:
+    build: ./portal
+    container_name: aas-auth-sync
+    command: [python, sync.py]
+    user: "0:0"
+    network_mode: none
+    volumes:
+      - portal_data:/data
+      - awg_wireguard:/wg-easy:ro
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
     restart: unless-stopped
 
 networks:

@@ -1,15 +1,24 @@
+import base64
 import html
 import io
+import hashlib
+import hmac
+import json
 import os
 import re
 import secrets
 import sqlite3
 import time
+import uuid
 from contextlib import contextmanager
 
 import httpx
 import pyotp
 import qrcode
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -18,6 +27,9 @@ app = FastAPI(docs_url=None, redoc_url=None)
 DB = os.getenv("PORTAL_DB", "/data/portal.db")
 signer = URLSafeTimedSerializer(os.environ["PORTAL_SESSION_SECRET"], salt="aas-portal")
 ZVONOK = "https://zvonok.com/manager/cabapi_external/api/v1/phones"
+WG_AUTH_SNAPSHOT = os.getenv("WG_AUTH_SNAPSHOT", "/data/wg-auth.json")
+COOKIE_DOMAIN = os.environ["COOKIE_DOMAIN"]
+password_hasher = PasswordHasher()
 
 
 @contextmanager
@@ -44,7 +56,89 @@ def startup():
           CREATE TABLE IF NOT EXISTS devices(
             id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT NOT NULL, name TEXT NOT NULL,
             wg_client_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS auth_cache(
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), user_id INTEGER NOT NULL,
+            username TEXT NOT NULL, password_hash TEXT NOT NULL, totp_key TEXT,
+            totp_verified INTEGER NOT NULL, enabled INTEGER NOT NULL,
+            session_password TEXT NOT NULL, session_timeout INTEGER NOT NULL,
+            synced_at INTEGER NOT NULL);
         """)
+    sync_auth_cache()
+
+
+def sync_auth_cache():
+    """Refresh the standalone cache from the isolated synchronizer snapshot."""
+    try:
+        with open(WG_AUTH_SNAPSHOT, encoding="utf-8") as stream:
+            snapshot = json.load(stream)
+        with db() as con:
+            con.execute("""INSERT INTO auth_cache(singleton,user_id,username,password_hash,totp_key,totp_verified,enabled,session_password,session_timeout,synced_at)
+              VALUES(1,?,?,?,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET
+              user_id=excluded.user_id,username=excluded.username,password_hash=excluded.password_hash,
+              totp_key=excluded.totp_key,totp_verified=excluded.totp_verified,enabled=excluded.enabled,
+              session_password=excluded.session_password,session_timeout=excluded.session_timeout,synced_at=excluded.synced_at""",
+              (snapshot["user_id"], snapshot["username"], snapshot["password_hash"], snapshot["totp_key"], snapshot["totp_verified"], snapshot["enabled"], snapshot["session_password"], snapshot["session_timeout"], snapshot["synced_at"]))
+        return True
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def auth_cache(refresh=False):
+    if refresh:
+        sync_auth_cache()
+    with db() as con:
+        row = con.execute("SELECT * FROM auth_cache WHERE singleton=1").fetchone()
+    if not row:
+        raise HTTPException(503, "Авторизация ещё не синхронизирована с WG Easy")
+    return row
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def b64url_decode(value):
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def iron_key(secret, salt):
+    return hashlib.pbkdf2_hmac("sha1", secret.encode(), salt.encode(), 1, dklen=32)
+
+
+def iron_seal(payload, secret, ttl=0):
+    enc_salt, mac_salt, iv = secrets.token_hex(32), secrets.token_hex(32), os.urandom(16)
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    padder = padding.PKCS7(128).padder()
+    padded = padder.update(raw) + padder.finalize()
+    encryptor = Cipher(algorithms.AES(iron_key(secret, enc_salt)), modes.CBC(iv)).encryptor()
+    encrypted = encryptor.update(padded) + encryptor.finalize()
+    expiration = str(int(time.time() * 1000) + ttl * 1000) if ttl else ""
+    base = f"Fe26.2**{enc_salt}*{b64url(iv)}*{b64url(encrypted)}*{expiration}"
+    digest = hmac.new(iron_key(secret, mac_salt), base.encode(), hashlib.sha256).digest()
+    return f"{base}*{mac_salt}*{b64url(digest)}"
+
+
+def iron_unseal(value, secret):
+    parts = value.split("*")
+    if len(parts) != 8 or parts[0] != "Fe26.2":
+        raise ValueError("bad seal")
+    _, _, enc_salt, iv64, encrypted64, expiration, mac_salt, supplied = parts
+    base = "*".join(parts[:6])
+    expected = b64url(hmac.new(iron_key(secret, mac_salt), base.encode(), hashlib.sha256).digest())
+    if not hmac.compare_digest(expected, supplied):
+        raise ValueError("bad hmac")
+    if expiration and int(expiration) <= int(time.time() * 1000) - 60_000:
+        raise ValueError("expired")
+    decryptor = Cipher(algorithms.AES(iron_key(secret, enc_salt)), modes.CBC(b64url_decode(iv64))).decryptor()
+    padded = decryptor.update(b64url_decode(encrypted64)) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    return json.loads((unpadder.update(padded) + unpadder.finalize()).decode())
+
+
+def make_wg_cookie(user_id, remember=False):
+    cached = auth_cache()
+    payload = {"id": str(uuid.uuid4()), "createdAt": int(time.time() * 1000), "data": {"userId": user_id}}
+    return iron_seal(payload, cached["session_password"], cached["session_timeout"] if remember else 0)
 
 
 def page(title, body):
@@ -74,10 +168,20 @@ def session_phone(request):
 
 
 def admin_ok(request):
-    raw = request.cookies.get("aas_admin", "")
+    raw = request.cookies.get("wg-easy", "")
+    if not raw:
+        return False
+    cached = auth_cache()
     try:
-        return signer.loads(raw, max_age=12 * 3600).get("admin") is True
-    except BadSignature:
+        session = iron_unseal(raw, cached["session_password"])
+        return cached["enabled"] == 1 and session.get("data", {}).get("userId") == cached["user_id"]
+    except (ValueError, KeyError, TypeError):
+        cached = auth_cache(refresh=True)
+        try:
+            session = iron_unseal(raw, cached["session_password"])
+            return cached["enabled"] == 1 and session.get("data", {}).get("userId") == cached["user_id"]
+        except (ValueError, KeyError, TypeError):
+            return False
         return False
 
 
@@ -88,26 +192,32 @@ def require_admin(request):
 
 @app.get("/admin/login")
 def admin_login_form():
-    return page("Вход администратора", "<form method=post><input name=username autocomplete=username placeholder='Логин' required><input name=password type=password autocomplete=current-password placeholder='Пароль' required><input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code placeholder='Код 2FA' required><button>Войти</button></form>")
+    return page("Вход администратора", "<p><small>Используйте учётную запись WG Easy.</small></p><form method=post><input name=username autocomplete=username placeholder='Логин' required><input name=password type=password autocomplete=current-password placeholder='Пароль' required><input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code placeholder='Код 2FA'><label><input style='width:auto' type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form>")
 
 
 @app.post("/admin/login")
-def admin_login(username: str = Form(...), password: str = Form(...), totp: str = Form(...)):
-    user_ok = secrets.compare_digest(username, os.getenv("PORTAL_ADMIN_USER", "admin"))
-    password_ok = secrets.compare_digest(password, os.environ["PORTAL_ADMIN_PASSWORD"])
-    secret = os.environ["PORTAL_ADMIN_TOTP_SECRET"].replace(" ", "")
-    totp_ok = pyotp.TOTP(secret).verify(totp, valid_window=1)
-    if not (user_ok and password_ok and totp_ok):
+def admin_login(username: str = Form(...), password: str = Form(...), totp: str = Form(""), remember: str = Form("")):
+    cached = auth_cache(refresh=True)
+    user_ok = secrets.compare_digest(username, cached["username"])
+    try:
+        password_ok = password_hasher.verify(cached["password_hash"], password)
+    except (VerifyMismatchError, InvalidHashError):
+        password_ok = False
+    totp_ok = True
+    if cached["totp_verified"]:
+        totp_ok = bool(cached["totp_key"] and pyotp.TOTP(cached["totp_key"]).verify(totp, valid_window=1))
+    if not (cached["enabled"] and user_ok and password_ok and totp_ok):
         raise HTTPException(401, "Неверный логин, пароль или код 2FA")
     response = RedirectResponse("/admin", 303)
-    response.set_cookie("aas_admin", signer.dumps({"admin": True}), httponly=True, secure=True, samesite="strict", max_age=43200)
+    max_age = cached["session_timeout"] if remember else None
+    response.set_cookie("wg-easy", make_wg_cookie(cached["user_id"], bool(remember)), domain=COOKIE_DOMAIN, path="/", httponly=True, secure=True, samesite="lax", max_age=max_age)
     return response
 
 
 @app.post("/admin/logout")
 def admin_logout():
     response = RedirectResponse("/admin/login", 303)
-    response.delete_cookie("aas_admin")
+    response.delete_cookie("wg-easy", domain=COOKIE_DOMAIN, path="/")
     return response
 
 
@@ -183,13 +293,9 @@ async def verify(token: str, check: int = 0):
 
 
 async def wg_session():
-    payload = {"username": os.environ["AWG_ADMIN_USERNAME"], "password": os.environ["AWG_ADMIN_PASSWORD"], "remember": False}
-    totp = os.getenv("AWG_ADMIN_TOTP_SECRET")
-    if totp:
-        payload["totpCode"] = pyotp.TOTP(totp.replace(" ", "")).now()
     client = httpx.AsyncClient(base_url=os.environ["AWG_API_URL"], timeout=20)
-    response = await client.post("/api/session", json=payload)
-    response.raise_for_status()
+    cached = auth_cache(refresh=True)
+    client.cookies.set("wg-easy", make_wg_cookie(cached["user_id"]), path="/")
     return client
 
 
