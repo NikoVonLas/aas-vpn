@@ -335,12 +335,18 @@ async def start(phone: str = Form(...)):
         raise HTTPException(403, "Этот номер не добавлен владельцем")
     if recent >= 3:
         raise HTTPException(429, "Слишком много попыток. Подождите 10 минут")
+    public_key = os.getenv("ZVONOK_PUBLIC_KEY", "").strip()
+    if not public_key:
+        raise HTTPException(503, "Сервис подтверждения временно недоступен")
     token = secrets.token_urlsafe(24)
-    data = {"public_key": os.environ["ZVONOK_PUBLIC_KEY"], "campaign_id": os.environ["ZVONOK_CAMPAIGN_ID"], "phone": phone}
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.post(f"{ZVONOK}/confirm/", data=data)
-        response.raise_for_status()
-        result = response.json()
+    data = {"public_key": public_key, "campaign_id": os.environ["ZVONOK_CAMPAIGN_ID"], "phone": phone}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(f"{ZVONOK}/confirm/", data=data)
+            response.raise_for_status()
+            result = response.json()
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError):
+        raise HTTPException(503, "Сервис подтверждения временно недоступен") from None
     call_id = str(result.get("call_id") or result.get("id") or "")
     dial = next_dial_number() or str(result.get("confirm_phone") or result.get("phone_to_call") or result.get("verification_phone") or result.get("call_phone") or "")
     with db() as con:
