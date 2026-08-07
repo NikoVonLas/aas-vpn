@@ -6,4 +6,5 @@ backups/
 *.tar*
 __pycache__/
 *.py[cod]
+*.swp
 !examples/*.conf.example
