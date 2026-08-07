@@ -210,6 +210,7 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 .iti__country-list{{background:var(--card);color:var(--text)}} .iti__country.iti__highlight{{background:#b91c1c14}} .iti__search-input{{background:var(--input);color:var(--text);border-radius:0}}
 .dial-number-row{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}} #dial-numbers{{display:grid;gap:10px}} .dial-save{{display:flex;justify-content:flex-end}}
 .device-form{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-top:16px}}
+.device-actions{{display:flex;align-items:center;gap:7px;flex-wrap:wrap}} .device-actions form{{display:inline;margin:0}}
 @media(min-width:721px) and (max-width:1200px){{
   .grid{{grid-template-columns:2fr 2fr 1fr}} .grid>button{{grid-column:1/-1;justify-self:end}}
   .user{{grid-template-columns:2fr 1.5fr 100px}} .user>.actions{{grid-column:1/-1;justify-content:flex-end}}
@@ -448,7 +449,7 @@ def cabinet(request: Request):
         devices = con.execute("SELECT * FROM devices WHERE phone=? ORDER BY id", (phone,)).fetchall()
     if not user:
         raise HTTPException(403)
-    rows = "".join(f"<tr><td>{html.escape(x['name'])}</td><td><a class=btn href='/device/{x['id']}/qr'>QR</a> <a class=btn href='/device/{x['id']}/config'>Файл</a></td></tr>" for x in devices)
+    rows = "".join(f"""<tr><td>{html.escape(x['name'])}</td><td><div class=device-actions><a class=btn href='/device/{x['id']}/qr'>QR</a><a class=btn href='/device/{x['id']}/config'>Файл</a><form method=post action='/device/{x['id']}/delete' onsubmit="return confirm('Удалить это устройство? Его настройки сразу перестанут работать.')"><button class=danger-soft>Удалить</button></form></div></td></tr>""" for x in devices)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Телефон Лены' required></label><button>Добавить устройство</button></form>"
     guide = """<section class=card><h2>Что нужно сделать</h2><ol><li>Установите приложение <b>AmneziaWG</b> на телефон или компьютер, который хотите подключить.</li><li>В поле <b>«Название устройства»</b> ниже напишите любое понятное название, например <b>Телефон Лены</b> или <b>Домашний ноутбук</b>.</li><li>Нажмите красную кнопку <b>«Добавить устройство»</b>.</li><li>Рядом с добавленным устройством нажмите <b>QR</b> и отсканируйте код в AmneziaWG. Если сканировать неудобно, нажмите <b>Файл</b> и откройте скачанный файл через AmneziaWG.</li></ol><p class=muted>Название нужно только для удобства — можно написать что угодно.</p></section>"""
     return page(f"Привет, {user['name']}", f"{guide}<p>Устройств: {len(devices)} из {user['device_limit']}</p><table>{rows}</table>{create}", show_header=True)
@@ -488,6 +489,18 @@ def owned_device(request, device_id):
     if not row:
         raise HTTPException(404)
     return row
+
+
+@app.post("/device/{device_id}/delete")
+async def delete_device(request: Request, device_id: int):
+    row = owned_device(request, device_id)
+    async with await wg_session() as client:
+        response = await client.delete(f"/api/client/{row['wg_client_id']}")
+        if response.status_code != 404:
+            response.raise_for_status()
+    with db() as con:
+        con.execute("DELETE FROM devices WHERE id=? AND phone=?", (device_id, row["phone"]))
+    return RedirectResponse("/cabinet", 303)
 
 
 @app.get("/device/{device_id}/config")
