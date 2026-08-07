@@ -151,7 +151,11 @@ def page(title, body, show_header=False, phone_widget=False):
 const phoneInput=document.getElementById('phone-input');
 const phoneValue=document.getElementById('phone-value');
 const phoneForm=document.getElementById('phone-form');
-const iti=window.intlTelInput(phoneInput,{initialCountry:'ru',nationalMode:true,formatAsYouType:true,strictMode:true});
+const regionNames=new Intl.DisplayNames(['ru'],{type:'region'});
+const localizedCountries=Object.fromEntries(window.intlTelInput.getCountryData().map(({iso2})=>[iso2,regionNames.of(iso2.toUpperCase())]));
+const iti=window.intlTelInput(phoneInput,{initialCountry:'ru',nationalMode:true,formatAsYouType:true,strictMode:true,localizedCountries,i18n:{
+selectedCountryAriaLabel:'Изменить страну, выбрана ${countryName} (${dialCode})',noCountrySelected:'Выберите страну',countryListAriaLabel:'Список стран',searchPlaceholder:'Поиск',clearSearchAriaLabel:'Очистить поиск',searchEmptyState:'Ничего не найдено',searchSummaryAria:(count)=>`Найдено: ${count}`
+}});
 phoneForm.addEventListener('submit',()=>{const normalized=iti.getNumber();phoneValue.value=normalized||phoneInput.value;});
 </script>""" if phone_widget else ""
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
@@ -170,7 +174,10 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 .actions{{display:flex;gap:7px}} .actions button{{padding:9px 11px}} .badge{{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:12px;background:#dcfce7;color:#166534}} .badge.off{{background:#fee2e2;color:#991b1b}}
 .label-row{{display:flex;align-items:center;justify-content:space-between;gap:6px;white-space:nowrap}} .device-count{{display:inline-flex;align-items:center;justify-content:center;min-width:28px;padding:2px 6px;border-radius:999px;background:#e5e5e5;color:#525252;font-size:11px;font-weight:650;line-height:16px}}
 .topbar{{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}} .brand{{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--muted)}} .logo{{width:32px;height:32px;border-radius:50%;background:var(--red);display:grid;place-items:center;color:#fff;font-weight:800}}
-.iti{{width:100%}} .iti input{{width:100%}} .iti__dropdown-content{{background:var(--card);color:var(--text);border-color:var(--line)}} .iti__search-input{{background:var(--input);color:var(--text)}}
+.iti{{width:100%;--iti-country-selector-bg:var(--card);--iti-border-color:var(--line);--iti-hover-color:#b91c1c14;--iti-icon-color:var(--muted)}}
+.iti input{{width:100%}} .iti__selected-country,.iti__selected-country-primary{{border-radius:7px 0 0 7px}} .iti__selected-country-primary{{padding-left:12px;padding-right:12px}}
+.iti__selected-dial-code{{margin-left:6px;margin-right:5px}} .iti__country-selector{{background:var(--card);color:var(--text);border:1px solid var(--line)!important;border-radius:8px;box-shadow:0 8px 24px #0003;overflow:hidden}}
+.iti__country-list{{background:var(--card);color:var(--text)}} .iti__country.iti__highlight{{background:#b91c1c14}} .iti__search-input{{background:var(--input);color:var(--text);border-radius:0}}
 @media(max-width:720px){{body{{padding-top:24px}} .grid,.user{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button{{width:100%}}}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#171717;--card:#262626;--text:#f5f5f5;--muted:#a3a3a3;--line:#404040;--input:#171717;--soft:#303030}} .secondary{{background:#404040;color:#f5f5f5}} .secondary:hover{{background:#525252}} .device-count{{background:#404040;color:#d4d4d4}}}}
 </style>
