@@ -419,7 +419,7 @@ def admin(request: Request):
       <input type=hidden name=original_phone value='{html.escape(x['phone'])}'>
       <label>Имя<input name=name maxlength=80 value='{html.escape(x['name'])}' required></label>
       <label>Телефон<input name=phone type=tel value='{html.escape(x['phone'])}' required></label>
-      <label>Лимит · выдано {x['device_count']}<input name=device_limit type=number min=1 max=20 value='{x['device_limit']}' required></label>
+      <label>Лимит<input name=device_limit type=number min=1 max=20 value='{x['device_limit']}' required></label>
       <div class=actions><button>Сохранить</button><button class='secondary{' danger-soft' if x['enabled'] else ''}' formaction='/admin/toggle/{html.escape(x['phone'])}'>{'Запретить выдачу' if x['enabled'] else 'Разрешить выдачу'}</button></div>
     </form>""" for x in users)
     numbers = "\n".join(dial_numbers())
