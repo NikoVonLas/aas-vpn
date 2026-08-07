@@ -188,6 +188,26 @@ document.addEventListener('submit',async event=>{
   }catch(error){alert(error.message)}finally{adminSaving=false;submitter?.removeAttribute('disabled')}
 });
 </script>""" if phone_widget else ""
+    share_script = """<script>
+const shareProbe=typeof File==='function'?new File([''], 'settings.conf', {type:'text/plain'}):null;
+if(navigator.share&&navigator.canShare&&shareProbe&&navigator.canShare({files:[shareProbe]})){
+  document.querySelectorAll('.share-button').forEach(button=>button.style.display='inline-flex');
+}
+document.addEventListener('click',async event=>{
+  const button=event.target.closest('.share-button');if(!button)return;
+  button.disabled=true;
+  try{
+    const id=button.dataset.deviceId;
+    const [configResponse,qrResponse]=await Promise.all([fetch(`/device/${id}/config`),fetch(`/device/${id}/qr`)]);
+    if(!configResponse.ok||!qrResponse.ok)throw new Error('Не удалось подготовить файлы');
+    const configFile=new File([await configResponse.blob()],'settings.conf',{type:'text/plain'});
+    const qrFile=new File([await qrResponse.blob()],'qr-code.png',{type:'image/png'});
+    const both=[configFile,qrFile];
+    const files=navigator.canShare({files:both})?both:[configFile];
+    await navigator.share({title:button.dataset.deviceName,text:'Настройки подключения',files});
+  }catch(error){if(error.name!=='AbortError')alert(error.message)}finally{button.disabled=false}
+});
+</script>"""
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
 <meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>{phone_head}
 <style>
@@ -210,16 +230,17 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 .iti__country-list{{background:var(--card);color:var(--text)}} .iti__country.iti__highlight{{background:#b91c1c14}} .iti__search-input{{background:var(--input);color:var(--text);border-radius:0}}
 .dial-number-row{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}} #dial-numbers{{display:grid;gap:10px}} .dial-save{{display:flex;justify-content:flex-end}}
 .device-form{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-top:16px}}
-.device-actions{{display:flex;align-items:center;gap:7px;flex-wrap:wrap}} .device-actions form{{display:inline;margin:0}}
+.device-actions{{display:flex;align-items:center;gap:7px;flex-wrap:wrap}} .device-actions form{{display:inline;margin:0}} .share-button{{display:none}}
+.devices{{display:grid;gap:10px}} .device-card{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}} .device-name{{font-weight:600;overflow-wrap:anywhere}}
 .guide summary{{cursor:pointer;font-size:17px;font-weight:650;list-style-position:inside}} .guide[open] summary{{margin-bottom:18px}} .guide h3{{font-size:15px;margin:16px 0 8px}} .guide ol{{margin:0;padding:0;list-style-position:inside}} .guide li{{margin:0 0 8px;line-height:1.5}}
 @media(min-width:721px) and (max-width:1200px){{
   .grid{{grid-template-columns:2fr 2fr 1fr}} .grid>button{{grid-column:1/-1;justify-self:end}}
   .user{{grid-template-columns:2fr 1.5fr 100px}} .user>.actions{{grid-column:1/-1;justify-content:flex-end}}
 }}
-@media(max-width:720px){{body{{padding-top:24px}} .grid,.user,.device-form{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button,.dial-save button,.device-form button{{width:100%}}}}
+@media(max-width:720px){{body{{padding-top:24px}} .grid,.user,.device-form,.device-card{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button,.dial-save button,.device-form button{{width:100%}} .device-actions{{display:grid;grid-template-columns:1fr 1fr}} .device-actions>*{{width:100%}} .device-actions .btn,.device-actions button{{width:100%}}}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#171717;--card:#262626;--text:#f5f5f5;--muted:#a3a3a3;--line:#404040;--input:#171717;--soft:#303030}} .secondary{{background:#404040;color:#f5f5f5}} .secondary:hover{{background:#525252}} .device-count{{background:#404040;color:#d4d4d4}}}}
 </style>
-<main>{heading}{body}</main>{phone_script}</html>""")
+<main>{heading}{body}</main>{phone_script}{share_script}</html>""")
 
 
 def phone_signer():
@@ -450,10 +471,10 @@ def cabinet(request: Request):
         devices = con.execute("SELECT * FROM devices WHERE phone=? ORDER BY id", (phone,)).fetchall()
     if not user:
         raise HTTPException(403)
-    rows = "".join(f"""<tr><td>{html.escape(x['name'])}</td><td><div class=device-actions><a class=btn href='/device/{x['id']}/qr'>QR</a><a class=btn href='/device/{x['id']}/config'>Файл</a><form method=post action='/device/{x['id']}/delete' onsubmit="return confirm('Удалить это устройство? Его настройки сразу перестанут работать.')"><button class=danger-soft>Удалить</button></form></div></td></tr>""" for x in devices)
+    rows = "".join(f"""<div class=device-card><div class=device-name>{html.escape(x['name'])}</div><div class=device-actions><a class=btn href='/device/{x['id']}/qr'>QR</a><a class=btn href='/device/{x['id']}/config'>Файл</a><button type=button class='secondary share-button' data-device-id='{x['id']}' data-device-name='{html.escape(x['name'], quote=True)}'>Поделиться</button><form method=post action='/device/{x['id']}/delete' onsubmit="return confirm('Удалить это устройство? Его настройки сразу перестанут работать.')"><button class=danger-soft>Удалить</button></form></div></div>""" for x in devices)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Телефон Лены' required></label><button>Добавить устройство</button></form>"
     guide = """<details class='card guide'><summary>Как подключиться</summary><h3>1. Сначала на этом сайте</h3><ol><li>В поле <b>«Название устройства»</b> напишите любое понятное название, например <b>Телефон Лены</b>.</li><li>Нажмите <b>«Добавить устройство»</b>. Ниже появятся кнопки QR и Файл.</li></ol><p class=muted>Название нужно только для удобства — можно написать что угодно.</p><h3>2. Затем в приложении</h3><ol><li>Установите <b>AmneziaWG</b> на телефон или компьютер, который хотите подключить.</li><li>Если сайт открыт на другом экране — нажмите <b>QR</b> и отсканируйте код через AmneziaWG.</li><li>Если сайт открыт на подключаемом устройстве — нажмите <b>Файл</b>, затем откройте скачанный файл через AmneziaWG.</li></ol></details>"""
-    return page(f"Привет, {user['name']}", f"{guide}<p>Устройств: {len(devices)} из {user['device_limit']}</p><table>{rows}</table>{create}", show_header=True)
+    return page(f"Привет, {user['name']}", f"{guide}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>{create}", show_header=True)
 
 
 @app.post("/device")
