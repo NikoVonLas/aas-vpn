@@ -148,15 +148,26 @@ def page(title, body, show_header=False, phone_widget=False):
     heading = f"<div class=topbar><div class=brand><span class=logo>W</span><span>AAS VPN · WG Easy</span></div></div><h1>{html.escape(title)}</h1>" if show_header else ""
     phone_head = '<link rel=stylesheet href=/assets/css/intlTelInput.min.css>' if phone_widget else ""
     phone_script = """<script src=/assets/js/intlTelInputWithUtils.min.js></script><script>
-const phoneInput=document.getElementById('phone-input');
-const phoneValue=document.getElementById('phone-value');
-const phoneForm=document.getElementById('phone-form');
-const regionNames=new Intl.DisplayNames(['ru'],{type:'region'});
-const localizedCountries=Object.fromEntries(window.intlTelInput.getCountryData().map(({iso2})=>[iso2,regionNames.of(iso2.toUpperCase())]));
-const iti=window.intlTelInput(phoneInput,{initialCountry:'ru',nationalMode:true,formatAsYouType:true,strictMode:true,localizedCountries,i18n:{
+const regionNames=typeof Intl.DisplayNames==='function'?new Intl.DisplayNames(['ru'],{type:'region'}):null;
+const localizedCountries=Object.fromEntries(window.intlTelInput.getCountryData().map(({iso2,name})=>{
+  try{return [iso2,regionNames?.of(iso2.toUpperCase())||name]}catch{return [iso2,name]}
+}));
+const phoneWidgets=new WeakMap();
+function initPhone(input){
+  if(phoneWidgets.has(input))return;
+  const iti=window.intlTelInput(input,{initialCountry:'ru',nationalMode:true,formatAsYouType:true,strictMode:true,localizedCountries,i18n:{
 selectedCountryAriaLabel:'Изменить страну, выбрана ${countryName} (${dialCode})',noCountrySelected:'Выберите страну',countryListAriaLabel:'Список стран',searchPlaceholder:'Поиск',clearSearchAriaLabel:'Очистить поиск',searchEmptyState:'Ничего не найдено',searchSummaryAria:(count)=>`Найдено: ${count}`
-}});
-phoneForm.addEventListener('submit',()=>{const normalized=iti.getNumber();phoneValue.value=normalized||phoneInput.value;});
+  }});
+  phoneWidgets.set(input,iti);
+  input.form?.addEventListener('submit',()=>{const normalized=iti.getNumber();if(input.dataset.target){document.getElementById(input.dataset.target).value=normalized||input.value}else{input.value=normalized||input.value}});
+}
+document.querySelectorAll('.phone-input').forEach(initPhone);
+document.getElementById('add-dial-number')?.addEventListener('click',()=>{
+  const row=document.createElement('div');row.className='dial-number-row';
+  row.innerHTML='<input class="phone-input" name="numbers" type="tel" autocomplete="off" inputmode="tel" placeholder="+7 999 123-45-67" required><button type="button" class="secondary remove-number" aria-label="Удалить номер">Удалить</button>';
+  document.getElementById('dial-numbers').append(row);initPhone(row.querySelector('input'));
+});
+document.addEventListener('click',event=>{if(event.target.classList.contains('remove-number'))event.target.closest('.dial-number-row').remove()});
 </script>""" if phone_widget else ""
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
 <meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>{phone_head}
@@ -178,6 +189,7 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 .iti input{{width:100%}} .iti__selected-country,.iti__selected-country-primary{{border-radius:7px 0 0 7px}} .iti__selected-country-primary{{padding-left:12px;padding-right:12px}}
 .iti__selected-dial-code{{margin-left:6px;margin-right:5px}} .iti__country-selector{{background:var(--card);color:var(--text);border:1px solid var(--line)!important;border-radius:8px;box-shadow:0 8px 24px #0003;overflow:hidden}}
 .iti__country-list{{background:var(--card);color:var(--text)}} .iti__country.iti__highlight{{background:#b91c1c14}} .iti__search-input{{background:var(--input);color:var(--text);border-radius:0}}
+.dial-number-row{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}} #dial-numbers{{display:grid;gap:10px}}
 @media(max-width:720px){{body{{padding-top:24px}} .grid,.user{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button{{width:100%}}}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#171717;--card:#262626;--text:#f5f5f5;--muted:#a3a3a3;--line:#404040;--input:#171717;--soft:#303030}} .secondary{{background:#404040;color:#f5f5f5}} .secondary:hover{{background:#525252}} .device-count{{background:#404040;color:#d4d4d4}}}}
 </style>
@@ -287,7 +299,7 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return page("", "<section class=card><form id=phone-form class=stack method=post action=/start><input id=phone-input type=tel autocomplete=tel inputmode=tel aria-label='Номер телефона' placeholder='Номер телефона' required><input id=phone-value name=phone type=hidden><button>Продолжить</button></form></section>", phone_widget=True)
+    return page("", "<section class=card><form class=stack method=post action=/start><input class=phone-input data-target=phone-value type=tel autocomplete=tel inputmode=tel aria-label='Номер телефона' placeholder='Номер телефона' required><input id=phone-value name=phone type=hidden><button>Продолжить</button></form></section>", phone_widget=True)
 
 
 @app.post("/start")
@@ -426,19 +438,19 @@ def admin(request: Request):
     rows = "".join(f"""<form class=user method=post action=/admin/user>
       <input type=hidden name=original_phone value='{html.escape(x['phone'])}'>
       <label>Имя<input name=name maxlength=80 value='{html.escape(x['name'])}' required></label>
-      <label>Телефон<input name=phone type=tel value='{html.escape(x['phone'])}' required></label>
+      <label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel value='{html.escape(x['phone'])}' required></label>
       <label><span class=label-row><span>Лимит</span><span class=device-count title='Выдано конфигураций'>{x['device_count']}/{x['device_limit']}</span></span><input name=device_limit type=number min=1 max=20 value='{x['device_limit']}' required></label>
       <div class=actions><button>Сохранить</button><button class='secondary{' danger-soft' if x['enabled'] else ''}' formaction='/admin/toggle/{html.escape(x['phone'])}'>{'Запретить выдачу' if x['enabled'] else 'Разрешить выдачу'}</button></div>
     </form>""" for x in users)
-    numbers = "\n".join(dial_numbers())
+    number_fields = "".join(f"""<div class=dial-number-row><input class=phone-input name=numbers type=tel autocomplete=off inputmode=tel value='{html.escape(number)}' required><button type=button class='secondary remove-number'>Удалить</button></div>""" for number in dial_numbers())
     body = f"""
     <section class=card><div class=section-head><div><h2>Добавить человека</h2><div class=muted>Номер должен совпадать с номером входящего звонка.</div></div></div>
-      <form class=grid method=post action=/admin/user><label>Имя<input name=name placeholder='Например, Мама' required></label><label>Телефон<input name=phone type=tel placeholder='+7 999 123-45-67' required></label><label>Устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить</button></form>
+      <form class=grid method=post action=/admin/user><label>Имя<input name=name placeholder='Например, Мама' required></label><label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel placeholder='+7 999 123-45-67' required></label><label>Устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить</button></form>
     </section>
     <section class=card><div class=section-head><div><h2>Разрешённые пользователи</h2><div class=muted>{len(users)} пользователей · изменения сохраняются отдельно для каждой строки</div></div></div><div class=users>{rows or '<div class=muted>Список пока пуст.</div>'}</div></section>
-    <section class=card><div class=section-head><div><h2>Номера подтверждения Zvonok</h2><div class=muted>Выдаются последовательно по кругу.</div></div></div><form class=stack method=post action=/admin/settings/dial-numbers><label>По одному номеру в строке<textarea name=numbers required>{html.escape(numbers)}</textarea></label><div><button>Сохранить номера</button></div></form></section>
+    <section class=card><div class=section-head><div><h2>Номера подтверждения Zvonok</h2><div class=muted>Выдаются последовательно по кругу.</div></div><button id=add-dial-number type=button class=secondary>Добавить номер</button></div><form class=stack method=post action=/admin/settings/dial-numbers><div id=dial-numbers>{number_fields}</div><div><button>Сохранить номера</button></div></form></section>
     <form method=post action=/admin/logout><button class='secondary'>Выйти</button></form>"""
-    return page("Управление доступом", body, show_header=True)
+    return page("Управление доступом", body, show_header=True, phone_widget=True)
 
 
 @app.post("/admin/user")
@@ -461,9 +473,9 @@ def admin_save(request: Request, name: str = Form(...), phone: str = Form(...), 
 
 
 @app.post("/admin/settings/dial-numbers")
-def admin_dial_numbers(request: Request, numbers: str = Form(...)):
+def admin_dial_numbers(request: Request, numbers: list[str] = Form(...)):
     require_admin(request)
-    normalized = [phone_normalize(value) for value in re.split(r"[,\n]+", numbers) if value.strip()]
+    normalized = [phone_normalize(value) for value in numbers if value.strip()]
     if not 1 <= len(normalized) <= 20:
         raise HTTPException(400, "Укажите от 1 до 20 номеров")
     with db() as con:
