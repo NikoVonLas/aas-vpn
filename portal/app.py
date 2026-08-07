@@ -438,8 +438,8 @@ def cabinet(request: Request):
     if not user:
         raise HTTPException(403)
     rows = "".join(f"<tr><td>{html.escape(x['name'])}</td><td><a class=btn href='/device/{x['id']}/qr'>QR</a> <a class=btn href='/device/{x['id']}/config'>Файл</a></td></tr>" for x in devices)
-    create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><input name=name maxlength=40 placeholder='iPhone' required><button>Добавить устройство</button></form>"
-    guide = """<section class=card><h2>Как подключиться</h2><ol><li>Установите приложение <b>AmneziaWG</b> на своё устройство.</li><li>Напишите ниже название устройства, например <b>iPhone</b>, и нажмите «Добавить устройство».</li><li>Добавьте настройки в AmneziaWG: отсканируйте <b>QR</b> или импортируйте <b>Файл</b>.</li></ol></section>"""
+    create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Телефон Лены' required></label><button>Добавить устройство</button></form>"
+    guide = """<section class=card><h2>Что нужно сделать</h2><ol><li>Установите приложение <b>AmneziaWG</b> на телефон или компьютер, который хотите подключить.</li><li>В поле <b>«Название устройства»</b> ниже напишите любое понятное название, например <b>Телефон Лены</b> или <b>Домашний ноутбук</b>.</li><li>Нажмите красную кнопку <b>«Добавить устройство»</b>.</li><li>Рядом с добавленным устройством нажмите <b>QR</b> и отсканируйте код в AmneziaWG. Если сканировать неудобно, нажмите <b>Файл</b> и откройте скачанный файл через AmneziaWG.</li></ol><p class=muted>Название нужно только для удобства — можно написать что угодно.</p></section>"""
     return page(f"Привет, {user['name']}", f"{guide}<p>Устройств: {len(devices)} из {user['device_limit']}</p><table>{rows}</table>{create}", show_header=True)
 
 
