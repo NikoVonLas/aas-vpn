@@ -11,6 +11,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 
 import httpx
 import pyotp
@@ -457,7 +458,33 @@ async def zvonok_status(row):
         params["call_id"] = row["call_id"]
         endpoint = "call_by_id/"
     async with httpx.AsyncClient(timeout=15) as client:
-        result = (await client.get(f"{ZVONOK}/{endpoint}", params=params)).json()
+        response = await client.get(f"{ZVONOK}/{endpoint}", params=params)
+        response.raise_for_status()
+        result = response.json()
+    if not row["call_id"]:
+        if isinstance(result, list):
+            calls = result
+        elif isinstance(result, dict):
+            calls = next((result[key] for key in ("results", "calls", "data") if isinstance(result.get(key), list)), [result])
+        else:
+            calls = []
+        candidates = []
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            try:
+                created = datetime.fromisoformat(str(call.get("created", "")).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            if row["created_at"] - 5 <= created <= row["created_at"] + 600:
+                candidates.append((created, call))
+        if not candidates:
+            return False
+        _, result = min(candidates, key=lambda item: item[0])
+        call_id = str(result.get("call_id") or result.get("id") or "")
+        if call_id:
+            with db() as con:
+                con.execute("UPDATE verifications SET call_id=? WHERE token=? AND (call_id IS NULL OR call_id='')", (call_id, row["token"]))
     success = {x.strip().lower() for x in os.getenv("ZVONOK_SUCCESS_STATUSES", "processed,success,confirmed,pincode_ok").split(",")}
     def values(value):
         if isinstance(value, dict):
