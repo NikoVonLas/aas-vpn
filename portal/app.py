@@ -211,6 +211,7 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 .dial-number-row{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}} #dial-numbers{{display:grid;gap:10px}} .dial-save{{display:flex;justify-content:flex-end}}
 .device-form{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-top:16px}}
 .device-actions{{display:flex;align-items:center;gap:7px;flex-wrap:wrap}} .device-actions form{{display:inline;margin:0}}
+.guide summary{{cursor:pointer;font-size:17px;font-weight:650;list-style-position:inside}} .guide[open] summary{{margin-bottom:18px}} .guide h3{{font-size:15px;margin:16px 0 8px}} .guide ol{{margin:0;padding:0;list-style-position:inside}} .guide li{{margin:0 0 8px;line-height:1.5}}
 @media(min-width:721px) and (max-width:1200px){{
   .grid{{grid-template-columns:2fr 2fr 1fr}} .grid>button{{grid-column:1/-1;justify-self:end}}
   .user{{grid-template-columns:2fr 1.5fr 100px}} .user>.actions{{grid-column:1/-1;justify-content:flex-end}}
@@ -451,7 +452,7 @@ def cabinet(request: Request):
         raise HTTPException(403)
     rows = "".join(f"""<tr><td>{html.escape(x['name'])}</td><td><div class=device-actions><a class=btn href='/device/{x['id']}/qr'>QR</a><a class=btn href='/device/{x['id']}/config'>Файл</a><form method=post action='/device/{x['id']}/delete' onsubmit="return confirm('Удалить это устройство? Его настройки сразу перестанут работать.')"><button class=danger-soft>Удалить</button></form></div></td></tr>""" for x in devices)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Телефон Лены' required></label><button>Добавить устройство</button></form>"
-    guide = """<section class=card><h2>Что нужно сделать</h2><ol><li>Установите приложение <b>AmneziaWG</b> на телефон или компьютер, который хотите подключить.</li><li>В поле <b>«Название устройства»</b> ниже напишите любое понятное название, например <b>Телефон Лены</b> или <b>Домашний ноутбук</b>.</li><li>Нажмите красную кнопку <b>«Добавить устройство»</b>.</li><li>Рядом с добавленным устройством нажмите <b>QR</b> и отсканируйте код в AmneziaWG. Если сканировать неудобно, нажмите <b>Файл</b> и откройте скачанный файл через AmneziaWG.</li></ol><p class=muted>Название нужно только для удобства — можно написать что угодно.</p></section>"""
+    guide = """<details class='card guide'><summary>Как подключиться</summary><h3>1. Сначала на этом сайте</h3><ol><li>В поле <b>«Название устройства»</b> напишите любое понятное название, например <b>Телефон Лены</b>.</li><li>Нажмите <b>«Добавить устройство»</b>. Ниже появятся кнопки QR и Файл.</li></ol><p class=muted>Название нужно только для удобства — можно написать что угодно.</p><h3>2. Затем в приложении</h3><ol><li>Установите <b>AmneziaWG</b> на телефон или компьютер, который хотите подключить.</li><li>Если сайт открыт на другом экране — нажмите <b>QR</b> и отсканируйте код через AmneziaWG.</li><li>Если сайт открыт на подключаемом устройстве — нажмите <b>Файл</b>, затем откройте скачанный файл через AmneziaWG.</li></ol></details>"""
     return page(f"Привет, {user['name']}", f"{guide}<p>Устройств: {len(devices)} из {user['device_limit']}</p><table>{rows}</table>{create}", show_header=True)
 
 
