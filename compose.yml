@@ -1,30 +1,29 @@
-name: aas-vpn
+name: ${COMPOSE_PROJECT_NAME:-aas-vpn}
 
 services:
-  awg-easy:
+  awg2:
     image: ghcr.io/wg-easy/wg-easy:15
-    container_name: awg-easy
+    container_name: awg2
     environment:
       DISABLE_IPV6: "true"
       EXPERIMENTAL_AWG: "true"
       OVERRIDE_AUTO_AWG: awg
     volumes:
-      - awg_wireguard:/etc/wireguard
+      - awg2_wireguard:/etc/wireguard
       - /lib/modules:/lib/modules:ro
     ports:
-      - "${AWG_PORT:-443}:585/udp"
+      - "${AWG_PORT:-443}:1234/udp"
+      - "${AWG_FALLBACK_PORT:-1234}:1234/udp"
     networks:
       vpn:
-        ipv4_address: 10.42.42.43
+        ipv4_address: 10.42.42.45
     cap_add: [NET_ADMIN, SYS_MODULE]
     sysctls:
       net.ipv4.ip_forward: "1"
-      net.ipv4.conf.all.src_valid_mark: "1"
     healthcheck:
-      test: ["CMD-SHELL", "timeout 5 sh -c 'awg show | grep -q interface'"]
+      test: ["CMD-SHELL", "awg show | grep -q interface"]
       interval: 30s
       timeout: 10s
-      start_period: 30s
       retries: 3
     restart: unless-stopped
 
@@ -35,9 +34,8 @@ services:
       - adguard_work:/opt/adguardhome/work
       - ./config/adguard:/opt/adguardhome/conf
     ports:
-      # Administration is reachable only through an SSH tunnel.
-      - "127.0.0.1:3000:3000"
-      - "127.0.0.1:3001:80"
+      - "${ADGUARD_SETUP_PUBLISH:-127.0.0.1:3000:3000}"
+      - "${ADGUARD_ADMIN_PUBLISH:-127.0.0.1:3001:80}"
     networks:
       vpn:
         ipv4_address: 10.42.42.44
@@ -55,31 +53,13 @@ services:
     volumes:
       - ./config/sing-box.json:/etc/sing-box/config.json:ro
     depends_on:
-      awg-easy:
+      awg2:
         condition: service_started
     logging:
       driver: json-file
       options:
         max-size: 5m
         max-file: "2"
-    restart: unless-stopped
-
-  caddy:
-    image: caddy:2
-    container_name: caddy
-    environment:
-      VPN_DOMAIN: ${VPN_DOMAIN}
-      PORTAL_DOMAIN: ${PORTAL_DOMAIN}
-      COOKIE_DOMAIN: ${COOKIE_DOMAIN}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks: [vpn]
-    depends_on: [awg-easy, portal]
     restart: unless-stopped
 
   portal:
@@ -92,7 +72,7 @@ services:
       ZVONOK_CAMPAIGN_ID: ${ZVONOK_CAMPAIGN_ID}
       ZVONOK_DIAL_NUMBERS: ${ZVONOK_DIAL_NUMBERS}
       ZVONOK_SUCCESS_STATUSES: ${ZVONOK_SUCCESS_STATUSES:-processed,success,confirmed}
-      AWG_API_URL: ${AWG_API_URL:-http://awg-easy:51821}
+      AWG_API_URL: http://awg2:51821
     volumes:
       - portal_data:/data
     networks:
@@ -109,25 +89,43 @@ services:
     network_mode: none
     volumes:
       - portal_data:/data
-      - awg_wireguard:/wg-easy:ro
+      - awg2_wireguard:/wg-easy:ro
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     read_only: true
     restart: unless-stopped
 
+  caddy:
+    image: caddy:2
+    container_name: aas-caddy
+    environment:
+      VPN_DOMAIN: ${VPN_DOMAIN}
+      PORTAL_DOMAIN: ${PORTAL_DOMAIN}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN}
+      VPN_SITE_ADDRESS: ${VPN_SITE_ADDRESS:?Set VPN_SITE_ADDRESS}
+      PORTAL_SITE_ADDRESS: ${PORTAL_SITE_ADDRESS:?Set PORTAL_SITE_ADDRESS}
+    ports:
+      - "${CADDY_HTTP_PUBLISH:-80:80}"
+      - "${CADDY_HTTPS_PUBLISH:-443:443}"
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - vpn
+    depends_on: [awg2, portal]
+    restart: unless-stopped
+
 networks:
   vpn:
-    driver: bridge
-    driver_opts:
-      com.docker.network.bridge.name: aas-vpn0
-    enable_ipv6: false
-    ipam:
-      config:
-        - subnet: 10.42.42.0/24
+    name: ${VPN_NETWORK_NAME:-aas-vpn}
 
 volumes:
-  awg_wireguard:
+  awg2_wireguard:
+    name: ${AWG2_VOLUME_NAME:-aas-vpn_awg2_wireguard}
   adguard_work:
+    name: ${ADGUARD_WORK_VOLUME_NAME:-aas-vpn_adguard_work}
+  portal_data:
+    name: ${PORTAL_DATA_VOLUME_NAME:-aas-vpn_portal_data}
   caddy_data:
   caddy_config:
-  portal_data:

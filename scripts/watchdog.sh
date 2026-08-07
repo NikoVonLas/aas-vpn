@@ -6,11 +6,11 @@ exec 9>/run/aas-vpn-watchdog.lock
 flock -n 9 || exit 0
 
 healthy() {
-  docker inspect --format '{{.State.Health.Status}}' awg-easy 2>/dev/null | grep -qx healthy &&
+  docker inspect --format '{{.State.Health.Status}}' awg2 2>/dev/null | grep -qx healthy &&
   docker inspect --format '{{.State.Running}}' adguard-home 2>/dev/null | grep -qx true &&
   docker inspect --format '{{.State.Running}}' sing-box 2>/dev/null | grep -qx true &&
-  docker inspect --format '{{.State.Running}}' caddy 2>/dev/null | grep -qx true
-  docker inspect --format '{{.State.Running}}' aas-portal 2>/dev/null | grep -qx true
+  docker inspect --format '{{.State.Running}}' aas-caddy 2>/dev/null | grep -qx true &&
+  docker inspect --format '{{.State.Running}}' aas-portal 2>/dev/null | grep -qx true &&
   docker inspect --format '{{.State.Running}}' aas-auth-sync 2>/dev/null | grep -qx true
 }
 

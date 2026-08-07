@@ -21,6 +21,8 @@ source .env
 set +a
 : "${VPN_DOMAIN:?Set VPN_DOMAIN in .env}"
 : "${PORTAL_DOMAIN:?Set PORTAL_DOMAIN in .env}"
+: "${VPN_SITE_ADDRESS:?Set VPN_SITE_ADDRESS in .env}"
+: "${PORTAL_SITE_ADDRESS:?Set PORTAL_SITE_ADDRESS in .env}"
 : "${COOKIE_DOMAIN:?Set COOKIE_DOMAIN in .env}"
 if [[ "$VPN_DOMAIN" == "vpn.example.com" ]]; then
   echo "Replace vpn.example.com in .env first." >&2
@@ -41,7 +43,7 @@ docker compose version >/dev/null
 install -d -m 0755 /opt/aas-vpn
 install -d -m 0755 /opt/aas-vpn/config /opt/aas-vpn/config/adguard /opt/aas-vpn/scripts
 install -d -m 0755 /opt/aas-vpn/portal
-install -m 0644 compose.yml .env /opt/aas-vpn/
+install -m 0644 compose.yml compose.edge.yml .env /opt/aas-vpn/
 install -m 0644 config/Caddyfile config/sing-box.json /opt/aas-vpn/config/
 install -m 0644 config/adguard/AdGuardHome.yaml /opt/aas-vpn/config/adguard/
 install -m 0644 portal/Dockerfile portal/requirements.txt portal/app.py portal/sync.py /opt/aas-vpn/portal/

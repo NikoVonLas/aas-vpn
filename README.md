@@ -2,7 +2,7 @@
 
 Готовый стек для собственного VPN:
 
-- AmneziaWG (`wg-easy` v15);
+- AmneziaWG 2.0 (`wg-easy` v15 в experimental AWG-режиме);
 - личный кабинет выдачи конфигов по подтверждению номера через Zvonok;
 - единый вход администратора с WG Easy: общий Iron-sealed сеанс, пароль и TOTP;
 - белый список телефонов и индивидуальный лимит устройств;
@@ -31,6 +31,7 @@ sudo ./scripts/deploy.sh
 
 - `VPN_DOMAIN` — домен панели wg-easy;
 - `PORTAL_DOMAIN` — публичный портал (можно корневой домен);
+- `VPN_SITE_ADDRESS` и `PORTAL_SITE_ADDRESS` — обычно те же домены; схема `http://` используется только при работе за отдельным edge-Caddy;
 - `ZVONOK_PUBLIC_KEY` и `ZVONOK_CAMPAIGN_ID` кампании «Звонок на проверочный номер»;
 - `ZVONOK_DIAL_NUMBERS` — номера проверки через запятую; портал выдаёт их по кругу;
 - `COOKIE_DOMAIN` — общий cookie-domain с ведущей точкой, например `.example.com`.
@@ -68,3 +69,7 @@ journalctl -u aas-vpn-watchdog --since today
 ```
 
 Повторный запуск deploy обновляет образы и код, не удаляя volumes и существующих клиентов.
+
+## Работа за внешним Caddy
+
+Базовый `compose.yml` автономен и сам публикует HTTP/HTTPS. Если на сервере уже есть edge-Caddy, добавьте в локальный `.env` `COMPOSE_FILE=compose.yml:compose.edge.yml`, укажите `VPN_SITE_ADDRESS` и `PORTAL_SITE_ADDRESS` со схемой `http://`, технические loopback-порты через `CADDY_HTTP_PUBLISH`/`CADDY_HTTPS_PUBLISH` и имя общей сети в `VPN_NETWORK_NAME`. Реальные серверные конфиги можно хранить в игнорируемом каталоге `data/`; edge-overlay подключает оттуда AdGuard и sing-box.

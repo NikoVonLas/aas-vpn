@@ -157,7 +157,7 @@ const localizedCountries=Object.fromEntries(countryCodes.map(iso2=>{
 const phoneWidgets=new WeakMap();
 function initPhone(input){
   if(phoneWidgets.has(input))return;
-  const iti=window.intlTelInput(input,{initialCountry:'ru',nationalMode:true,formatAsYouType:true,strictMode:true,localizedCountries,i18n:{
+  const iti=window.intlTelInput(input,{initialCountry:'ru',nationalMode:true,separateDialCode:true,formatAsYouType:true,strictMode:true,localizedCountries,i18n:{
 selectedCountryAriaLabel:'Изменить страну, выбрана ${countryName} (${dialCode})',noCountrySelected:'Выберите страну',countryListAriaLabel:'Список стран',searchPlaceholder:'Поиск',clearSearchAriaLabel:'Очистить поиск',searchEmptyState:'Ничего не найдено',searchSummaryAria:(count)=>`Найдено: ${count}`
   }});
   phoneWidgets.set(input,iti);
@@ -166,7 +166,7 @@ selectedCountryAriaLabel:'Изменить страну, выбрана ${countr
 document.querySelectorAll('.phone-input').forEach(initPhone);
 document.addEventListener('click',event=>{if(event.target.id==='add-dial-number'){
   const row=document.createElement('div');row.className='dial-number-row';
-  row.innerHTML='<input class="phone-input" name="numbers" type="tel" autocomplete="off" inputmode="tel" placeholder="+7 999 123-45-67" required><button type="button" class="secondary remove-number" aria-label="Удалить номер">Удалить</button>';
+  row.innerHTML='<input class="phone-input" name="numbers" type="tel" autocomplete="off" inputmode="tel" placeholder="999 123-45-67" required><button type="button" class="secondary remove-number" aria-label="Удалить номер">Удалить</button>';
   document.getElementById('dial-numbers').append(row);initPhone(row.querySelector('input'));
 }});
 document.addEventListener('click',event=>{if(event.target.classList.contains('remove-number'))event.target.closest('.dial-number-row').remove()});
@@ -226,6 +226,8 @@ def phone_signer():
 
 
 def phone_normalize(value):
+    if not value.strip().startswith("+"):
+        raise HTTPException(400, "Выберите код страны")
     digits = re.sub(r"\D", "", value)
     if len(digits) == 11 and digits[0] in "78":
         digits = "7" + digits[1:]
@@ -286,7 +288,7 @@ def dial_numbers():
 
 @app.get("/admin/login")
 def admin_login_form():
-    return page("Вход", "<section class=card><p class=muted>Используйте учётную запись администратора.</p><form class=stack method=post><label>Логин<input name=username autocomplete=username required></label><label>Пароль<input name=password type=password autocomplete=current-password required></label><label>Код 2FA<input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code></label><label style='display:flex;grid-template-columns:auto 1fr;align-items:center'><input style='width:auto' type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form></section>")
+    return page("Вход", "<section class=card><p class=muted>Используйте учётную запись администратора.</p><form class=stack method=post><label>Логин<input name=username autocomplete=username placeholder=admin required></label><label>Пароль<input name=password type=password autocomplete=current-password placeholder='••••••••' required></label><label>Код 2FA<input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code placeholder=123456></label><label style='display:flex;grid-template-columns:auto 1fr;align-items:center'><input style='width:auto' type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form></section>")
 
 
 @app.post("/admin/login")
@@ -322,7 +324,7 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return page("", "<section class=card><form class=stack method=post action=/start><input class=phone-input data-target=phone-value type=tel autocomplete=tel inputmode=tel aria-label='Номер телефона' placeholder='Номер телефона' required><input id=phone-value name=phone type=hidden><button>Продолжить</button></form></section>", phone_widget=True)
+    return page("", "<section class=card><form class=stack method=post action=/start><input class=phone-input data-target=phone-value type=tel autocomplete=tel inputmode=tel aria-label='Номер телефона' placeholder='999 123-45-67' required><input id=phone-value name=phone type=hidden><button>Продолжить</button></form></section>", phone_widget=True)
 
 
 @app.post("/start")
@@ -408,7 +410,7 @@ def cabinet(request: Request):
     if not user:
         raise HTTPException(403)
     rows = "".join(f"<tr><td>{html.escape(x['name'])}</td><td><a class=btn href='/device/{x['id']}/qr'>QR</a> <a class=btn href='/device/{x['id']}/config'>Файл</a></td></tr>" for x in devices)
-    create = "" if len(devices) >= user["device_limit"] else "<form method=post action=/device><input name=name maxlength=40 placeholder='Например, iPhone' required><button>Добавить устройство</button></form>"
+    create = "" if len(devices) >= user["device_limit"] else "<form method=post action=/device><input name=name maxlength=40 placeholder='iPhone' required><button>Добавить устройство</button></form>"
     return page(f"Привет, {user['name']}", f"<p>Устройств: {len(devices)} из {user['device_limit']}</p><table>{rows}</table>{create}", show_header=True)
 
 
@@ -474,7 +476,7 @@ def admin(request: Request):
     number_fields = "".join(f"""<div class=dial-number-row><input class=phone-input name=numbers type=tel autocomplete=off inputmode=tel value='{html.escape(number)}' required><button type=button class='secondary remove-number'>Удалить</button></div>""" for number in dial_numbers())
     body = f"""
     <section class=card><div class=section-head><div><h2>Добавить человека</h2><div class=muted>Номер должен совпадать с номером входящего звонка.</div></div></div>
-      <form class=grid method=post action=/admin/user><label>Имя<input name=name placeholder='Например, Мама' required></label><label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel placeholder='+7 999 123-45-67' required></label><label>Устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить</button></form>
+      <form class=grid method=post action=/admin/user><label>Имя<input name=name placeholder='Мама' required></label><label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel placeholder='999 123-45-67' required></label><label>Устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить</button></form>
     </section>
     <section class=card><div class=section-head><div><h2>Разрешённые пользователи</h2><div class=muted>{len(users)} пользователей · изменения сохраняются отдельно для каждой строки</div></div></div><div class=users>{rows or '<div class=muted>Список пока пуст.</div>'}</div></section>
     <section class=card><div class=section-head><div><h2>Номера подтверждения Zvonok</h2><div class=muted>Выдаются последовательно по кругу.</div></div><button id=add-dial-number type=button class=secondary>Добавить номер</button></div><form class=stack method=post action=/admin/settings/dial-numbers><div id=dial-numbers>{number_fields}</div><div class=dial-save><button>Сохранить номера</button></div></form></section>

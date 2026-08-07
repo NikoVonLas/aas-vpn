@@ -1,0 +1,21 @@
+# Server-specific overlay for running behind an existing edge Caddy.
+# Enable with COMPOSE_FILE=compose.yml:compose.edge.yml in the local .env.
+services:
+  adguard-home:
+    volumes:
+      - ./data/adguard:/opt/adguardhome/conf
+  sing-box:
+    volumes:
+      - ./data/sing-box/config.json:/etc/sing-box/config.json:ro
+
+networks:
+  vpn:
+    external: true
+
+volumes:
+  awg2_wireguard:
+    external: true
+  adguard_work:
+    external: true
+  portal_data:
+    external: true
