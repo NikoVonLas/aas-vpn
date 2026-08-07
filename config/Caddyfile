@@ -1,11 +1,10 @@
 {$VPN_DOMAIN} {
     reverse_proxy awg-easy:51821 {
         header_down Set-Cookie "Path=/" "Path=/; Domain={$COOKIE_DOMAIN}"
-        # Remove the legacy host-only cookie after enabling shared SSO.
-        header_down +Set-Cookie "wg-easy=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
     }
     encode gzip zstd
     header {
+        +Set-Cookie "wg-easy=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
         X-Content-Type-Options nosniff
         X-Frame-Options DENY

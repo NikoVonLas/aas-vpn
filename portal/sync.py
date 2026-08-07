@@ -24,8 +24,7 @@ def snapshot():
     temporary = TARGET + ".tmp"
     with open(temporary, "w", encoding="utf-8") as stream:
         json.dump(data, stream, separators=(",", ":"))
-    os.chown(temporary, 65532, 65532)
-    os.chmod(temporary, 0o600)
+    os.chmod(temporary, 0o640)
     os.replace(temporary, TARGET)
 
 

@@ -137,7 +137,7 @@ def iron_unseal(value, secret):
 
 
 def make_wg_cookie(user_id, remember=False):
-    cached = auth_cache()
+    cached = auth_cache(refresh=True)
     payload = {"id": str(uuid.uuid4()), "createdAt": int(time.time() * 1000), "data": {"userId": user_id}}
     return iron_seal(payload, cached["session_password"], cached["session_timeout"] if remember else 0)
 
@@ -178,7 +178,7 @@ def admin_ok(request):
     raw = request.cookies.get("wg-easy", "")
     if not raw:
         return False
-    cached = auth_cache()
+    cached = auth_cache(refresh=True)
     try:
         session = iron_unseal(raw, cached["session_password"])
         return cached["enabled"] == 1 and session.get("data", {}).get("userId") == cached["user_id"]

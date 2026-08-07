@@ -104,7 +104,7 @@ services:
     build: ./portal
     container_name: aas-auth-sync
     command: [python, sync.py]
-    user: "0:0"
+    user: "0:65532"
     network_mode: none
     volumes:
       - portal_data:/data
