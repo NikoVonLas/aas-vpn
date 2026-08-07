@@ -35,6 +35,7 @@
     "rules": [
       { "inbound": "vpn-clients", "action": "sniff", "sniffer": ["http", "tls", "quic"], "timeout": "1s" },
       { "inbound": ["dns-1", "dns-2", "dns-3", "dns-4"], "action": "hijack-dns" },
+      { "inbound": "vpn-clients", "domain_suffix": ["tiktok.com", "tiktokv.com", "tiktokcdn.com", "byteoversea.com", "ibytedtos.com", "ibyteimg.com", "muscdn.com", "musical.ly"], "action": "route", "outbound": "eu-direct" },
       { "inbound": "vpn-clients", "domain_suffix": [".ru", ".xn--p1ai", "yandex.net", "yastatic.net", "app-analytics-services.com", "2gis.com", "pcb-solutions.com"], "action": "route", "outbound": "ru-direct" },
       { "inbound": "vpn-clients", "action": "route", "outbound": "eu-direct" }
     ],

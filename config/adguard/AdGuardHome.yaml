@@ -43,7 +43,16 @@ filters:
   - {enabled: true, url: "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/tif.mini.txt", name: "HaGeZi TIF Mini", id: 3}
   - {enabled: true, url: "https://raw.githubusercontent.com/Zalexanninev15/NoADS_RU/main/ads_list_extended_plus.txt", name: "NoADS RU", id: 4}
 whitelist_filters: []
-user_rules: []
+user_rules:
+  - "@@||tiktok.com^$important"
+  - "@@||tiktokv.com^$important"
+  - "@@||tiktokcdn.com^$important"
+  - "@@||byteoversea.com^$important"
+  - "@@||ibytedtos.com^$important"
+  - "@@||ibyteimg.com^$important"
+  - "@@||tnc*.tiktokv.com^$important"
+  - "@@||mon*-*.tiktokv.com^$important"
+  - "@@||rtlog*.tiktokv.com^$important"
 filtering:
   blocking_mode: default
   filtering_enabled: true
