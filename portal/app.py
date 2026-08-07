@@ -209,7 +209,7 @@ button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e
 .iti__selected-dial-code{{margin-left:6px;margin-right:5px}} .iti__country-selector{{background:var(--card);color:var(--text);border:1px solid var(--line)!important;border-radius:8px;box-shadow:0 8px 24px #0003;overflow:hidden}}
 .iti__country-list{{background:var(--card);color:var(--text)}} .iti__country.iti__highlight{{background:#b91c1c14}} .iti__search-input{{background:var(--input);color:var(--text);border-radius:0}}
 .dial-number-row{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}} #dial-numbers{{display:grid;gap:10px}}
-@media(min-width:721px) and (max-width:1050px){{
+@media(min-width:721px) and (max-width:1200px){{
   .grid{{grid-template-columns:2fr 2fr 1fr}} .grid>button{{grid-column:1/-1;justify-self:end}}
   .user{{grid-template-columns:2fr 1.5fr 100px}} .user>.actions{{grid-column:1/-1;justify-content:flex-end}}
 }}
