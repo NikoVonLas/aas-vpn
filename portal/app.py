@@ -185,8 +185,8 @@ document.addEventListener('submit',async event=>{
   event.preventDefault();adminSaving=true;
   const submitter=event.submitter;submitter?.setAttribute('disabled','');
   try{
-    const response=await fetch(action,{method:(form.method||'post').toUpperCase(),body:new FormData(form)});
-    if(!response.ok)throw new Error((await response.text())||`Ошибка ${response.status}`);
+    const response=await fetch(action,{method:(form.method||'post').toUpperCase(),body:new FormData(form),headers:{'X-Requested-With':'fetch'}});
+    if(!response.ok){const error=await response.json().catch(()=>({detail:`Ошибка ${response.status}`}));throw new Error(error.detail||`Ошибка ${response.status}`)}
     const pageResponse=await fetch('/admin',{headers:{Accept:'text/html'}});
     if(!pageResponse.ok)throw new Error('Не удалось обновить данные');
     const documentNew=new DOMParser().parseFromString(await pageResponse.text(),'text/html');
@@ -294,9 +294,14 @@ def latin_slug(value, fallback):
 def session_phone(request):
     raw = request.cookies.get("aas_session", "")
     try:
-        return phone_signer().loads(raw, max_age=30 * 24 * 3600)["phone"]
+        phone = phone_signer().loads(raw, max_age=30 * 24 * 3600)["phone"]
     except BadSignature:
-        raise HTTPException(401, "Войдите повторно")
+        raise HTTPException(303, headers={"Location": "/"})
+    with db() as con:
+        active = con.execute("SELECT 1 FROM users WHERE phone=? AND enabled=1", (phone,)).fetchone()
+    if not active:
+        raise HTTPException(303, headers={"Location": "/"})
+    return phone
 
 
 def admin_ok(request):
@@ -320,6 +325,39 @@ def admin_ok(request):
 def require_admin(request):
     if not admin_ok(request):
         raise HTTPException(303, headers={"Location": "/admin/login"})
+
+
+@app.exception_handler(HTTPException)
+async def friendly_http_error(request: Request, exc: HTTPException):
+    location = (exc.headers or {}).get("Location")
+    if 300 <= exc.status_code < 400 and location:
+        return RedirectResponse(location, status_code=exc.status_code)
+    detail = str(exc.detail or "Не удалось выполнить запрос")
+    if request.url.path.endswith("/status") or request.headers.get("X-Requested-With") == "fetch":
+        return JSONResponse({"detail": detail}, status_code=exc.status_code, headers=exc.headers)
+    if request.url.path.startswith("/admin"):
+        back_url, back_text = "/admin/login", "Вернуться ко входу"
+    elif request.url.path.startswith("/device") or request.url.path == "/cabinet":
+        back_url, back_text = "/cabinet", "Вернуться в кабинет"
+    else:
+        back_url, back_text = "/", "Вернуться на главную"
+    body = f"<section class=card><h1>Не получилось</h1><p>{html.escape(detail)}</p><a class=btn href='{back_url}'>{back_text}</a></section>"
+    response = page("Ошибка", body)
+    response.status_code = exc.status_code
+    return response
+
+
+@app.exception_handler(404)
+async def not_found_page(request: Request, exc):
+    body = """<section class='card not-found'><div class=glitch data-text=404>404</div><h1>Страница не найдена</h1><p class=muted>Такого адреса нет или страница была перемещена.</p><a class=btn href=/>На главную</a></section><style>
+.not-found{text-align:center;padding:48px 22px}.not-found h1{margin:12px 0 6px}.glitch{position:relative;display:inline-block;font-size:clamp(72px,18vw,150px);font-weight:900;line-height:.9;letter-spacing:-6px;color:var(--text);text-shadow:4px 0 var(--red),-4px 0 #0ea5e9;animation:glitch-shift 2.2s infinite steps(1)}
+.glitch::before,.glitch::after{content:attr(data-text);position:absolute;inset:0;overflow:hidden;pointer-events:none}.glitch::before{color:var(--red);clip-path:inset(12% 0 58% 0);transform:translate(-4px,-2px);animation:glitch-top 1.7s infinite steps(2)}.glitch::after{color:#0ea5e9;clip-path:inset(62% 0 8% 0);transform:translate(4px,2px);animation:glitch-bottom 1.3s infinite steps(2)}
+@keyframes glitch-shift{0%,89%,100%{transform:none}90%{transform:skew(3deg)}92%{transform:translate(-3px,2px)}94%{transform:translate(3px,-1px)}}@keyframes glitch-top{0%,80%,100%{transform:translate(-4px,-2px)}84%{transform:translate(7px,1px)}88%{transform:translate(-7px,-1px)}}@keyframes glitch-bottom{0%,74%,100%{transform:translate(4px,2px)}78%{transform:translate(-8px,-1px)}82%{transform:translate(6px,2px)}}
+@media(prefers-reduced-motion:reduce){.glitch,.glitch::before,.glitch::after{animation:none}}
+</style>"""
+    response = page("404", body)
+    response.status_code = 404
+    return response
 
 
 def next_dial_number():
