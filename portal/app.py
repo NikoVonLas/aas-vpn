@@ -509,8 +509,14 @@ async def verify(token: str):
         row = con.execute("SELECT * FROM verifications WHERE token=?", (token,)).fetchone()
     if not row or time.time() - row["created_at"] > 600:
         raise HTTPException(410, "Попытка устарела")
-    dial = html.escape(row["dial_phone"] or "номер, указанный в кампании Zvonok")
-    return page("Подтверждение", f"""<section class=card><p>Позвоните со своего телефона на:</p><h2>{dial}</h2><p class=muted>Робот ответит на звонок. После ответа звонок можно завершить — страница продолжит автоматически.</p><div id=call-status class=muted>Ожидаем подтверждение звонка…</div></section><script>
+    dial_raw = row["dial_phone"] or ""
+    if dial_raw:
+        dial = html.escape(dial_raw)
+        dial_href = html.escape(re.sub(r"[^+\d]", "", dial_raw), quote=True)
+        dial_control = f"<p>Нажмите на номер, чтобы позвонить:</p><a class=btn href='tel:{dial_href}'>{dial}</a>"
+    else:
+        dial_control = "<p>Позвоните на номер, указанный в кампании Zvonok.</p>"
+    return page("Подтверждение", f"""<section class=card>{dial_control}<p class=muted>Робот ответит на звонок. После ответа звонок можно завершить — страница продолжит автоматически.</p><div id=call-status class=muted>Ожидаем подтверждение звонка…</div></section><script>
 const statusNode=document.getElementById('call-status');
 async function pollCall(){{
   try{{
