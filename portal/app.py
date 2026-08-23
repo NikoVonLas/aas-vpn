@@ -12,7 +12,6 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
-from urllib.parse import quote
 
 import httpx
 import pyotp
@@ -638,10 +637,8 @@ async def config(request: Request, device_id: int):
     row = owned_device(request, device_id)
     async with await wg_session() as client:
         data = (await client.get(f"/api/client/{row['wg_client_id']}/configuration")).content
-    device_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "-", row["name"]).strip(" .") or f"device-{device_id}"
-    filename = f"{device_name}.conf"
-    fallback = f"{latin_slug(device_name, f'device-{device_id}')}.conf"
-    disposition = f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
+    filename = f"{latin_slug(row['name'], f'device-{device_id}')}.conf"
+    disposition = f'attachment; filename="{filename}"'
     return Response(data, media_type="application/x-wireguard-profile", headers={"Content-Disposition": disposition, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
