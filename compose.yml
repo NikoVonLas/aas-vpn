@@ -45,7 +45,7 @@ services:
     sysctls:
       net.ipv4.ip_forward: "1"
     healthcheck:
-      test: ["CMD-SHELL", "awg show | grep -q interface"]
+      test: ["CMD", "/usr/sbin/capsh", "--inh=cap_net_admin,cap_net_raw", "--addamb=cap_net_admin,cap_net_raw", "--shell=/bin/sh", "--", "-c", "awg show interfaces | grep -qx wg0"]
       interval: 30s
       timeout: 10s
       retries: 3
