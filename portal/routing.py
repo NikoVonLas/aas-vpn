@@ -34,22 +34,7 @@ def migrate(con, base=None):
         cur = con.execute("INSERT INTO ru_exits(name,legacy) VALUES('wg-ru',1)")
         con.execute("INSERT INTO settings VALUES('ru_default',?)", (str(cur.lastrowid),))
         con.execute("INSERT INTO settings VALUES('routing_revision','1')")
-        seeds = []
-        if base:
-            for rule in base.get('route', {}).get('rules', []):
-                target = {'ru-direct': 'ru', 'eu-direct': 'direct'}.get(rule.get('outbound'))
-                if not target:
-                    continue
-                for field in ['domain', 'domain_suffix', 'ip_cidr']:
-                    values = rule.get(field, [])
-                    for value in ([values] if isinstance(values, str) else values):
-                        kind, normalized = normalize_rule(('.' + value.lstrip('.')) if field == 'domain_suffix' else value)
-                        seeds.append((target, kind, normalized))
-        else:
-            for target, values in DEFAULT_RULES.items():
-                for value in values.split():
-                    kind, normalized = normalize_rule(value)
-                    seeds.append((target, kind, normalized))
+        seeds = imported_rules(base) if base else default_rules()
         con.executemany('INSERT OR IGNORE INTO routing_rules(target,kind,value) VALUES(?,?,?)', seeds)
     # wg-easy 15.4 allows NULL passwords (OAuth-only accounts).
     columns = list(con.execute('PRAGMA table_info(auth_cache)'))
@@ -61,6 +46,31 @@ def migrate(con, base=None):
           session_timeout INTEGER NOT NULL, synced_at INTEGER NOT NULL)''')
         con.execute('INSERT INTO auth_cache SELECT * FROM old_auth_cache')
         con.execute('DROP TABLE old_auth_cache')
+
+
+def imported_rules(base):
+    seeds = []
+    for rule in base.get('route', {}).get('rules', []):
+        target = {'ru-direct': 'ru', 'eu-direct': 'direct'}.get(rule.get('outbound'))
+        if target:
+            seeds.extend(imported_rule_fields(rule, target))
+    return seeds
+
+
+def imported_rule_fields(rule, target):
+    for field in ['domain', 'domain_suffix', 'ip_cidr']:
+        values = rule.get(field, [])
+        for value in ([values] if isinstance(values, str) else values):
+            text = '.' + value.lstrip('.') if field == 'domain_suffix' else value
+            kind, normalized = normalize_rule(text)
+            yield target, kind, normalized
+
+
+def default_rules():
+    for target, values in DEFAULT_RULES.items():
+        for value in values.split():
+            kind, normalized = normalize_rule(value)
+            yield target, kind, normalized
 
 
 def changed(con):
@@ -99,46 +109,87 @@ def parse_wireguard(text):
     """Never include input (in particular private keys) in exception messages."""
     try:
         return _parse_wireguard(text)
-    except (ValueError, KeyError, UnicodeError, TypeError):
+    except (ValueError, KeyError, TypeError):
         raise ValueError('Некорректный WireGuard-конфиг: проверьте поля, ключи и IPv4; hooks не поддерживаются') from None
 
 
-def _parse_wireguard(text):
+INTERFACE_FIELDS = {'PrivateKey', 'Address', 'ListenPort', 'MTU', 'DNS', 'Table', 'FwMark'}
+PEER_FIELDS = {'PublicKey', 'PresharedKey', 'AllowedIPs', 'Endpoint', 'PersistentKeepalive'}
+
+
+def wireguard_field(line, current, permitted):
+    name, value = [part.strip() for part in line.split('=', 1)]
+    if current is None or name not in permitted:
+        raise ValueError()
+    if name in current:
+        if name not in {'Address', 'DNS', 'AllowedIPs'}:
+            raise ValueError()
+        value = current[name] + ',' + value
+    current[name] = value
+
+
+def wireguard_sections(text):
     if len(text.encode()) > 65536:
         raise ValueError()
     interface, peers, current = {}, [], None
-    permitted = {'PrivateKey', 'Address', 'ListenPort', 'MTU', 'DNS', 'Table', 'FwMark'}
-    peer_fields = {'PublicKey', 'PresharedKey', 'AllowedIPs', 'Endpoint', 'PersistentKeepalive'}
     for raw in text.splitlines():
         line = raw.split('#', 1)[0].strip()
         if not line:
             continue
         if line == '[Interface]':
-            if current is not None:
-                raise ValueError()
+            require_section(current is None)
             current = interface
         elif line == '[Peer]':
-            if current is None:
-                raise ValueError()
-            current = {}; peers.append(current)
+            require_section(current is not None)
+            current = {}
+            peers.append(current)
         else:
-            key, value = [part.strip() for part in line.split('=', 1)]
-            if current is None or key not in (permitted if current is interface else peer_fields):
-                raise ValueError()
-            if key in current:
-                if key not in {'Address', 'DNS', 'AllowedIPs'}:
-                    raise ValueError()
-                value = current[key] + ',' + value
-            current[key] = value
-    def key(value):
-        if len(base64.b64decode(value, validate=True)) != 32:
+            fields = INTERFACE_FIELDS if current is interface else PEER_FIELDS
+            wireguard_field(line, current, fields)
+    return interface, peers
+
+
+def require_section(valid):
+    if not valid:
+        raise ValueError()
+
+
+def wireguard_key(value):
+    if len(base64.b64decode(value, validate=True)) != 32:
+        raise ValueError()
+    return value
+
+
+def bounded_number(value, low, high):
+    result = int(value)
+    if not low <= result <= high:
+        raise ValueError()
+    return result
+
+
+def wireguard_peer(peer, listen_port):
+    allowed = [ipaddress.ip_network(x.strip(), strict=False) for x in peer['AllowedIPs'].split(',')]
+    allowed = [str(x) for x in allowed if x.version == 4]
+    if not allowed:
+        raise ValueError()
+    item = {'public_key': wireguard_key(peer['PublicKey']), 'allowed_ips': allowed}
+    if 'PresharedKey' in peer:
+        item['pre_shared_key'] = wireguard_key(peer['PresharedKey'])
+    if 'Endpoint' in peer:
+        host, port = peer['Endpoint'].rsplit(':', 1)
+        normalize_rule(host)
+        if host.startswith('.') or '/' in host:
             raise ValueError()
-        return value
-    def number(value, low, high):
-        result = int(value)
-        if not low <= result <= high:
-            raise ValueError()
-        return result
+        item.update(address=host.encode('idna').decode('ascii'), port=bounded_number(port, 1, 65535))
+    elif not listen_port:
+        raise ValueError()
+    if 'PersistentKeepalive' in peer:
+        item['persistent_keepalive_interval'] = bounded_number(peer['PersistentKeepalive'], 0, 65535)
+    return item
+
+
+def _parse_wireguard(text):
+    interface, peers = wireguard_sections(text)
     addresses = [str(ipaddress.ip_interface(x.strip())) for x in interface['Address'].split(',')]
     addresses = [x for x in addresses if ipaddress.ip_interface(x).version == 4]
     if not addresses or not peers or len(peers) > 16:
@@ -146,34 +197,15 @@ def _parse_wireguard(text):
     if interface.get('Table', 'off') not in {'off', 'auto'}:
         raise ValueError()
     result = {'type': 'wireguard', 'system': False, 'address': addresses,
-              'private_key': key(interface['PrivateKey']), 'peers': []}
+              'private_key': wireguard_key(interface['PrivateKey']), 'peers': []}
     if 'ListenPort' in interface:
-        result['listen_port'] = number(interface['ListenPort'], 1, 65535)
+        result['listen_port'] = bounded_number(interface['ListenPort'], 1, 65535)
     if 'FwMark' in interface:
         mark = int(interface['FwMark'], 0) if interface['FwMark'].startswith('0x') else int(interface['FwMark'])
-        result['routing_mark'] = number(mark, 0, 0xffffffff)
+        result['routing_mark'] = bounded_number(mark, 0, 0xffffffff)
     if 'MTU' in interface:
-        result['mtu'] = number(interface['MTU'], 576, 9000)
-    for peer in peers:
-        allowed = [ipaddress.ip_network(x.strip(), strict=False) for x in peer['AllowedIPs'].split(',')]
-        allowed = [str(x) for x in allowed if x.version == 4]
-        if not allowed:
-            raise ValueError()
-        item = {'public_key': key(peer['PublicKey']), 'allowed_ips': allowed}
-        if 'PresharedKey' in peer:
-            item['pre_shared_key'] = key(peer['PresharedKey'])
-        if 'Endpoint' in peer:
-            host, port = peer['Endpoint'].rsplit(':', 1)
-            # IPv6 transport stays disabled too.
-            normalize_rule(host)
-            if host.startswith('.') or '/' in host:
-                raise ValueError()
-            item.update(address=host.encode('idna').decode('ascii'), port=number(port, 1, 65535))
-        elif not result.get('listen_port'):
-            raise ValueError()
-        if 'PersistentKeepalive' in peer:
-            item['persistent_keepalive_interval'] = number(peer['PersistentKeepalive'], 0, 65535)
-        result['peers'].append(item)
+        result['mtu'] = bounded_number(interface['MTU'], 576, 9000)
+    result['peers'] = [wireguard_peer(peer, result.get('listen_port')) for peer in peers]
     # A RU exit must be able to carry arbitrary IPv4 destinations.
     if '0.0.0.0/0' not in [x for p in result['peers'] for x in p['allowed_ips']]:
         raise ValueError()
@@ -198,16 +230,17 @@ def effective_exit(assigned, default, health):
     return default if health.get(str(default), False) else None
 
 
-def compile_config(base, exits, devices, rules, default, health, bridge, config_dir):
-    """First matching domain rule wins, then longest IP prefix, then VPS."""
-    config = json.loads(json.dumps(base))
-    config['endpoints'] = []
-    config['outbounds'] = [x for x in config['outbounds'] if x['tag'] != 'ru-direct']
-    config['inbounds'] = [x for x in config['inbounds'] if not x['tag'].startswith('probe-')]
-    for inbound in config['inbounds']:
-        if inbound['tag'] == 'vpn-clients':
-            inbound['include_interface'] = [bridge]
-    generated = [r for r in base['route']['rules'] if r.get('action') in {'sniff', 'hijack-dns'}]
+def device_choices(devices, default, health):
+    choices = {}
+    for device in devices:
+        if device['vpn_ip']:
+            ip = str(ipaddress.IPv4Address(device['vpn_ip'])) + '/32'
+            chosen = effective_exit(device['ru_exit_id'], default, health)
+            choices.setdefault(chosen, []).append(ip)
+    return choices
+
+
+def add_exit_endpoints(config, base, exits, generated, config_dir):
     for node in exits:
         tag = f"ru-{node['id']}"
         if node['legacy']:
@@ -220,12 +253,20 @@ def compile_config(base, exits, devices, rules, default, health, bridge, config_
             config['endpoints'].append(endpoint)
         config['inbounds'].append({'type': 'socks', 'tag': f"probe-{node['id']}", 'listen': '127.0.0.1', 'listen_port': 19000 + node['id']})
         generated.append({'inbound': f"probe-{node['id']}", 'action': 'route', 'outbound': tag})
-    choices = {}
-    for device in devices:
-        if device['vpn_ip']:
-            ip = str(ipaddress.IPv4Address(device['vpn_ip'])) + '/32'
-            chosen = effective_exit(device['ru_exit_id'], default, health)
-            choices.setdefault(chosen, []).append(ip)
+
+
+def compile_config(base, exits, devices, rules, default, health, bridge, config_dir):
+    """First matching domain rule wins, then longest IP prefix, then VPS."""
+    config = json.loads(json.dumps(base))
+    config['endpoints'] = []
+    config['outbounds'] = [x for x in config['outbounds'] if x['tag'] != 'ru-direct']
+    config['inbounds'] = [x for x in config['inbounds'] if not x['tag'].startswith('probe-')]
+    for inbound in config['inbounds']:
+        if inbound['tag'] == 'vpn-clients':
+            inbound['include_interface'] = [bridge]
+    generated = [r for r in base['route']['rules'] if r.get('action') in {'sniff', 'hijack-dns'}]
+    add_exit_endpoints(config, base, exits, generated, config_dir)
+    choices = device_choices(devices, default, health)
     fallback = effective_exit(None, default, health)
     for rule in sorted(rules, key=rule_order):
         field = {'domain': 'domain', 'suffix': 'domain_suffix', 'ip': 'ip_cidr'}[rule['kind']]
@@ -234,10 +275,12 @@ def compile_config(base, exits, devices, rules, default, health, bridge, config_
             generated.append({**match, 'action': 'route', 'outbound': 'eu-direct'})
         else:
             for chosen, ips in choices.items():
-                action = {'action': 'route', 'outbound': f'ru-{chosen}'} if chosen else {'action': 'reject'}
-                generated.append({**match, 'source_ip_cidr': ips, **action})
-            action = {'action': 'route', 'outbound': f'ru-{fallback}'} if fallback else {'action': 'reject'}
-            generated.append({**match, **action})
+                generated.append({**match, 'source_ip_cidr': ips, **exit_action(chosen)})
+            generated.append({**match, **exit_action(fallback)})
     config['route']['rules'] = generated
     config['route']['final'] = 'eu-direct'
     return config
+
+
+def exit_action(chosen):
+    return {'action': 'route', 'outbound': f'ru-{chosen}'} if chosen else {'action': 'reject'}

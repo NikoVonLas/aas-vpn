@@ -17,7 +17,8 @@ STATE = Path('/routing-status')
 WORK = Path('/router-state')
 BASE = Path('/etc/sing-box/config.json')
 CONFIGS = '/ru-configs'
-AWG_IP = os.getenv('AWG_CONTAINER_IP', '10.42.42.45')
+AWG_IP = str(ipaddress.IPv4Address(os.environ['AWG_CONTAINER_IP']))
+DOCKER_CIDR = str(ipaddress.IPv4Network(os.environ['VPN_DOCKER_CIDR']))
 VPN_CIDR = os.getenv('VPN_CLIENT_CIDR', '')
 process = None
 stopping = False
@@ -33,7 +34,7 @@ def network_guard():
     bridge = route['dev']
     if not (Path('/sys/class/net') / bridge / 'bridge').exists():
         raise ValueError('AWG route is not a Docker bridge')
-    bridge_network = str(ipaddress.ip_network(os.getenv('VPN_DOCKER_CIDR', '10.42.42.0/24')))
+    bridge_network = str(ipaddress.ip_network(DOCKER_CIDR))
     # Prevent forwarding *any* un-NATed traffic from this bridge directly to WAN.
     # Also catch old SNAT flows from wg-easy during upgrades.
     check = subprocess.run(['nft', 'list', 'table', 'inet', 'aas_guard'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -58,13 +59,15 @@ def network_guard():
 def sync_network_routes(bridge):
     """Read actual wg-easy subnets; never guess or replace a connected RU route."""
     network_file = DATA / 'wg-network.json'
-    networks = json.loads(network_file.read_text())['cidrs'] if network_file.exists() else [VPN_CIDR] if VPN_CIDR else []
+    networks = [VPN_CIDR] if VPN_CIDR else []
+    if network_file.exists():
+        networks = json.loads(network_file.read_text())['cidrs']
     if not networks:
         raise ValueError('Waiting for wg-easy network snapshot')
     connected = json.loads(run('ip', '-j', '-4', 'route', 'show', 'scope', 'link').stdout)
     networks = [ipaddress.IPv4Network(network) for network in networks]
     protected = [ipaddress.IPv4Network(route['dst']) for route in connected if 'dst' in route]
-    protected.append(ipaddress.IPv4Network(os.getenv('VPN_DOCKER_CIDR', '10.42.42.0/24')))
+    protected.append(ipaddress.IPv4Network(DOCKER_CIDR))
     if any(network.overlaps(other) for network in networks for other in protected):
         raise ValueError('VPN subnet overlaps a connected host network')
     for network in networks:
@@ -77,10 +80,10 @@ def snapshot():
     try:
         con.execute('BEGIN')
         settings = {r['key']: r['value'] for r in con.execute("SELECT key,value FROM settings WHERE key IN ('ru_default','routing_revision')")}
-        return dict(exits=[dict(r) for r in con.execute('SELECT * FROM ru_exits')],
-                    devices=[dict(r) for r in con.execute('SELECT id,vpn_ip,ru_exit_id FROM devices')],
-                    rules=[dict(r) for r in con.execute('SELECT * FROM routing_rules')],
-                    default=int(settings['ru_default']), revision=int(settings['routing_revision']))
+        return {'exits': [dict(r) for r in con.execute('SELECT * FROM ru_exits')],
+                'devices': [dict(r) for r in con.execute('SELECT id,vpn_ip,ru_exit_id FROM devices')],
+                'rules': [dict(r) for r in con.execute('SELECT * FROM routing_rules')],
+                'default': int(settings['ru_default']), 'revision': int(settings['routing_revision'])}
     finally:
         con.close()
 
@@ -123,7 +126,7 @@ def probe(node_id):
     # This dedicated inbound routes directly through the node, never its fallback.
     result = subprocess.run(['curl', '--silent', '--fail', '--max-time', '5',
                              '--proxy', f'socks5h://127.0.0.1:{19000 + node_id}',
-                             '--noproxy', '', 'https://1.1.1.1/cdn-cgi/trace'],
+                             '--noproxy', '', 'https://one.one.one.one/cdn-cgi/trace'],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=7)
     return result.returncode == 0
 
@@ -139,84 +142,124 @@ def advance(previous, ok):
     return previous
 
 
-def main():
-    os.umask(0o077)
-    STATE.mkdir(exist_ok=True); WORK.mkdir(exist_ok=True)
-    os.chmod(STATE, 0o755)
-    bridge = network_guard()
-    boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-    health, fingerprints = {}, {}
-    applied, signature, active, active_base = 0, None, None, None
-    installed_health = {}
-    model_path = WORK / 'working-model.json'
-    try:
-        model = json.loads(model_path.read_text())
-        active, active_base = model['snapshot'], model['base']
-        applied = active['revision']
-        fingerprints = {n['id']: n.get('config_file') for n in active['exits']}
-    except (OSError, ValueError, KeyError):
-        pass
-    last_probe = 0
-    while not stopping:
-        state, desired = 'pending', None
+APPLY_ERRORS = (OSError, ValueError, KeyError, sqlite3.Error, subprocess.SubprocessError, RuntimeError)
+
+
+class Supervisor:
+    def __init__(self, bridge):
+        self.bridge = bridge
+        self.health = {}
+        self.fingerprints = {}
+        self.applied = 0
+        self.signature = None
+        self.active = None
+        self.active_base = None
+        self.installed_health = {}
+        self.model_path = WORK / 'working-model.json'
+        self.last_probe = 0
         try:
-            sync_network_routes(bridge)
-            if process and process.poll() is None and time.monotonic() - last_probe >= 15:
-                # Health follows the installed config, even while a new config is rejected.
-                nodes = (active or {}).get('exits', [])
-                last_probe = time.monotonic()
-                with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
-                    results = list(pool.map(probe, [n['id'] for n in nodes]))
-                for node, ok in zip(nodes, results):
-                    key = str(node['id'])
-                    health[key] = advance(health.get(key, {}), ok)
+            model = json.loads(self.model_path.read_text())
+            self.active, self.active_base = model['snapshot'], model['base']
+            self.applied = self.active['revision']
+            self.fingerprints = self.config_fingerprints(self.active)
+        except (OSError, ValueError, KeyError):
+            pass
+
+    @staticmethod
+    def config_fingerprints(model):
+        return {node['id']: node.get('config_file') for node in model['exits']}
+
+    def probe_nodes(self):
+        if not process or process.poll() is not None or time.monotonic() - self.last_probe < 15:
+            return
+        nodes = (self.active or {}).get('exits', [])
+        self.last_probe = time.monotonic()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
+            results = list(pool.map(probe, [node['id'] for node in nodes]))
+        for node, ok in zip(nodes, results):
+            key = str(node['id'])
+            self.health[key] = advance(self.health.get(key, {}), ok)
+
+    def candidate_health(self, desired):
+        result = {}
+        for node in desired['exits']:
+            key = str(node['id'])
+            unchanged = node['id'] in self.fingerprints and self.fingerprints[node['id']] == node.get('config_file')
+            result[key] = self.health.get(key, {}) if unchanged else {}
+        return result
+
+    def install(self, base, model, health):
+        healthy = {key: value.get('healthy', False) for key, value in health.items()}
+        config = compile_config(base, model['exits'], model['devices'], model['rules'], model['default'], healthy, self.bridge, CONFIGS)
+        digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+        if digest != self.signature or not process or process.poll() is not None:
+            apply(config)
+            self.signature = digest
+        self.installed_health = healthy
+
+    def restore(self):
+        # Recompute failover even while edits are rejected or after a restart.
+        if self.active:
+            try:
+                self.install(self.active_base, self.active, self.health)
+            except APPLY_ERRORS:
+                pass
+
+    def reconcile(self):
+        desired = None
+        try:
+            sync_network_routes(self.bridge)
+            self.probe_nodes()
             desired = snapshot()
             base = json.loads(BASE.read_text())
-            candidate_health = {}
-            for node in desired['exits']:
-                key = str(node['id'])
-                candidate_health[key] = health.get(key, {}) if node['id'] in fingerprints and fingerprints[node['id']] == node.get('config_file') else {}
-            healthy = {key: value.get('healthy', False) for key, value in candidate_health.items()}
-            config = compile_config(base, desired['exits'], desired['devices'], desired['rules'], desired['default'], healthy, bridge, CONFIGS)
-            digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
-            if digest != signature or not process or process.poll() is not None:
-                apply(config)
-                signature = digest
-            applied, active, active_base = desired['revision'], desired, base
-            installed_health, health = healthy, candidate_health
-            fingerprints = {n['id']: n.get('config_file') for n in active['exits']}
-            atomic_json(model_path, {'snapshot': active, 'base': active_base})
-            state = 'applied'
-        except (OSError, ValueError, KeyError, sqlite3.Error, subprocess.SubprocessError, RuntimeError):
-            state = 'error' if active or desired else 'pending'
-            # Rebuild the accepted model with fresh health. Bad edits must not disable
-            # failover, including after the controller itself has restarted.
-            if active:
-                try:
-                    healthy = {key: value.get('healthy', False) for key, value in health.items()}
-                    config = compile_config(active_base, active['exits'], active['devices'], active['rules'], active['default'], healthy, bridge, CONFIGS)
-                    digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
-                    if digest != signature or not process or process.poll() is not None:
-                        apply(config)
-                        signature = digest
-                    installed_health = healthy
-                except (OSError, ValueError, KeyError, subprocess.SubprocessError, RuntimeError):
-                    pass
-            # No exception text or sing-box output: both can contain secrets.
-        running = bool(process and process.poll() is None)
+            health = self.candidate_health(desired)
+            self.install(base, desired, health)
+            self.applied, self.active, self.active_base = desired['revision'], desired, base
+            self.health = health
+            self.fingerprints = self.config_fingerprints(self.active)
+            atomic_json(self.model_path, {'snapshot': self.active, 'base': self.active_base})
+            return 'applied'
+        except APPLY_ERRORS:
+            self.restore()
+            return 'error' if self.active or desired else 'pending'
+
+    def device_states(self, running):
         devices = {}
-        if active:
-            for device in active['devices']:
-                assigned = device['ru_exit_id'] or active['default']
-                effective = effective_exit(device['ru_exit_id'], active['default'], installed_health) if device['vpn_ip'] and running else None
-                devices[str(device['id'])] = {'effective': effective, 'fallback': effective is not None and effective != assigned}
+        if not self.active:
+            return devices
+        for device in self.active['devices']:
+            assigned = device['ru_exit_id'] or self.active['default']
+            effective = None
+            if device['vpn_ip'] and running:
+                effective = effective_exit(device['ru_exit_id'], self.active['default'], self.installed_health)
+            devices[str(device['id'])] = {'effective': effective, 'fallback': effective is not None and effective != assigned}
+        return devices
+
+    def publish(self, state, boot_id):
+        running = bool(process and process.poll() is None)
         atomic_json(STATE / 'status.json', {'state': state, 'boot_id': boot_id, 'running': running,
-                                          'applied_revision': applied, 'updated_at': int(time.time()),
-                                          'exits': health, 'devices': devices}, 0o644)
-        delay = min(3, max(0.1, 15 - (time.monotonic() - last_probe))) if running else 3
+                                          'applied_revision': self.applied, 'updated_at': int(time.time()),
+                                          'exits': self.health, 'devices': self.device_states(running)}, 0o640)
+        return running
+
+    def wait(self, running):
+        delay = min(3, max(0.1, 15 - (time.monotonic() - self.last_probe))) if running else 3
         deadline = time.monotonic() + delay
         while not stopping and time.monotonic() < deadline:
             time.sleep(min(1, max(0, deadline - time.monotonic())))
+
+
+def main():
+    os.umask(0o077)
+    STATE.mkdir(exist_ok=True)
+    WORK.mkdir(exist_ok=True)
+    os.chmod(STATE, 0o750)
+    supervisor = Supervisor(network_guard())
+    boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    while not stopping:
+        state = supervisor.reconcile()
+        running = supervisor.publish(state, boot_id)
+        supervisor.wait(running)
     stop_child()
 
 

@@ -32,6 +32,11 @@ WG_CLIENT_PATH = '/api/client'
 USER_BY_PHONE = 'SELECT * FROM users WHERE phone=?'
 ACTIVE_USER_BY_PHONE = 'SELECT * FROM users WHERE phone=? AND enabled=1'
 
+BEGIN_WRITE = 'BEGIN IMMEDIATE'
+DEFAULT_EXIT_QUERY = "SELECT value FROM settings WHERE key='ru_default'"
+UNAVAILABLE_LABEL = 'Недоступен'
+RU_EXITS_PATH = '/admin/ru-exits'
+
 HTTP_RESPONSES = {
     303: {"description": 'Session required or action completed; follow Location'},
     400: {"description": 'Invalid form or configuration'},
@@ -59,9 +64,7 @@ ROUTER_STATUS = Path(os.getenv("ROUTER_STATUS", "/routing-status/status.json"))
 device_lock = asyncio.Lock()
 
 
-@app.middleware("http")
-async def csrf_and_privacy(request, call_next):
-    token = request.cookies.get("__Host-aas_csrf") or secrets.token_urlsafe(32)
+async def validate_csrf(request, token):
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         if not request.headers.get("content-length", "0").isdigit():
             return JSONResponse({"detail": "Некорректный размер запроса"}, 400)
@@ -77,6 +80,15 @@ async def csrf_and_privacy(request, call_next):
         if not isinstance(supplied, str) or not request.cookies.get("__Host-aas_csrf") or not secrets.compare_digest(supplied, token):
             return JSONResponse({"detail": "Обновите страницу и повторите действие (CSRF)"}, 403)
         # BaseHTTPMiddleware must leave the original body available to FastAPI.
+    return None
+
+
+@app.middleware("http")
+async def csrf_and_privacy(request, call_next):
+    token = request.cookies.get("__Host-aas_csrf") or secrets.token_urlsafe(32)
+    error = await validate_csrf(request, token)
+    if error is not None:
+        return error
     response = await call_next(request)
     if response.headers.get("content-type", "").startswith("text/html"):
         data = b"".join([chunk async for chunk in response.body_iterator]).decode()
@@ -167,7 +179,7 @@ def iron_operation(operation, value, secret, ttl=0):
     try:
         result = subprocess.run(
             ['node', str(Path(__file__).with_name('session.mjs'))],
-            input=json.dumps(dict(operation=operation, value=value, secret=secret, ttl=ttl)),
+            input=json.dumps({'operation': operation, 'value': value, 'secret': secret, 'ttl': ttl}),
             text=True, capture_output=True, check=True, timeout=5,
         )
         return json.loads(result.stdout)
@@ -433,7 +445,7 @@ def next_dial_number():
     if not numbers:
         return ""
     with db() as con:
-        con.execute("BEGIN IMMEDIATE")
+        con.execute(BEGIN_WRITE)
         row = con.execute("SELECT value FROM settings WHERE key='dial_number_index'").fetchone()
         index = int(row[0]) if row else 0
         con.execute("INSERT INTO settings(key,value) VALUES('dial_number_index',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str((index + 1) % len(numbers)),))
@@ -739,19 +751,23 @@ def rename_device(request: Request, device_id: int, name: str = Form(...)):
     return device_redirect(request, row["phone"])
 
 
+def assignment_author(administrator):
+    return 'admin' if administrator else 'user'
+
+
 @app.post("/device/{device_id}/ru-exit", responses=HTTP_RESPONSES)
 def assign_exit(request: Request, device_id: int, ru_exit_id: int = Form(0)):
     row = owned_device(request, device_id)
     administrator = admin_ok(request)
     with db() as con:
-        con.execute("BEGIN IMMEDIATE")
+        con.execute(BEGIN_WRITE)
         permission = con.execute("SELECT can_change_ru_exit FROM users WHERE phone=?", (row["phone"],)).fetchone()
         if not administrator and not permission[0]:
             raise HTTPException(403, "Смена RU-выхода запрещена администратором")
         if ru_exit_id and not con.execute("SELECT 1 FROM ru_exits WHERE id=?", (ru_exit_id,)).fetchone():
             raise HTTPException(400, "RU-выход не найден")
         con.execute("UPDATE devices SET ru_exit_id=?,assigned_by=? WHERE id=?",
-                    (int(ru_exit_id) if ru_exit_id else None, ('admin' if administrator else 'user') if ru_exit_id else None, device_id))
+                    (int(ru_exit_id) if ru_exit_id else None, assignment_author(administrator) if ru_exit_id else None, device_id))
         changed(con)
     return device_redirect(request, row["phone"])
 
@@ -843,7 +859,7 @@ def admin_save(request: Request, name: str = Form(...), phone: str = Form(...), 
     if not 1 <= device_limit <= 20:
         raise HTTPException(400)
     with db() as con:
-        con.execute("BEGIN IMMEDIATE")
+        con.execute(BEGIN_WRITE)
         if original_phone and original_phone != phone:
             if con.execute("SELECT 1 FROM users WHERE phone=?", (phone,)).fetchone():
                 raise HTTPException(409, "Новый номер уже используется")
@@ -920,14 +936,14 @@ def status_text(status):
 def device_routing_forms(devices, user, administrator):
     with db() as con:
         exits = con.execute('SELECT id,name FROM ru_exits ORDER BY id').fetchall()
-        default = int(con.execute("SELECT value FROM settings WHERE key='ru_default'").fetchone()[0])
+        default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
     names = {x['id']: x['name'] for x in exits}
     status = routing_status()
     result = f'<p class=muted data-routing-state>{html.escape(status_text(status))}</p>'
     for device in devices:
         selected = device['ru_exit_id']
         actual = status.get('devices', {}).get(str(device['id']), {})
-        effective = names.get(actual.get('effective'), 'Недоступен') if status.get('state') not in {'stale', 'pending'} else 'Неизвестно'
+        effective = names.get(actual.get('effective'), UNAVAILABLE_LABEL) if status.get('state') not in {'stale', 'pending'} else 'Неизвестно'
         assigned = names.get(selected, 'По умолчанию: ' + names.get(default, '—'))
         fallback = ' · резервный режим' if actual.get('fallback') else ''
         result += f"<section class=card><h3>{html.escape(device['name'])}</h3><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
@@ -941,17 +957,32 @@ def device_routing_forms(devices, user, administrator):
     return result
 
 
-@app.get('/admin/ru-exits', responses=HTTP_RESPONSES)
+def exit_health_label(status, node_id):
+    state = status.get('exits', {}).get(str(node_id), {})
+    if status.get('state') in {'pending', 'stale'} or not state:
+        return 'Проверяется'
+    return 'Доступен' if state.get('healthy') else UNAVAILABLE_LABEL
+
+
+def device_state_labels(device, names, default, status):
+    actual = status.get('devices', {}).get(str(device['id']), {})
+    unknown = status.get('state') in {'stale', 'pending'}
+    assigned = names.get(device['ru_exit_id'], 'По умолчанию: ' + names.get(default, '—'))
+    effective = 'Неизвестно' if unknown else names.get(actual.get('effective'), UNAVAILABLE_LABEL)
+    fallback = ' · резервный режим' if not unknown and actual.get('fallback') else ''
+    return f'Назначен: {assigned} · Используется: {effective}{fallback}'
+
+
+@app.get(RU_EXITS_PATH, responses=HTTP_RESPONSES)
 def ru_exits_page(request: Request):
     require_admin(request)
     with db() as con:
         exits = con.execute('SELECT id,name,legacy FROM ru_exits ORDER BY id').fetchall()
-        default = int(con.execute("SELECT value FROM settings WHERE key='ru_default'").fetchone()[0])
+        default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
     status = routing_status()
     body = admin_nav() + f'<p data-routing-state>{html.escape(status_text(status))}</p>'
     for node in exits:
-        state = status.get('exits', {}).get(str(node['id']), {})
-        available = ('Доступен' if state.get('healthy') else 'Недоступен') if status.get('state') not in {'pending', 'stale'} and state else 'Проверяется'
+        available = exit_health_label(status, node['id'])
         body += f"<section class=card><h2>{html.escape(node['name'])}{' · По умолчанию' if node['id'] == default else ''}</h2><p data-exit-state='{node['id']}'>{available}</p>"
         body += f"<form class=stack method=post enctype=multipart/form-data action='/admin/ru-exits/{node['id']}'><label>Название<input name=name maxlength=80 value='{html.escape(node['name'], quote=True)}' required></label>"
         if not node['legacy']:
@@ -964,13 +995,7 @@ def ru_exits_page(request: Request):
     return page('RU-выходы', body, show_header=True)
 
 
-@app.post('/admin/ru-exits', responses=HTTP_RESPONSES)
-@app.post('/admin/ru-exits/{exit_id}', responses=HTTP_RESPONSES)
-async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...), config_text: str = Form(''), config_upload: UploadFile = File(None)):
-    require_admin(request)
-    name = name.strip()[:80]
-    if not name:
-        raise HTTPException(400, 'Укажите название')
+async def uploaded_endpoint(config_text, config_upload):
     if config_upload and config_upload.filename:
         if config_text.strip():
             raise HTTPException(400, 'Выберите файл или текст конфига')
@@ -984,8 +1009,19 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
             endpoint = parse_wireguard(config_text)
         except ValueError as error:
             raise HTTPException(400, str(error)) from None
+    return endpoint
+
+
+@app.post(RU_EXITS_PATH, responses=HTTP_RESPONSES)
+@app.post('/admin/ru-exits/{exit_id}', responses=HTTP_RESPONSES)
+async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...), config_text: str = Form(''), config_upload: UploadFile = File(None)):
+    require_admin(request)
+    name = name.strip()[:80]
+    if not name:
+        raise HTTPException(400, 'Укажите название')
+    endpoint = await uploaded_endpoint(config_text, config_upload)
     with db() as con:
-        con.execute('BEGIN IMMEDIATE')
+        con.execute(BEGIN_WRITE)
         old = con.execute('SELECT * FROM ru_exits WHERE id=?', (exit_id,)).fetchone() if exit_id else None
         if exit_id and not old:
             raise HTTPException(404, 'RU-выход не найден')
@@ -1005,31 +1041,31 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
         else:
             con.execute('INSERT INTO ru_exits(name,config_file) VALUES(?,?)', (name, filename))
         changed(con)
-    return RedirectResponse('/admin/ru-exits', 303)
+    return RedirectResponse(RU_EXITS_PATH, 303)
 
 
 @app.post('/admin/ru-exits/{exit_id}/default', responses=HTTP_RESPONSES)
 def default_ru_exit(request: Request, exit_id: int):
     require_admin(request)
     with db() as con:
-        con.execute('BEGIN IMMEDIATE')
+        con.execute(BEGIN_WRITE)
         if not con.execute('SELECT 1 FROM ru_exits WHERE id=?', (exit_id,)).fetchone():
             raise HTTPException(404, 'RU-выход не найден')
         con.execute("UPDATE settings SET value=? WHERE key='ru_default'", (str(exit_id),))
         changed(con)
-    return RedirectResponse('/admin/ru-exits', 303)
+    return RedirectResponse(RU_EXITS_PATH, 303)
 
 
 @app.post('/admin/ru-exits/{exit_id}/delete', responses=HTTP_RESPONSES)
 def delete_ru_exit(request: Request, exit_id: int):
     require_admin(request)
     with db() as con:
-        con.execute('BEGIN IMMEDIATE')
+        con.execute(BEGIN_WRITE)
         if con.execute("SELECT 1 FROM settings WHERE key='ru_default' AND value=?", (str(exit_id),)).fetchone() or con.execute('SELECT 1 FROM devices WHERE ru_exit_id=?', (exit_id,)).fetchone():
             raise HTTPException(409, 'Сначала снимите назначения и выберите другой выход по умолчанию')
         con.execute('DELETE FROM ru_exits WHERE id=?', (exit_id,))
         changed(con)
-    return RedirectResponse('/admin/ru-exits', 303)
+    return RedirectResponse(RU_EXITS_PATH, 303)
 
 
 @app.get('/admin/routing', responses=HTTP_RESPONSES)
@@ -1076,19 +1112,8 @@ def live_routing_status(request: Request, admin_view: bool = False):
     status = routing_status()
     with db() as con:
         names = {r['id']: r['name'] for r in con.execute('SELECT id,name FROM ru_exits')}
-        default = int(con.execute("SELECT value FROM settings WHERE key='ru_default'").fetchone()[0])
+        default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
         devices = con.execute('SELECT id,ru_exit_id FROM devices' + ('' if administrator else ' WHERE phone=?'), () if administrator else (phone,)).fetchall()
-    device_states = {}
-    unknown = status.get('state') in {'stale', 'pending'}
-    for device in devices:
-        actual = status.get('devices', {}).get(str(device['id']), {})
-        assigned = names.get(device['ru_exit_id'], 'По умолчанию: ' + names.get(default, '—'))
-        effective = 'Неизвестно' if unknown else names.get(actual.get('effective'), 'Недоступен')
-        fallback = ' · резервный режим' if not unknown and actual.get('fallback') else ''
-        device_states[str(device['id'])] = f'Назначен: {assigned} · Используется: {effective}{fallback}'
-    exits = {}
-    if administrator:
-        for node_id in names:
-            state = status.get('exits', {}).get(str(node_id), {})
-            exits[str(node_id)] = 'Проверяется' if unknown or not state else ('Доступен' if state.get('healthy') else 'Недоступен')
+    device_states = {str(device['id']): device_state_labels(device, names, default, status) for device in devices}
+    exits = {str(node_id): exit_health_label(status, node_id) for node_id in names} if administrator else {}
     return JSONResponse({'message': status_text(status), 'devices': device_states, 'exits': exits})

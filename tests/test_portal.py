@@ -59,7 +59,8 @@ def test_logout_cookies_and_form_js(portal, tmp_path):
         subprocess.run(['node', '--check', str(path)], check=True, capture_output=True)
     assert post(client, '/admin/user', {'name': 'Changed', 'phone': '+79990000001', 'device_limit': '3'}).status_code == 303
     response = post(client, '/admin/logout')
-    assert response.status_code == 303 and response.headers['location'] == '/admin/login'
+    assert response.status_code == 303
+    assert response.headers['location'] == '/admin/login'
     cookies = response.headers.get_list('set-cookie')
     assert any('Domain=.example.test' in x and 'Max-Age=0' in x for x in cookies)
     assert any('Domain=' not in x and x.startswith('wg-easy=') for x in cookies)
@@ -119,14 +120,17 @@ def test_config_privacy_and_rules(portal):
     assert result.status_code == 303, result.text
     assert KEY not in client.get('/admin/ru-exits').text
     files = list(app.RU_CONFIG_DIR.iterdir())
-    assert len(files) == 1 and files[0].stat().st_mode & 0o777 == 0o600
+    assert len(files) == 1
+    assert files[0].stat().st_mode & 0o777 == 0o600
     result = post(client, '/admin/ru-exits', {'name': 'bad', 'config_text': WG + '\nPostUp = ' + KEY})
-    assert result.status_code == 400 and KEY not in result.text
+    assert result.status_code == 400
+    assert KEY not in result.text
     assert post(client, '/admin/routing', {'ru': '.RU\n.рф\n10.0.0.0/8', 'direct': 'EXAMPLE.RU\n10.2.0.0/16'}).status_code == 303
     with app.db() as con:
         assert con.execute("SELECT 1 FROM routing_rules WHERE value='xn--p1ai'").fetchone()
     result = post(client, '/admin/user', {'name':'x', 'phone':'+79990000001', 'device_limit':KEY}, headers={'X-Requested-With':'fetch'})
-    assert result.status_code == 422 and KEY not in result.text
+    assert result.status_code == 422
+    assert KEY not in result.text
     assert isinstance(result.json()['detail'], list)
 
 
@@ -147,10 +151,12 @@ def test_admin_device_crud_and_client_id(portal, monkeypatch):
         return httpx.AsyncClient(transport=httpx.MockTransport(api), base_url='http://awg.test')
     monkeypatch.setattr(app, 'wg_session', session)
     result = post(client, '/device', {'name':'New', 'phone':'+79990000002'})
-    assert result.status_code == 303 and result.headers['location'].endswith('/+79990000002/devices')
+    assert result.status_code == 303
+    assert result.headers['location'].endswith('/+79990000002/devices')
     with app.db() as con:
         row = con.execute("SELECT * FROM devices WHERE wg_client_id='99'").fetchone()
-        assert row['phone'] == '+79990000002' and row['vpn_ip'] == '10.8.0.4'
+        assert row['phone'] == '+79990000002'
+        assert row['vpn_ip'] == '10.8.0.4'
         assert not con.execute("SELECT 1 FROM devices WHERE wg_client_id='100'").fetchone()
     assert post(client, f"/device/{row['id']}/rename", {'name':'Renamed'}).status_code == 303
     assert client.get(f"/device/{row['id']}/config").text == WG
@@ -215,7 +221,8 @@ def test_live_status_exposes_only_owned_devices(portal):
     app, client = portal
     phone_login(app, client)
     result = client.get('/routing/status').json()
-    assert set(result['devices']) == {'1'} and result['exits'] == {}
+    assert set(result['devices']) == {'1'}
+    assert result['exits'] == {}
     assert client.get('/routing/status?admin_view=true').headers['location'] == '/admin/login'
     admin_login(app, client)
     result = client.get('/routing/status?admin_view=true').json()

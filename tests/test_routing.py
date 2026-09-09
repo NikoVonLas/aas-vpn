@@ -14,18 +14,22 @@ from controller import advance
 
 @pytest.mark.parametrize('line', ['PreUp = secret', 'PostUp = secret', 'PreDown = secret', 'PostDown = secret', 'SaveConfig = true', 'Something = secret'])
 def test_reject_hooks_and_unknowns(line):
+    config = WG.replace('[Peer]', line + '\n[Peer]')
     with pytest.raises(ValueError) as exc:
-        parse_wireguard(WG.replace('[Peer]', line + '\n[Peer]'))
-    assert 'secret' not in str(exc.value) and KEY not in str(exc.value)
+        parse_wireguard(config)
+    assert 'secret' not in str(exc.value)
+    assert KEY not in str(exc.value)
 
 
 def test_wireguard_and_keenetic():
     wg = parse_wireguard(WG)
-    assert wg['peers'][0]['port'] == 51820 and wg['peers'][0]['allowed_ips'] == ['0.0.0.0/0']
+    assert wg['peers'][0]['port'] == 51820
+    assert wg['peers'][0]['allowed_ips'] == ['0.0.0.0/0']
     assert 'dns' not in wg
     keenetic = WG.replace('Address =', 'ListenPort = 51820\nMTU = 1380\nAddress =').replace('Endpoint = 192.0.2.1:51820\n', '')
     wg = parse_wireguard(keenetic)
-    assert wg['listen_port'] == 51820 and 'address' not in wg['peers'][0]
+    assert wg['listen_port'] == 51820
+    assert 'address' not in wg['peers'][0]
     for bad in [WG.replace(KEY, 'invalid'), WG.replace('Endpoint = 192.0.2.1:51820\n', ''), WG.replace('0.0.0.0/0, ::/0', '10.0.0.0/8'), WG * 2]:
         with pytest.raises(ValueError):
             parse_wireguard(bad)

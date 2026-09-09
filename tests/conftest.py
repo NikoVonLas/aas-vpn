@@ -8,6 +8,9 @@ import sys
 import pytest
 from fastapi.testclient import TestClient
 
+os.environ.setdefault('AWG_CONTAINER_IP', '192.0.2.45')
+os.environ.setdefault('VPN_DOCKER_CIDR', '192.0.2.0/24')
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'portal'))
 sys.path.insert(0, str(ROOT / 'router'))
