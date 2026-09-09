@@ -1,0 +1,8 @@
+{
+  "name": "aas-vpn-session",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "iron-webcrypto": "1.2.1"
+  }
+}

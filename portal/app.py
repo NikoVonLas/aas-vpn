@@ -1,13 +1,12 @@
-import base64
+import asyncio
 import html
 import io
-import hashlib
-import hmac
 import json
 import os
 import re
 import secrets
 import sqlite3
+import subprocess
 import time
 import uuid
 from contextlib import contextmanager
@@ -18,20 +17,83 @@ import pyotp
 import qrcode
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
+from fastapi.exceptions import RequestValidationError
+from pathlib import Path
+from routing import migrate, changed, parse_wireguard, normalize_rule, atomic_json
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+ADMIN_LOGIN_PATH = '/admin/login'
+ADMIN_PATH = '/admin'
+CABINET_PATH = '/cabinet'
+WG_CLIENT_PATH = '/api/client'
+USER_BY_PHONE = 'SELECT * FROM users WHERE phone=?'
+ACTIVE_USER_BY_PHONE = 'SELECT * FROM users WHERE phone=? AND enabled=1'
+
+HTTP_RESPONSES = {
+    303: {"description": 'Session required or action completed; follow Location'},
+    400: {"description": 'Invalid form or configuration'},
+    401: {"description": 'Invalid administrator credentials'},
+    403: {"description": 'CSRF check, account permission or device quota denied'},
+    404: {"description": 'Requested resource not found'},
+    409: {"description": 'Resource has assignments or conflicts with an existing account'},
+    410: {"description": 'Verification expired'},
+    413: {"description": 'Request body exceeds the limit'},
+    422: {"description": 'Form field validation failed'},
+    429: {"description": 'Verification attempt limit exceeded'},
+    502: {"description": 'VPN API unavailable'},
+    503: {"description": 'Authentication or phone verification service unavailable'},
+}
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, responses=HTTP_RESPONSES)
 app.mount("/assets", StaticFiles(directory="static"), name="assets")
 DB = os.getenv("PORTAL_DB", "/data/portal.db")
 ZVONOK = "https://zvonok.com/manager/cabapi_external/api/v1/phones"
 WG_AUTH_SNAPSHOT = os.getenv("WG_AUTH_SNAPSHOT", "/data/wg-auth.json")
 COOKIE_DOMAIN = os.environ["COOKIE_DOMAIN"]
 password_hasher = PasswordHasher()
+RU_CONFIG_DIR = Path(os.getenv("RU_CONFIG_DIR", "/ru-configs"))
+ROUTER_STATUS = Path(os.getenv("ROUTER_STATUS", "/routing-status/status.json"))
+device_lock = asyncio.Lock()
+
+
+@app.middleware("http")
+async def csrf_and_privacy(request, call_next):
+    token = request.cookies.get("__Host-aas_csrf") or secrets.token_urlsafe(32)
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        if not request.headers.get("content-length", "0").isdigit():
+            return JSONResponse({"detail": "Некорректный размер запроса"}, 400)
+        if int(request.headers.get("content-length", "0")) > 131072:
+            return JSONResponse({"detail": "Форма слишком большая"}, 413)
+        if request.headers.get("sec-fetch-site") == "cross-site":
+            return JSONResponse({"detail": "Запрос с другого сайта запрещён"}, 403)
+        # Double-submit token, host-only secure cookie; protect login/logout too.
+        if len(await request.body()) > 131072:
+            return JSONResponse({"detail": "Форма слишком большая"}, 413)
+        form = await request.form()
+        supplied = request.headers.get("X-CSRF-Token") or form.get("csrf_token", "")
+        if not isinstance(supplied, str) or not request.cookies.get("__Host-aas_csrf") or not secrets.compare_digest(supplied, token):
+            return JSONResponse({"detail": "Обновите страницу и повторите действие (CSRF)"}, 403)
+        # BaseHTTPMiddleware must leave the original body available to FastAPI.
+    response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        data = b"".join([chunk async for chunk in response.body_iterator]).decode()
+        field = f'<input type="hidden" name="csrf_token" value="{html.escape(token)}">'
+        data = re.sub(r"(<form\b[^>]*>)", lambda m: m[0] + field, data, flags=re.I)
+        cookies = response.headers.getlist("set-cookie")
+        response = HTMLResponse(data, status_code=response.status_code,
+                                headers={k: v for k, v in response.headers.items() if k.lower() not in {"content-length", "set-cookie"}})
+        for cookie in cookies:
+            response.headers.append("set-cookie", cookie)
+
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    if not request.cookies.get("__Host-aas_csrf"):
+        response.set_cookie("__Host-aas_csrf", token, httponly=True, secure=True, samesite="strict", path="/")
+    return response
+
 
 
 @contextmanager
@@ -66,7 +128,10 @@ def startup():
             synced_at INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
+        base_path = Path(os.getenv("ROUTING_BASE_CONFIG", "/etc/sing-box/config.json"))
+        migrate(con, json.loads(base_path.read_text()) if base_path.exists() else None)
         con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('session_secret',?)", (secrets.token_hex(32),))
+    RU_CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     sync_auth_cache()
 
 
@@ -97,46 +162,25 @@ def auth_cache(refresh=False):
     return row
 
 
-def b64url(data):
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def b64url_decode(value):
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
-
-def iron_key(secret, salt):
-    return hashlib.pbkdf2_hmac("sha1", secret.encode(), salt.encode(), 1, dklen=32)
+def iron_operation(operation, value, secret, ttl=0):
+    """Delegate wg-easy's wire format to its upstream library, not custom crypto."""
+    try:
+        result = subprocess.run(
+            ['node', str(Path(__file__).with_name('session.mjs'))],
+            input=json.dumps(dict(operation=operation, value=value, secret=secret, ttl=ttl)),
+            text=True, capture_output=True, check=True, timeout=5,
+        )
+        return json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise ValueError('Invalid session') from None
 
 
 def iron_seal(payload, secret, ttl=0):
-    enc_salt, mac_salt, iv = secrets.token_hex(32), secrets.token_hex(32), os.urandom(16)
-    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
-    padder = padding.PKCS7(128).padder()
-    padded = padder.update(raw) + padder.finalize()
-    encryptor = Cipher(algorithms.AES(iron_key(secret, enc_salt)), modes.CBC(iv)).encryptor()
-    encrypted = encryptor.update(padded) + encryptor.finalize()
-    expiration = str(int(time.time() * 1000) + ttl * 1000) if ttl else ""
-    base = f"Fe26.2**{enc_salt}*{b64url(iv)}*{b64url(encrypted)}*{expiration}"
-    digest = hmac.new(iron_key(secret, mac_salt), base.encode(), hashlib.sha256).digest()
-    return f"{base}*{mac_salt}*{b64url(digest)}"
+    return iron_operation('seal', payload, secret, ttl * 1000)
 
 
 def iron_unseal(value, secret):
-    parts = value.split("*")
-    if len(parts) != 8 or parts[0] != "Fe26.2":
-        raise ValueError("bad seal")
-    _, _, enc_salt, iv64, encrypted64, expiration, mac_salt, supplied = parts
-    base = "*".join(parts[:6])
-    expected = b64url(hmac.new(iron_key(secret, mac_salt), base.encode(), hashlib.sha256).digest())
-    if not hmac.compare_digest(expected, supplied):
-        raise ValueError("bad hmac")
-    if expiration and int(expiration) <= int(time.time() * 1000) - 60_000:
-        raise ValueError("expired")
-    decryptor = Cipher(algorithms.AES(iron_key(secret, enc_salt)), modes.CBC(b64url_decode(iv64))).decryptor()
-    padded = decryptor.update(b64url_decode(encrypted64)) + decryptor.finalize()
-    unpadder = padding.PKCS7(128).unpadder()
-    return json.loads((unpadder.update(padded) + unpadder.finalize()).decode())
+    return iron_operation('unseal', value, secret)
 
 
 def make_wg_cookie(user_id, remember=False):
@@ -178,17 +222,31 @@ document.addEventListener('click',event=>{if(event.target.id==='add-dial-number'
   document.getElementById('dial-numbers').append(row);initPhone(row.querySelector('input'));
 }});
 document.addEventListener('click',event=>{if(event.target.classList.contains('remove-number'))event.target.closest('.dial-number-row').remove()});
+function formError(detail,status){
+  if(typeof detail==='string')return detail;
+  if(Array.isArray(detail)){
+    const fields={name:'Имя',phone:'Телефон',device_limit:'Лимит устройств',numbers:'Номера',ru_exit_id:'RU-выход'};
+    const messages=detail.filter(x=>x&&typeof x.msg==='string').map(x=>{
+      const field=Array.isArray(x.loc)?x.loc.filter(v=>v!=='body').join('.'):'';
+      return `${fields[field]||field}: ${x.msg}`;
+    });
+    if(messages.length)return messages.join('\\n');
+  }
+  return `Ошибка HTTP ${status}`;
+}
 let adminSaving=false;
 document.addEventListener('submit',async event=>{
   const form=event.target;
-  const action=new URL(event.submitter?.formAction||form.action,location.href);
+  const action=new URL(event.submitter?.hasAttribute('formaction')?event.submitter.formAction:form.action,location.href);
   if(adminSaving||action.origin!==location.origin||(!action.pathname.startsWith('/admin/')&&action.pathname!=='/admin')||action.pathname==='/admin/login'||action.pathname==='/admin/logout')return;
   event.preventDefault();adminSaving=true;
   const submitter=event.submitter;submitter?.setAttribute('disabled','');
   try{
     const response=await fetch(action,{method:(form.method||'post').toUpperCase(),body:new FormData(form),headers:{'X-Requested-With':'fetch'}});
-    if(!response.ok){const error=await response.json().catch(()=>({detail:`Ошибка ${response.status}`}));throw new Error(error.detail||`Ошибка ${response.status}`)}
-    const pageResponse=await fetch('/admin',{headers:{Accept:'text/html'}});
+    if(response.redirected&&new URL(response.url).pathname==='/admin/login'){location.assign('/admin/login');return}
+    if(!response.ok){const error=await response.json().catch(()=>null);throw new Error(formError(error?.detail,response.status))}
+    const pageResponse=await fetch(location.pathname,{headers:{Accept:'text/html'}});
+    if(pageResponse.redirected&&new URL(pageResponse.url).pathname==='/admin/login'){location.assign('/admin/login');return}
     if(!pageResponse.ok)throw new Error('Не удалось обновить данные');
     const documentNew=new DOMParser().parseFromString(await pageResponse.text(),'text/html');
     document.querySelector('main').replaceWith(documentNew.querySelector('main'));
@@ -237,6 +295,7 @@ document.addEventListener('click',event=>{
 });
 </script>"""
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
+<script src=/assets/js/routing-status.js defer></script>
 <meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>{phone_head}
 <style>
 :root{{--bg:#f5f5f5;--card:#fff;--text:#262626;--muted:#737373;--line:#e5e5e5;--input:#fff;--red:#b91c1c;--red-hover:#991b1b;--soft:#f5f5f5}}
@@ -329,26 +388,25 @@ def admin_ok(request):
             return cached["enabled"] == 1 and session.get("data", {}).get("userId") == cached["user_id"]
         except (ValueError, KeyError, TypeError):
             return False
-        return False
 
 
 def require_admin(request):
     if not admin_ok(request):
-        raise HTTPException(303, headers={"Location": "/admin/login"})
+        raise HTTPException(303, headers={"Location": ADMIN_LOGIN_PATH})
 
 
 @app.exception_handler(HTTPException)
-async def friendly_http_error(request: Request, exc: HTTPException):
+def friendly_http_error(request: Request, exc: HTTPException):
     location = (exc.headers or {}).get("Location")
     if 300 <= exc.status_code < 400 and location:
         return RedirectResponse(location, status_code=exc.status_code)
     detail = str(exc.detail or "Не удалось выполнить запрос")
     if request.url.path.endswith("/status") or request.headers.get("X-Requested-With") == "fetch":
         return JSONResponse({"detail": detail}, status_code=exc.status_code, headers=exc.headers)
-    if request.url.path.startswith("/admin"):
-        back_url, back_text = "/admin/login", "Вернуться ко входу"
-    elif request.url.path.startswith("/device") or request.url.path == "/cabinet":
-        back_url, back_text = "/cabinet", "Вернуться в кабинет"
+    if request.url.path.startswith(ADMIN_PATH):
+        back_url, back_text = ADMIN_LOGIN_PATH, "Вернуться ко входу"
+    elif request.url.path.startswith("/device") or request.url.path == CABINET_PATH:
+        back_url, back_text = CABINET_PATH, "Вернуться в кабинет"
     else:
         back_url, back_text = "/", "Вернуться на главную"
     body = f"<section class=card><h1>Не получилось</h1><p>{html.escape(detail)}</p><a class=btn href='{back_url}'>{back_text}</a></section>"
@@ -358,7 +416,7 @@ async def friendly_http_error(request: Request, exc: HTTPException):
 
 
 @app.exception_handler(404)
-async def not_found_page(request: Request, exc):
+def not_found_page(request: Request, exc):
     body = """<section class='card not-found'><div class=glitch data-text=404>404</div><h1>Страница не найдена</h1><p class=muted>Такого адреса нет или страница была перемещена.</p><a class=btn href=/>На главную</a></section><style>
 .not-found{text-align:center;padding:48px 22px}.not-found h1{margin:12px 0 6px}.glitch{position:relative;display:inline-block;font-size:clamp(72px,18vw,150px);font-weight:900;line-height:.9;letter-spacing:-6px;color:var(--text);text-shadow:4px 0 var(--red),-4px 0 #0ea5e9;animation:glitch-shift 2.2s infinite steps(1)}
 .glitch::before,.glitch::after{content:attr(data-text);position:absolute;inset:0;overflow:hidden;pointer-events:none}.glitch::before{color:var(--red);clip-path:inset(12% 0 58% 0);transform:translate(-4px,-2px);animation:glitch-top 1.7s infinite steps(2)}.glitch::after{color:#0ea5e9;clip-path:inset(62% 0 8% 0);transform:translate(4px,2px);animation:glitch-bottom 1.3s infinite steps(2)}
@@ -389,17 +447,17 @@ def dial_numbers():
     return [phone_normalize(value) for value in re.split(r"[,\n]+", source) if value.strip()]
 
 
-@app.get("/admin/login")
+@app.get(ADMIN_LOGIN_PATH, responses=HTTP_RESPONSES)
 def admin_login_form():
     return page("Вход", "<section class=card><p class=muted>Используйте учётную запись администратора.</p><form class=stack method=post><label>Логин<input name=username autocomplete=username placeholder=admin required></label><label>Пароль<input name=password type=password autocomplete=current-password placeholder='••••••••' required></label><label>Код 2FA<input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code placeholder=123456></label><label style='display:flex;grid-template-columns:auto 1fr;align-items:center'><input style='width:auto' type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form></section>")
 
 
-@app.post("/admin/login")
+@app.post(ADMIN_LOGIN_PATH, responses=HTTP_RESPONSES)
 def admin_login(username: str = Form(...), password: str = Form(...), totp: str = Form(""), remember: str = Form("")):
     cached = auth_cache(refresh=True)
     user_ok = secrets.compare_digest(username, cached["username"])
     try:
-        password_ok = password_hasher.verify(cached["password_hash"], password)
+        password_ok = bool(cached["password_hash"]) and password_hasher.verify(cached["password_hash"], password)
     except (VerifyMismatchError, InvalidHashError):
         password_ok = False
     totp_ok = True
@@ -407,34 +465,35 @@ def admin_login(username: str = Form(...), password: str = Form(...), totp: str 
         totp_ok = bool(cached["totp_key"] and pyotp.TOTP(cached["totp_key"]).verify(totp, valid_window=1))
     if not (cached["enabled"] and user_ok and password_ok and totp_ok):
         raise HTTPException(401, "Неверный логин, пароль или код 2FA")
-    response = RedirectResponse("/admin", 303)
+    response = RedirectResponse(ADMIN_PATH, 303)
     max_age = cached["session_timeout"] if remember else None
     response.set_cookie("wg-easy", make_wg_cookie(cached["user_id"], bool(remember)), domain=COOKIE_DOMAIN, path="/", httponly=True, secure=True, samesite="lax", max_age=max_age)
     return response
 
 
-@app.post("/admin/logout")
+@app.post("/admin/logout", responses=HTTP_RESPONSES)
 def admin_logout():
-    response = RedirectResponse("/admin/login", 303)
+    response = RedirectResponse(ADMIN_LOGIN_PATH, 303)
     response.delete_cookie("wg-easy", domain=COOKIE_DOMAIN, path="/")
+    response.delete_cookie("wg-easy", path="/")
     return response
 
 
-@app.get("/healthz")
+@app.get("/healthz", responses=HTTP_RESPONSES)
 def health():
     return {"ok": True}
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, responses=HTTP_RESPONSES)
 def index():
     return page("", "<section class=card><form class=stack method=post action=/start><input class=phone-input data-target=phone-value type=tel autocomplete=tel inputmode=tel aria-label='Номер телефона' placeholder='999 123-45-67' required><input id=phone-value name=phone type=hidden><button>Продолжить</button></form></section>", phone_widget=True)
 
 
-@app.post("/start")
+@app.post("/start", responses=HTTP_RESPONSES)
 async def start(phone: str = Form(...)):
     phone = phone_normalize(phone)
     with db() as con:
-        user = con.execute("SELECT * FROM users WHERE phone=? AND enabled=1", (phone,)).fetchone()
+        user = con.execute(ACTIVE_USER_BY_PHONE, (phone,)).fetchone()
         recent = con.execute("SELECT count(*) FROM verifications WHERE phone=? AND created_at>?", (phone, int(time.time()) - 600)).fetchone()[0]
     if not user:
         raise HTTPException(403, "Этот номер не добавлен владельцем")
@@ -459,11 +518,60 @@ async def start(phone: str = Form(...)):
     return RedirectResponse(f"/verify/{token}", 303)
 
 
+def call_records(result):
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        return next((result[key] for key in ("results", "calls", "data")
+                     if isinstance(result.get(key), list)), [result])
+    return []
+
+
+def call_activity(call):
+    timestamps = []
+    for field in ("created", "updated"):
+        try:
+            timestamps.append(datetime.fromisoformat(str(call.get(field, "")).replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            pass
+    return max(timestamps) if timestamps else None
+
+
+def matching_call(result, row):
+    candidates = []
+    for call in call_records(result):
+        if not isinstance(call, dict):
+            continue
+        activity = call_activity(call)
+        if activity is not None and row["created_at"] - 5 <= activity <= row["created_at"] + 600:
+            candidates.append((activity, call))
+    if not candidates:
+        return None
+    _, result = min(candidates, key=lambda item: item[0])
+    call_id = str(result.get("call_id") or result.get("id") or "")
+    if call_id:
+        with db() as con:
+            con.execute("UPDATE verifications SET call_id=? WHERE token=? AND (call_id IS NULL OR call_id='')", (call_id, row["token"]))
+    return result
+
+
+def call_status_values(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ("call_status", "status", "status_name"):
+                yield str(item).lower()
+            yield from call_status_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from call_status_values(item)
+
+
 async def zvonok_status(row):
     params = {"public_key": os.environ["ZVONOK_PUBLIC_KEY"], "campaign_id": os.environ["ZVONOK_CAMPAIGN_ID"], "phone": row["phone"], "expand": 1}
     endpoint = "calls_by_phone/"
     if row["call_id"]:
-        params.pop("campaign_id"); params.pop("phone")
+        params.pop("campaign_id")
+        params.pop("phone")
         params["call_id"] = row["call_id"]
         endpoint = "call_by_id/"
     async with httpx.AsyncClient(timeout=15) as client:
@@ -471,49 +579,13 @@ async def zvonok_status(row):
         response.raise_for_status()
         result = response.json()
     if not row["call_id"]:
-        if isinstance(result, list):
-            calls = result
-        elif isinstance(result, dict):
-            calls = next((result[key] for key in ("results", "calls", "data") if isinstance(result.get(key), list)), [result])
-        else:
-            calls = []
-        candidates = []
-        for call in calls:
-            if not isinstance(call, dict):
-                continue
-            timestamps = []
-            for field in ("created", "updated"):
-                try:
-                    timestamps.append(datetime.fromisoformat(str(call.get(field, "")).replace("Z", "+00:00")).timestamp())
-                except ValueError:
-                    pass
-            if not timestamps:
-                continue
-            activity = max(timestamps)
-            if row["created_at"] - 5 <= activity <= row["created_at"] + 600:
-                candidates.append((activity, call))
-        if not candidates:
-            return False
-        _, result = min(candidates, key=lambda item: item[0])
-        call_id = str(result.get("call_id") or result.get("id") or "")
-        if call_id:
-            with db() as con:
-                con.execute("UPDATE verifications SET call_id=? WHERE token=? AND (call_id IS NULL OR call_id='')", (call_id, row["token"]))
+        result = matching_call(result, row)
     success = {x.strip().lower() for x in os.getenv("ZVONOK_SUCCESS_STATUSES", "processed,success,confirmed,pincode_ok").split(",")}
-    def values(value):
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if key in ("call_status", "status", "status_name"):
-                    yield str(item).lower()
-                yield from values(item)
-        elif isinstance(value, list):
-            for item in value:
-                yield from values(item)
-    return any(value in success for value in values(result))
+    return any(value in success for value in call_status_values(result))
 
 
-@app.get("/verify/{token}")
-async def verify(token: str):
+@app.get("/verify/{token}", responses=HTTP_RESPONSES)
+def verify(token: str):
     with db() as con:
         row = con.execute("SELECT * FROM verifications WHERE token=?", (token,)).fetchone()
     if not row or time.time() - row["created_at"] > 600:
@@ -529,7 +601,7 @@ async def verify(token: str):
 const statusNode=document.getElementById('call-status');
 async function pollCall(){{
   try{{
-    const response=await fetch('/verify/{token}/status',{{cache:'no-store'}});
+    const response=await fetch(location.pathname + '/status',{{cache:'no-store'}});
     const result=await response.json();
     if(result.verified){{statusNode.textContent='Звонок подтверждён';location.replace('/cabinet');return}}
     statusNode.textContent='Ожидаем подтверждение звонка…';
@@ -540,7 +612,7 @@ setTimeout(pollCall,1500);
 </script>""")
 
 
-@app.get("/verify/{token}/status")
+@app.get("/verify/{token}/status", responses=HTTP_RESPONSES)
 async def verify_status(token: str):
     with db() as con:
         row = con.execute("SELECT * FROM verifications WHERE token=?", (token,)).fetchone()
@@ -561,98 +633,167 @@ async def verify_status(token: str):
     return response
 
 
-async def wg_session():
+def wg_session():
     client = httpx.AsyncClient(base_url=os.environ["AWG_API_URL"], timeout=20)
     cached = auth_cache(refresh=True)
     client.cookies.set("wg-easy", make_wg_cookie(cached["user_id"]), path="/")
     return client
 
 
-@app.get("/cabinet")
-def cabinet(request: Request):
-    phone = session_phone(request)
+@app.get(CABINET_PATH, responses=HTTP_RESPONSES)
+def cabinet(request: Request, phone: str = ""):
+    is_admin = admin_ok(request)
+    if phone:
+        require_admin(request)
+    else:
+        phone = session_phone(request)
     with db() as con:
-        user = con.execute("SELECT * FROM users WHERE phone=? AND enabled=1", (phone,)).fetchone()
+        user = con.execute(USER_BY_PHONE, (phone,)).fetchone()
         devices = con.execute("SELECT * FROM devices WHERE phone=? ORDER BY id", (phone,)).fetchall()
     if not user:
         raise HTTPException(403)
     rows = "".join(f"""<div class=device-card><div class=device-name>{html.escape(x['name'])}</div><div class=device-actions><button type=button class='qr-button' data-qr-url='/device/{x['id']}/qr'>QR</button><a class=btn href='/device/{x['id']}/config'>Файл</a><button type=button class='secondary share-button' data-device-id='{x['id']}' data-device-name='{html.escape(x['name'], quote=True)}'>Поделиться QR</button><button type=button class='danger-soft delete-device' data-delete-url='/device/{x['id']}/delete' data-device-name='{html.escape(x['name'], quote=True)}'>Удалить</button></div></div>""" for x in devices)
+    rows += device_routing_forms(devices, user, is_admin)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Телефон' required></label><button>Добавить устройство</button></form>"
+    if is_admin:
+        create = create.replace("action=/device>", f"action=/device><input type=hidden name=phone value=\"{html.escape(phone)}\">")
     guide = """<details class='card guide'><summary>Как подключиться</summary><h3>Скачать AmneziaWG</h3><div class=app-links><a href='https://play.google.com/store/apps/details?id=org.amnezia.awg' target=_blank rel=noopener>Android</a><a href='https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>iPhone / iPad</a><a href='https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>macOS</a><a href='https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest' target=_blank rel=noopener>Windows</a></div><h3>На сайте</h3><ul><li>Под этой инструкцией найдите поле <b>«Название устройства»</b>.</li><li>Напишите любое понятное название, например <b>Телефон</b>, и нажмите <b>«Добавить устройство»</b>.</li><li>Ниже появится карточка устройства с кнопками.</li></ul><h3>Если сайт открыт на телефоне или компьютере, на который нужно установить VPN</h3><ul><li>Установите <b>AmneziaWG</b> по подходящей ссылке выше.</li><li>В карточке устройства на этом сайте нажмите <b>«Файл»</b>.</li><li>Откройте AmneziaWG и нажмите кнопку добавления подключения.</li><li>Выберите импорт из файла, найдите скачанный файл настроек и откройте его.</li><li>Либо нажмите <b>«Поделиться QR»</b>, отправьте картинку на другое устройство и следуйте инструкции ниже.</li></ul><h3>Если сайт или отправленный QR открыт на другом устройстве</h3><ul><li>Установите и откройте <b>AmneziaWG</b> на подключаемом устройстве.</li><li>Нажмите в приложении кнопку добавления подключения и выберите сканирование QR-кода.</li><li>На другом устройстве откройте полученную картинку. Если там открыт сайт, нажмите <b>«QR»</b> в карточке устройства.</li><li>Отсканируйте появившийся код.</li></ul></details>"""
     guide = guide.replace("https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>macOS", "macappstore://apps.apple.com/app/id6478942365'>macOS")
     guide = guide.replace("https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest' target=_blank rel=noopener>Windows", "/download/amneziawg/windows'>Windows")
-    return page(f"Привет, {user['name']}", f"{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
+    return page(f"Привет, {user['name']}", f"{admin_nav() if is_admin else ''}{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
 
 
-@app.post("/device")
-async def create_device(request: Request, name: str = Form(...)):
-    phone = session_phone(request)
+@app.get("/admin/users/{phone}/devices", responses=HTTP_RESPONSES)
+def admin_devices(request: Request, phone: str):
+    require_admin(request)
+    return cabinet(request, phone)
+
+
+@app.post("/device", responses=HTTP_RESPONSES)
+async def create_device(request: Request, name: str = Form(...), phone: str = Form("")):
+    if admin_ok(request) and phone:
+        phone = phone_normalize(phone)
+    else:
+        phone = session_phone(request)
     name = name.strip()[:40]
+    if not name:
+        raise HTTPException(400, "Укажите название устройства")
+    # Serialize create + quota check so concurrent requests cannot exceed the limit.
+    async with device_lock:
+        with db() as con:
+            user = con.execute(USER_BY_PHONE, (phone,)).fetchone()
+            count = con.execute("SELECT count(*) FROM devices WHERE phone=?", (phone,)).fetchone()[0]
+        if not user or (not user["enabled"] and not admin_ok(request)) or count >= user["device_limit"]:
+            raise HTTPException(403, "Лимит устройств исчерпан или выдача запрещена")
+        wg_name = f"{latin_slug(user['name'], 'user')}-{latin_slug(name, 'device')}-{secrets.token_hex(3)}"
+        async with wg_session() as client:
+            response = await client.post(WG_CLIENT_PATH, json={"name": wg_name, "expiresAt": None})
+            response.raise_for_status()
+            client_id = str(response.json()["clientId"])
+            # Persist identity before reconciliation; no name-based lookup.
+            with db() as con:
+                con.execute("INSERT INTO devices(phone,name,wg_client_id,created_at) VALUES(?,?,?,?)", (phone, name, client_id, int(time.time())))
+                changed(con)
+            try:
+                response = await client.get(WG_CLIENT_PATH)
+                response.raise_for_status()
+                reconcile_clients(response.json())
+            except (httpx.HTTPError, ValueError):
+                pass  # Isolated sync retries from the wg-easy database every 15 seconds.
+    return device_redirect(request, phone)
+
+
+def reconcile_clients(clients):
+    import ipaddress
+    mapping = {str(x["id"]): str(ipaddress.IPv4Address(x["ipv4Address"])) for x in clients}
     with db() as con:
-        user = con.execute("SELECT * FROM users WHERE phone=? AND enabled=1", (phone,)).fetchone()
-        count = con.execute("SELECT count(*) FROM devices WHERE phone=?", (phone,)).fetchone()[0]
-    if not user or count >= user["device_limit"]:
-        raise HTTPException(403, "Лимит устройств исчерпан")
-    wg_base_name = f"{latin_slug(user['name'], 'user')}-{latin_slug(name, 'device')}"
-    async with await wg_session() as client:
-        clients = (await client.get("/api/client")).json()
-        existing_names = {client["name"] for client in clients}
-        wg_name = wg_base_name
-        suffix = 2
-        while wg_name in existing_names:
-            wg_name = f"{wg_base_name[:61]}-{suffix}"
-            suffix += 1
-        response = await client.post("/api/client", json={"name": wg_name, "expiresAt": None})
-        response.raise_for_status()
-        clients = (await client.get("/api/client")).json()
-    created = next(x for x in clients if x["name"] == wg_name)
-    with db() as con:
-        con.execute("INSERT INTO devices(phone,name,wg_client_id,created_at) VALUES(?,?,?,?)", (phone, name, str(created["id"]), int(time.time())))
-    return RedirectResponse("/cabinet", 303)
+        for row in con.execute("SELECT id,wg_client_id,vpn_ip FROM devices").fetchall():
+            ip = mapping.get(row["wg_client_id"])
+            if ip != row["vpn_ip"]:
+                con.execute("UPDATE devices SET vpn_ip=? WHERE id=?", (ip, row["id"]))
+                changed(con)
 
 
 def owned_device(request, device_id):
-    phone = session_phone(request)
+    administrator = admin_ok(request)
+    phone = None if administrator else session_phone(request)
     with db() as con:
-        row = con.execute("SELECT * FROM devices WHERE id=? AND phone=?", (device_id, phone)).fetchone()
-    if not row:
-        raise HTTPException(404)
+        row = con.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+    if not row or (not administrator and row["phone"] != phone):
+        raise HTTPException(404, "Устройство не найдено")
     return row
 
 
-@app.post("/device/{device_id}/delete")
+def device_redirect(request, phone):
+    return RedirectResponse(f"/admin/users/{phone}/devices" if admin_ok(request) else CABINET_PATH, 303)
+
+
+@app.post("/device/{device_id}/rename", responses=HTTP_RESPONSES)
+def rename_device(request: Request, device_id: int, name: str = Form(...)):
+    row = owned_device(request, device_id)
+    name = name.strip()[:40]
+    if not name:
+        raise HTTPException(400, "Укажите название")
+    with db() as con:
+        con.execute("UPDATE devices SET name=? WHERE id=?", (name, device_id))
+    return device_redirect(request, row["phone"])
+
+
+@app.post("/device/{device_id}/ru-exit", responses=HTTP_RESPONSES)
+def assign_exit(request: Request, device_id: int, ru_exit_id: int = Form(0)):
+    row = owned_device(request, device_id)
+    administrator = admin_ok(request)
+    with db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        permission = con.execute("SELECT can_change_ru_exit FROM users WHERE phone=?", (row["phone"],)).fetchone()
+        if not administrator and not permission[0]:
+            raise HTTPException(403, "Смена RU-выхода запрещена администратором")
+        if ru_exit_id and not con.execute("SELECT 1 FROM ru_exits WHERE id=?", (ru_exit_id,)).fetchone():
+            raise HTTPException(400, "RU-выход не найден")
+        con.execute("UPDATE devices SET ru_exit_id=?,assigned_by=? WHERE id=?",
+                    (int(ru_exit_id) if ru_exit_id else None, ('admin' if administrator else 'user') if ru_exit_id else None, device_id))
+        changed(con)
+    return device_redirect(request, row["phone"])
+
+
+@app.post("/device/{device_id}/delete", responses=HTTP_RESPONSES)
 async def delete_device(request: Request, device_id: int):
     row = owned_device(request, device_id)
-    async with await wg_session() as client:
+    async with wg_session() as client:
         response = await client.delete(f"/api/client/{row['wg_client_id']}")
         if response.status_code != 404:
             response.raise_for_status()
     with db() as con:
         con.execute("DELETE FROM devices WHERE id=? AND phone=?", (device_id, row["phone"]))
-    return RedirectResponse("/cabinet", 303)
+        changed(con)
+    return device_redirect(request, row["phone"])
 
 
-@app.get("/device/{device_id}/config")
+@app.get("/device/{device_id}/config", responses=HTTP_RESPONSES)
 async def config(request: Request, device_id: int):
     row = owned_device(request, device_id)
-    async with await wg_session() as client:
-        data = (await client.get(f"/api/client/{row['wg_client_id']}/configuration")).content
+    async with wg_session() as client:
+        response = await client.get(f"/api/client/{row['wg_client_id']}/configuration")
+        response.raise_for_status()
+        data = response.content
     filename = f"{latin_slug(row['name'], f'device-{device_id}')}.conf"
     disposition = f'attachment; filename="{filename}"'
     return Response(data, media_type="application/x-wireguard-profile", headers={"Content-Disposition": disposition, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
-@app.get("/device/{device_id}/qr")
+@app.get("/device/{device_id}/qr", responses=HTTP_RESPONSES)
 async def qr(request: Request, device_id: int):
     row = owned_device(request, device_id)
-    async with await wg_session() as client:
-        config = (await client.get(f"/api/client/{row['wg_client_id']}/configuration")).text
+    async with wg_session() as client:
+        response = await client.get(f"/api/client/{row['wg_client_id']}/configuration")
+        response.raise_for_status()
+        config = response.text
     image = qrcode.make(config)
     out = io.BytesIO(); image.save(out, format="PNG")
     return Response(out.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
-@app.get("/download/amneziawg/windows")
+@app.get("/download/amneziawg/windows", responses=HTTP_RESPONSES)
 async def download_amneziawg_windows(request: Request):
     session_phone(request)
     releases_url = "https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest"
@@ -667,7 +808,7 @@ async def download_amneziawg_windows(request: Request):
         return RedirectResponse(releases_url, 302, headers={"Cache-Control": "no-store"})
 
 
-@app.get("/admin")
+@app.get(ADMIN_PATH, responses=HTTP_RESPONSES)
 def admin(request: Request):
     require_admin(request)
     with db() as con:
@@ -679,6 +820,7 @@ def admin(request: Request):
       <label>Имя<input name=name maxlength=80 value='{html.escape(x['name'])}' required></label>
       <label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel value='{html.escape(x['phone'])}' required></label>
       <label><span class=label-row><span>Лимит</span><span class=device-count title='Выдано конфигураций'>{x['device_count']}/{x['device_limit']}</span></span><input name=device_limit type=number min=1 max=20 value='{x['device_limit']}' required></label>
+      <label><input style='width:auto' type=checkbox name=can_change_ru_exit value=1 {'checked' if x['can_change_ru_exit'] else ''}> Смена RU-выхода</label><a class=btn href='/admin/users/{html.escape(x['phone'])}/devices'>Устройства</a>
       <div class=actions><button>Сохранить</button><button class='secondary{' danger-soft' if x['enabled'] else ''}' formaction='/admin/toggle/{html.escape(x['phone'])}'>{'Запретить выдачу' if x['enabled'] else 'Разрешить выдачу'}</button></div>
     </form>""" for x in users)
     number_fields = "".join(f"""<div class=dial-number-row><input class=phone-input name=numbers type=tel autocomplete=off inputmode=tel value='{html.escape(number)}' required><button type=button class='secondary remove-number'>Удалить</button></div>""" for number in dial_numbers())
@@ -689,18 +831,19 @@ def admin(request: Request):
     <section class=card><div class=section-head><div><h2>Разрешённые пользователи</h2><div class=muted>{len(users)} пользователей · выдано {issued_total} из {allowed_total} конфигураций · изменения сохраняются отдельно для каждой строки</div></div></div><div class=users>{rows or '<div class=muted>Список пока пуст.</div>'}</div></section>
     <section class=card><div class=section-head><div><h2>Номера подтверждения Zvonok</h2><div class=muted>Выдаются последовательно по кругу.</div></div><button id=add-dial-number type=button class=secondary>Добавить номер</button></div><form class=stack method=post action=/admin/settings/dial-numbers><div id=dial-numbers>{number_fields}</div><div class=dial-save><button>Сохранить номера</button></div></form></section>
     <form method=post action=/admin/logout><button class='secondary'>Выйти</button></form>"""
-    return page("Управление доступом", body, show_header=True, phone_widget=True)
+    return page("Управление доступом", admin_nav() + body, show_header=True, phone_widget=True)
 
 
-@app.post("/admin/user")
-@app.post("/admin")
-def admin_save(request: Request, name: str = Form(...), phone: str = Form(...), device_limit: int = Form(...), original_phone: str = Form("")):
+@app.post("/admin/user", responses=HTTP_RESPONSES)
+@app.post(ADMIN_PATH, responses=HTTP_RESPONSES)
+def admin_save(request: Request, name: str = Form(...), phone: str = Form(...), device_limit: int = Form(...), original_phone: str = Form(""), can_change_ru_exit: str = Form("")):
     require_admin(request)
     phone = phone_normalize(phone)
     original_phone = phone_normalize(original_phone) if original_phone else ""
     if not 1 <= device_limit <= 20:
         raise HTTPException(400)
     with db() as con:
+        con.execute("BEGIN IMMEDIATE")
         if original_phone and original_phone != phone:
             if con.execute("SELECT 1 FROM users WHERE phone=?", (phone,)).fetchone():
                 raise HTTPException(409, "Новый номер уже используется")
@@ -708,10 +851,14 @@ def admin_save(request: Request, name: str = Form(...), phone: str = Form(...), 
             con.execute("UPDATE devices SET phone=? WHERE phone=?", (phone, original_phone))
             con.execute("UPDATE verifications SET phone=? WHERE phone=?", (phone, original_phone))
         con.execute("INSERT INTO users(phone,name,device_limit,enabled,created_at) VALUES(?,?,?,1,?) ON CONFLICT(phone) DO UPDATE SET name=excluded.name,device_limit=excluded.device_limit", (phone, name.strip()[:80], device_limit, int(time.time())))
-    return RedirectResponse("/admin", 303)
+        con.execute("UPDATE users SET can_change_ru_exit=? WHERE phone=?", (int(can_change_ru_exit == "1"), phone))
+        if can_change_ru_exit != "1":
+            con.execute("UPDATE devices SET ru_exit_id=NULL,assigned_by=NULL WHERE phone=? AND assigned_by='user'", (phone,))
+        changed(con)
+    return RedirectResponse(ADMIN_PATH, 303)
 
 
-@app.post("/admin/settings/dial-numbers")
+@app.post("/admin/settings/dial-numbers", responses=HTTP_RESPONSES)
 def admin_dial_numbers(request: Request, numbers: list[str] = Form(...)):
     require_admin(request)
     normalized = [phone_normalize(value) for value in numbers if value.strip()]
@@ -720,13 +867,228 @@ def admin_dial_numbers(request: Request, numbers: list[str] = Form(...)):
     with db() as con:
         con.execute("INSERT INTO settings(key,value) VALUES('dial_numbers',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("\n".join(dict.fromkeys(normalized)),))
         con.execute("INSERT INTO settings(key,value) VALUES('dial_number_index','0') ON CONFLICT(key) DO UPDATE SET value='0'")
-    return RedirectResponse("/admin", 303)
+    return RedirectResponse(ADMIN_PATH, 303)
 
 
-@app.post("/admin/toggle/{phone}")
+@app.post("/admin/toggle/{phone}", responses=HTTP_RESPONSES)
 def admin_toggle(request: Request, phone: str):
     require_admin(request)
     phone = phone_normalize(phone)
     with db() as con:
         con.execute("UPDATE users SET enabled=1-enabled WHERE phone=?", (phone,))
-    return RedirectResponse("/admin", 303)
+    return RedirectResponse(ADMIN_PATH, 303)
+
+
+@app.exception_handler(RequestValidationError)
+def validation_error(request: Request, exc: RequestValidationError):
+    # Never return validation inputs: upload/config fields may contain private keys.
+    messages = {"missing": "Обязательное поле", "int_parsing": "Введите целое число", "int_type": "Введите целое число", "string_type": "Введите текст"}
+    errors = [{"loc": x["loc"], "msg": messages.get(x["type"], x["msg"])} for x in exc.errors()]
+    if request.headers.get('X-Requested-With') == 'fetch':
+        return JSONResponse({'detail': errors}, 422)
+    return friendly_http_error(request, HTTPException(422, '; '.join(f"{'.'.join(map(str, x['loc'][1:]))}: {x['msg']}" for x in errors)))
+
+
+@app.exception_handler(httpx.HTTPError)
+def upstream_error(request: Request, exc):
+    return friendly_http_error(request, HTTPException(502, 'Сервис VPN временно недоступен'))
+
+
+def admin_nav():
+    return '<nav class=app-links><a href=/admin>Пользователи</a><a href=/admin/ru-exits>RU-выходы</a><a href=/admin/routing>Маршрутизация</a></nav>'
+
+
+def routing_status():
+    try:
+        status = json.loads(ROUTER_STATUS.read_text())
+        if time.time() - status.get('updated_at', 0) > 45:
+            return {'state': 'stale', 'message': 'Контроллер не отвечает'}
+        return status
+    except (OSError, ValueError):
+        return {'state': 'pending', 'message': 'Ожидание контроллера'}
+
+
+def status_text(status):
+    with db() as con:
+        revision = int(con.execute("SELECT value FROM settings WHERE key='routing_revision'").fetchone()[0])
+    if status.get('applied_revision') != revision and status.get('state') == 'applied':
+        return 'Ожидает применения'
+    return {'applied': 'Применено', 'error': 'Ошибка применения; сохранена рабочая конфигурация',
+            'pending': 'Ожидание контроллера', 'stale': 'Контроллер не отвечает'}.get(status.get('state'), 'Ожидает применения')
+
+
+def device_routing_forms(devices, user, administrator):
+    with db() as con:
+        exits = con.execute('SELECT id,name FROM ru_exits ORDER BY id').fetchall()
+        default = int(con.execute("SELECT value FROM settings WHERE key='ru_default'").fetchone()[0])
+    names = {x['id']: x['name'] for x in exits}
+    status = routing_status()
+    result = f'<p class=muted data-routing-state>{html.escape(status_text(status))}</p>'
+    for device in devices:
+        selected = device['ru_exit_id']
+        actual = status.get('devices', {}).get(str(device['id']), {})
+        effective = names.get(actual.get('effective'), 'Недоступен') if status.get('state') not in {'stale', 'pending'} else 'Неизвестно'
+        assigned = names.get(selected, 'По умолчанию: ' + names.get(default, '—'))
+        fallback = ' · резервный режим' if actual.get('fallback') else ''
+        result += f"<section class=card><h3>{html.escape(device['name'])}</h3><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
+        if not device['vpn_ip']:
+            result += '<p class=muted>Ожидает сопоставления VPN-IP</p>'
+        result += f"<form class=device-form method=post action='/device/{device['id']}/rename'><label>Название<input name=name maxlength=40 value='{html.escape(device['name'], quote=True)}' required></label><button>Переименовать</button></form>"
+        if administrator or user['can_change_ru_exit']:
+            options = '<option value="">По умолчанию</option>' + ''.join(f"<option value='{x['id']}' {'selected' if x['id'] == selected else ''}>{html.escape(x['name'])}</option>" for x in exits)
+            result += f"<form class=device-form method=post action='/device/{device['id']}/ru-exit'><label>RU-выход<select name=ru_exit_id>{options}</select></label><button>Сохранить выход</button></form>"
+        result += '</section>'
+    return result
+
+
+@app.get('/admin/ru-exits', responses=HTTP_RESPONSES)
+def ru_exits_page(request: Request):
+    require_admin(request)
+    with db() as con:
+        exits = con.execute('SELECT id,name,legacy FROM ru_exits ORDER BY id').fetchall()
+        default = int(con.execute("SELECT value FROM settings WHERE key='ru_default'").fetchone()[0])
+    status = routing_status()
+    body = admin_nav() + f'<p data-routing-state>{html.escape(status_text(status))}</p>'
+    for node in exits:
+        state = status.get('exits', {}).get(str(node['id']), {})
+        available = ('Доступен' if state.get('healthy') else 'Недоступен') if status.get('state') not in {'pending', 'stale'} and state else 'Проверяется'
+        body += f"<section class=card><h2>{html.escape(node['name'])}{' · По умолчанию' if node['id'] == default else ''}</h2><p data-exit-state='{node['id']}'>{available}</p>"
+        body += f"<form class=stack method=post enctype=multipart/form-data action='/admin/ru-exits/{node['id']}'><label>Название<input name=name maxlength=80 value='{html.escape(node['name'], quote=True)}' required></label>"
+        if not node['legacy']:
+            body += '<label>Заменить конфиг<input type=file name=config_upload accept=.conf></label><label>Или вставить новый конфиг<textarea name=config_text rows=4 autocomplete=off></textarea></label>'
+        body += '<button>Сохранить</button></form>'
+        if node['id'] != default:
+            body += f"<form method=post action='/admin/ru-exits/{node['id']}/default'><button>Сделать выходом по умолчанию</button></form>"
+        body += f"<form method=post action='/admin/ru-exits/{node['id']}/delete'><button class=secondary>Удалить</button></form></section>"
+    body += '''<section class=card><h2>Добавить RU-выход</h2><form class=stack method=post enctype=multipart/form-data action=/admin/ru-exits><label>Название<input name=name maxlength=80 required></label><label>WireGuard .conf<input type=file name=config_upload accept=.conf></label><label>Или вставьте текст<textarea name=config_text rows=8 autocomplete=off></textarea></label><p class=muted>DNS остаётся под управлением AdGuard. Командные hooks не допускаются. IPv6 отключён.</p><button>Добавить</button></form></section>'''
+    return page('RU-выходы', body, show_header=True)
+
+
+@app.post('/admin/ru-exits', responses=HTTP_RESPONSES)
+@app.post('/admin/ru-exits/{exit_id}', responses=HTTP_RESPONSES)
+async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...), config_text: str = Form(''), config_upload: UploadFile = File(None)):
+    require_admin(request)
+    name = name.strip()[:80]
+    if not name:
+        raise HTTPException(400, 'Укажите название')
+    if config_upload and config_upload.filename:
+        if config_text.strip():
+            raise HTTPException(400, 'Выберите файл или текст конфига')
+        try:
+            config_text = (await config_upload.read(65537)).decode('utf-8-sig')
+        except UnicodeError:
+            raise HTTPException(400, 'Конфиг должен быть текстом UTF-8') from None
+    endpoint = None
+    if config_text.strip():
+        try:
+            endpoint = parse_wireguard(config_text)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from None
+    with db() as con:
+        con.execute('BEGIN IMMEDIATE')
+        old = con.execute('SELECT * FROM ru_exits WHERE id=?', (exit_id,)).fetchone() if exit_id else None
+        if exit_id and not old:
+            raise HTTPException(404, 'RU-выход не найден')
+        if old and old['legacy'] and endpoint:
+            raise HTTPException(400, 'Для нового конфига добавьте отдельный RU-выход')
+        if not old and not endpoint:
+            raise HTTPException(400, 'Загрузите или вставьте WireGuard-конфиг')
+        if not old and con.execute('SELECT count(*) FROM ru_exits').fetchone()[0] >= 64:
+            raise HTTPException(400, 'Достигнут лимит 64 выходов')
+        filename = old['config_file'] if old else None
+        if endpoint:
+            # Immutable filenames keep a consistent snapshot across DB commits.
+            filename = secrets.token_hex(16) + '.json'
+            atomic_json(RU_CONFIG_DIR / filename, endpoint)
+        if old:
+            con.execute('UPDATE ru_exits SET name=?,config_file=? WHERE id=?', (name, filename, exit_id))
+        else:
+            con.execute('INSERT INTO ru_exits(name,config_file) VALUES(?,?)', (name, filename))
+        changed(con)
+    return RedirectResponse('/admin/ru-exits', 303)
+
+
+@app.post('/admin/ru-exits/{exit_id}/default', responses=HTTP_RESPONSES)
+def default_ru_exit(request: Request, exit_id: int):
+    require_admin(request)
+    with db() as con:
+        con.execute('BEGIN IMMEDIATE')
+        if not con.execute('SELECT 1 FROM ru_exits WHERE id=?', (exit_id,)).fetchone():
+            raise HTTPException(404, 'RU-выход не найден')
+        con.execute("UPDATE settings SET value=? WHERE key='ru_default'", (str(exit_id),))
+        changed(con)
+    return RedirectResponse('/admin/ru-exits', 303)
+
+
+@app.post('/admin/ru-exits/{exit_id}/delete', responses=HTTP_RESPONSES)
+def delete_ru_exit(request: Request, exit_id: int):
+    require_admin(request)
+    with db() as con:
+        con.execute('BEGIN IMMEDIATE')
+        if con.execute("SELECT 1 FROM settings WHERE key='ru_default' AND value=?", (str(exit_id),)).fetchone() or con.execute('SELECT 1 FROM devices WHERE ru_exit_id=?', (exit_id,)).fetchone():
+            raise HTTPException(409, 'Сначала снимите назначения и выберите другой выход по умолчанию')
+        con.execute('DELETE FROM ru_exits WHERE id=?', (exit_id,))
+        changed(con)
+    return RedirectResponse('/admin/ru-exits', 303)
+
+
+@app.get('/admin/routing', responses=HTTP_RESPONSES)
+def routing_page(request: Request):
+    require_admin(request)
+    with db() as con:
+        rules = con.execute('SELECT * FROM routing_rules ORDER BY value').fetchall()
+    body = admin_nav() + f'<p data-routing-state>{html.escape(status_text(routing_status()))}</p><form class=stack method=post action=/admin/routing>'
+    for target, title in [('ru', 'Через RU'), ('direct', 'Через обычный выход')]:
+        values = '\n'.join(('.' if x['kind'] == 'suffix' else '') + x['value'] for x in rules if x['target'] == target)
+        body += f'<label>{title}<textarea name={target} rows=12>{html.escape(values)}</textarea></label>'
+    body += '<p class=muted>По одному правилу на строку: example.ru — точный домен; .example.ru — домен и поддомены; IPv4 или CIDR. Сначала проверяются домены от точного к общему, затем IP от узкой подсети к широкой. При равной точности побеждает обычный выход.</p><button>Сохранить правила</button></form>'
+    return page('Маршрутизация', body, show_header=True)
+
+
+@app.post('/admin/routing', responses=HTTP_RESPONSES)
+def save_routing(request: Request, ru: str = Form(''), direct: str = Form('')):
+    require_admin(request)
+    rules = set()
+    try:
+        for target, value in [('ru', ru), ('direct', direct)]:
+            if len(value) > 65536:
+                raise ValueError('Слишком большой список правил')
+            for line in value.splitlines():
+                if line.strip():
+                    kind, normalized = normalize_rule(line)
+                    rules.add((target, kind, normalized))
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+    with db() as con:
+        con.execute('DELETE FROM routing_rules')
+        con.executemany('INSERT INTO routing_rules(target,kind,value) VALUES(?,?,?)', sorted(rules))
+        changed(con)
+    return RedirectResponse('/admin/routing', 303)
+
+
+
+@app.get('/routing/status', responses=HTTP_RESPONSES)
+def live_routing_status(request: Request, admin_view: bool = False):
+    if admin_view:
+        require_admin(request)
+    administrator = admin_ok(request)
+    phone = None if administrator else session_phone(request)
+    status = routing_status()
+    with db() as con:
+        names = {r['id']: r['name'] for r in con.execute('SELECT id,name FROM ru_exits')}
+        default = int(con.execute("SELECT value FROM settings WHERE key='ru_default'").fetchone()[0])
+        devices = con.execute('SELECT id,ru_exit_id FROM devices' + ('' if administrator else ' WHERE phone=?'), () if administrator else (phone,)).fetchall()
+    device_states = {}
+    unknown = status.get('state') in {'stale', 'pending'}
+    for device in devices:
+        actual = status.get('devices', {}).get(str(device['id']), {})
+        assigned = names.get(device['ru_exit_id'], 'По умолчанию: ' + names.get(default, '—'))
+        effective = 'Неизвестно' if unknown else names.get(actual.get('effective'), 'Недоступен')
+        fallback = ' · резервный режим' if not unknown and actual.get('fallback') else ''
+        device_states[str(device['id'])] = f'Назначен: {assigned} · Используется: {effective}{fallback}'
+    exits = {}
+    if administrator:
+        for node_id in names:
+            state = status.get('exits', {}).get(str(node_id), {})
+            exits[str(node_id)] = 'Проверяется' if unknown or not state else ('Доступен' if state.get('healthy') else 'Недоступен')
+    return JSONResponse({'message': status_text(status), 'devices': device_states, 'exits': exits})

@@ -1,0 +1,15 @@
+# Import this file on the Keenetic as a separate WireGuard connection.
+# Afterwards, keep "Use for Internet access" disabled and explicitly select
+# the physical PPPoE connection in "Connect via".
+
+[Interface]
+PrivateKey = REPLACE_WITH_KEENETIC_PRIVATE_KEY
+Address = 10.66.66.2/30
+
+[Peer]
+PublicKey = REPLACE_WITH_VPS_PUBLIC_KEY
+Endpoint = REPLACE_WITH_AAS_VPS_HOST:51820
+# Only the VPS tunnel address is routed into WireGuard on the Keenetic.
+# Traffic arriving from the VPS is routed by the Keenetic's RU Exit policy.
+AllowedIPs = 10.66.66.1/32
+PersistentKeepalive = 25

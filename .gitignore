@@ -5,6 +5,10 @@ backups/
 *.conf
 *.tar*
 __pycache__/
+node_modules/
+.pytest_cache/
+.coverage
+coverage.xml
 *.py[cod]
 *.swp
 !examples/*.conf.example

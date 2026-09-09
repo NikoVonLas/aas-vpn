@@ -1,0 +1,16 @@
+# Install as /etc/wireguard/wg-ru.conf on the AAS VPN server.
+# The Keenetic initiates the tunnel, so the VPS peer has no Endpoint.
+
+[Interface]
+PrivateKey = REPLACE_WITH_VPS_PRIVATE_KEY
+Address = 10.66.66.1/30
+ListenPort = 51820
+# sing-box binds the RU outbound to wg-ru. Do not replace the server's
+# default route with this tunnel.
+Table = off
+
+[Peer]
+PublicKey = REPLACE_WITH_KEENETIC_PUBLIC_KEY
+# sing-box may open connections to any public IPv4 destination through this
+# peer. Table=off prevents wg-quick from installing 0.0.0.0/0 system-wide.
+AllowedIPs = 0.0.0.0/0

@@ -1,0 +1,8 @@
+.git
+.env
+data
+backups
+**/__pycache__
+**/node_modules
+**/*.db
+**/*.conf

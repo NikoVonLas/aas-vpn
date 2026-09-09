@@ -4,6 +4,9 @@ services:
   adguard-home:
     volumes:
       - ./data/adguard:/opt/adguardhome/conf
+  portal:
+    volumes:
+      - ./data/sing-box/config.json:/etc/sing-box/config.json:ro
   sing-box:
     volumes:
       - ./data/sing-box/config.json:/etc/sing-box/config.json:ro
@@ -11,6 +14,7 @@ services:
 networks:
   vpn:
     external: true
+    ipam: !reset null
 
 volumes:
   awg2_wireguard:

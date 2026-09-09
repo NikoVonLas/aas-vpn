@@ -5,4 +5,4 @@ After=aas-vpn.service
 [Service]
 Type=oneshot
 ExecStart=/opt/aas-vpn/scripts/watchdog.sh
-TimeoutStartSec=90
+TimeoutStartSec=180
