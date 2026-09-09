@@ -139,13 +139,20 @@ def startup():
         migrate(con, json.loads(base_path.read_text()) if base_path.exists() else None)
         columns = {r[1] for r in con.execute('PRAGMA table_info(devices)')}
         if 'wg_client_id' in columns:
+            if not Path(auth_store.path).is_file():
+                raise RuntimeError('Run the stopped-stack native migration before starting the portal')
+            with auth_store.db() as credentials:
+                if not credentials.execute("SELECT 1 FROM settings WHERE key='migration_source'").fetchone():
+                    raise RuntimeError('Native administrator migration has not completed')
             con.execute('ALTER TABLE devices RENAME COLUMN wg_client_id TO client_id')
         if 'operation' not in columns:
             con.execute("ALTER TABLE devices ADD COLUMN operation TEXT NOT NULL DEFAULT 'applied'")
         old_secret = con.execute("SELECT value FROM settings WHERE key='session_secret'").fetchone()
         auth_store.initialize(old_secret[0] if old_secret else None)
+        con.execute('PRAGMA secure_delete=ON')
         con.execute("DELETE FROM settings WHERE key='session_secret'")
         con.execute('DROP TABLE IF EXISTS auth_cache')
+    Path(DB).with_name('wg-auth.json').unlink(missing_ok=True)
     RU_CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
@@ -634,7 +641,10 @@ async def apply_device_operation(row):
 async def start_device_worker():
     async def worker():
         while True:
-            await process_device_operations()
+            try:
+                await process_device_operations()
+            except sqlite3.Error:
+                pass  # Keep the durable queue alive during transient database contention.
             await asyncio.sleep(2)
     app.state.device_worker = asyncio.create_task(worker())
 

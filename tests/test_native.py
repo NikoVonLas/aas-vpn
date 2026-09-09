@@ -1,16 +1,12 @@
 import base64
-import importlib.util
 import json
-from pathlib import Path
 import sqlite3
-import sys
-import time
 
 import httpx
 import pyotp
 import pytest
 
-from conftest import ROOT, admin_login, phone_login, post
+from conftest import admin_login, phone_login, post
 from auth import Auth
 from migrate_native import migration, read_source, validate_source
 from awg.model import Store, active, client_config, server_config
@@ -236,3 +232,11 @@ def test_native_disable_and_expiration_configuration(tmp_path, portal):
     assert not active(next(peer for peer in store.snapshot()[2] if peer['id']=='41'))
     with pytest.raises(ValueError):
         store.configure('42', {'private_key':key(5)})
+
+
+def test_delete_before_delayed_create_cannot_resurrect(tmp_path):
+    store = Store(tmp_path/'native')
+    store.initialize()
+    assert store.delete('delayed')['applied']
+    with pytest.raises(ValueError, match='deleted'):
+        store.create('delayed', 'Late request')

@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import signal
 import socketserver
+import sqlite3
 import threading
 import time
 
@@ -94,7 +95,7 @@ def reconcile():
     while not STOP.is_set():
         try:
             STATE = apply()
-        except (OSError, RuntimeError, ValueError, KeyError):
+        except (OSError, RuntimeError, ValueError, KeyError, sqlite3.Error):
             STATE = {'state': 'error'}
         STATE['updated_at'] = int(time.time())
         atomic(CONTROL / 'status.json', json.dumps({key: value for key, value in STATE.items() if key != 'digest'}), 0o640)
@@ -121,7 +122,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(404, {'detail': 'Client not found'})
         except (ValueError, TypeError, json.JSONDecodeError):
             self.respond(409, {'detail': 'Invalid or unapplied client operation'})
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, sqlite3.Error):
             self.respond(503, {'detail': 'Controller unavailable'})
 
     def payload(self):

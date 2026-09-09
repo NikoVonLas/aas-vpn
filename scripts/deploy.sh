@@ -58,6 +58,7 @@ if [[ -f "$target_dir/.env" && -f "$target_dir/compose.yml" ]]; then
   if docker compose config --services | grep -qx auth-sync; then
     migration_required=1
     docker compose stop caddy
+    python3 "$source_dir/scripts/check_legacy_peers.py"
     docker exec -i aas-portal python - < "$source_dir/scripts/export_legacy.py"
     docker cp aas-portal:/tmp/native-reference.json "$reference_path"
   fi
@@ -127,11 +128,13 @@ docker compose up -d --no-build --pull never --remove-orphans
 # Wait for the native controller and router before re-enabling automatic recovery.
 for _attempt in $(seq 1 60); do
   if docker inspect --format '{{.State.Health.Status}}' awg2 | grep -qx healthy &&
-     docker inspect --format '{{.State.Health.Status}}' sing-box | grep -qx healthy; then break; fi
+     docker inspect --format '{{.State.Health.Status}}' sing-box | grep -qx healthy &&
+     docker exec sing-box python -c "import json; s=json.load(open('/routing-status/status.json')); assert s['running'] and s['state']=='applied'"; then break; fi
   sleep 2
 done
 docker inspect --format '{{.State.Health.Status}}' awg2 | grep -qx healthy
 docker inspect --format '{{.State.Health.Status}}' sing-box | grep -qx healthy
+docker exec sing-box python -c "import json; s=json.load(open('/routing-status/status.json')); assert s['running'] and s['state']=='applied'"
 if [[ "${AAS_KEEP_MAINTENANCE:-0}" != 1 ]]; then
   docker compose exec -T portal python -c "from pathlib import Path; Path('/data/maintenance').unlink(missing_ok=True)"
 fi

@@ -96,6 +96,7 @@ class Store:
         with self.db() as con:
             con.executescript('''
                 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS retired_ids(id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS clients(
                     id TEXT PRIMARY KEY, address TEXT NOT NULL UNIQUE, public_key TEXT NOT NULL UNIQUE,
                     data TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL);
@@ -129,6 +130,8 @@ class Store:
 
     def create(self, client_id, name):
         with self.db() as con:
+            if con.execute('SELECT 1 FROM retired_ids WHERE id=?', (client_id,)).fetchone():
+                raise ValueError('Client was deleted')
             row = con.execute('SELECT * FROM clients WHERE id=?', (client_id,)).fetchone()
             if row:
                 if row['deleted']:
@@ -156,6 +159,7 @@ class Store:
 
     def delete(self, client_id):
         with self.db() as con:
+            con.execute('INSERT OR IGNORE INTO retired_ids VALUES(?)', (client_id,))
             row = con.execute('SELECT * FROM clients WHERE id=?', (client_id,)).fetchone()
             if not row:
                 return {'applied': True, 'deleted': True}
