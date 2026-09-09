@@ -36,6 +36,7 @@ BEGIN_WRITE = 'BEGIN IMMEDIATE'
 DEFAULT_EXIT_QUERY = "SELECT value FROM settings WHERE key='ru_default'"
 UNAVAILABLE_LABEL = 'Недоступен'
 RU_EXITS_PATH = '/admin/ru-exits'
+ROUTING_PATH = '/admin/routing'
 
 HTTP_RESPONSES = {
     303: {"description": 'Session required or action completed; follow Location'},
@@ -879,7 +880,7 @@ def upstream_error(request: Request, exc):
 
 
 def admin_nav(active=ADMIN_PATH):
-    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), ('/admin/routing', 'Маршрутизация')]
+    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация')]
     return '<nav class="app-links admin-nav" aria-label="Администрирование">' + ''.join(
         f'<a href="{path}"' + (' aria-current="page"' if path == active else '') + f'>{label}</a>'
         for path, label in links) + '</nav>'
@@ -1050,12 +1051,12 @@ def delete_ru_exit(request: Request, exit_id: int):
     return RedirectResponse(RU_EXITS_PATH, 303)
 
 
-@app.get('/admin/routing', responses=HTTP_RESPONSES)
+@app.get(ROUTING_PATH, responses=HTTP_RESPONSES)
 def routing_page(request: Request):
     require_admin(request)
     with db() as con:
         rules = con.execute('SELECT * FROM routing_rules ORDER BY value').fetchall()
-    body = admin_nav('/admin/routing') + f'<p data-routing-state>{html.escape(status_text(routing_status()))}</p><form class="stack routing-form" method=post action=/admin/routing>'
+    body = admin_nav(ROUTING_PATH) + f'<p data-routing-state>{html.escape(status_text(routing_status()))}</p><form class="stack routing-form" method=post action=/admin/routing>'
     for target, title in [('ru', 'Через RU'), ('direct', 'Через обычный выход')]:
         values = '\n'.join(('.' if x['kind'] == 'suffix' else '') + x['value'] for x in rules if x['target'] == target)
         body += f'<label class=card>{title}<textarea name={target} rows=12>{html.escape(values)}</textarea></label>'
@@ -1063,7 +1064,7 @@ def routing_page(request: Request):
     return page('Маршрутизация', body, show_header=True)
 
 
-@app.post('/admin/routing', responses=HTTP_RESPONSES)
+@app.post(ROUTING_PATH, responses=HTTP_RESPONSES)
 def save_routing(request: Request, ru: str = Form(''), direct: str = Form('')):
     require_admin(request)
     rules = set()
@@ -1081,7 +1082,7 @@ def save_routing(request: Request, ru: str = Form(''), direct: str = Form('')):
         con.execute('DELETE FROM routing_rules')
         con.executemany('INSERT INTO routing_rules(target,kind,value) VALUES(?,?,?)', sorted(rules))
         changed(con)
-    return RedirectResponse('/admin/routing', 303)
+    return RedirectResponse(ROUTING_PATH, 303)
 
 
 
