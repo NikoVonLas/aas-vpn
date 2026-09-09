@@ -37,6 +37,7 @@ DEFAULT_EXIT_QUERY = "SELECT value FROM settings WHERE key='ru_default'"
 UNAVAILABLE_LABEL = 'Недоступен'
 RU_EXITS_PATH = '/admin/ru-exits'
 ROUTING_PATH = '/admin/routing'
+NAME_REQUIRED = 'Укажите название'
 
 HTTP_RESPONSES = {
     303: {"description": 'Session required or action completed; follow Location'},
@@ -400,12 +401,7 @@ def friendly_http_error(request: Request, exc: HTTPException):
 
 @app.exception_handler(404)
 def not_found_page(request: Request, exc):
-    body = """<section class='card not-found'><div class=glitch data-text=404>404</div><h1>Страница не найдена</h1><p class=muted>Такого адреса нет или страница была перемещена.</p><a class=btn href=/>На главную</a></section><style>
-.not-found{text-align:center;padding:48px 22px}.not-found h1{margin:12px 0 6px}.glitch{position:relative;display:inline-block;font-size:clamp(72px,18vw,150px);font-weight:900;line-height:.9;letter-spacing:-6px;color:var(--text);text-shadow:4px 0 var(--red),-4px 0 #0ea5e9;animation:glitch-shift 2.2s infinite steps(1)}
-.glitch::before,.glitch::after{content:attr(data-text);position:absolute;inset:0;overflow:hidden;pointer-events:none}.glitch::before{color:var(--red);clip-path:inset(12% 0 58% 0);transform:translate(-4px,-2px);animation:glitch-top 1.7s infinite steps(2)}.glitch::after{color:#0ea5e9;clip-path:inset(62% 0 8% 0);transform:translate(4px,2px);animation:glitch-bottom 1.3s infinite steps(2)}
-@keyframes glitch-shift{0%,89%,100%{transform:none}90%{transform:skew(3deg)}92%{transform:translate(-3px,2px)}94%{transform:translate(3px,-1px)}}@keyframes glitch-top{0%,80%,100%{transform:translate(-4px,-2px)}84%{transform:translate(7px,1px)}88%{transform:translate(-7px,-1px)}}@keyframes glitch-bottom{0%,74%,100%{transform:translate(4px,2px)}78%{transform:translate(-8px,-1px)}82%{transform:translate(6px,2px)}}
-@media(prefers-reduced-motion:reduce){.glitch,.glitch::before,.glitch::after{animation:none}}
-</style>"""
+    body = """<section class='card not-found'><div class=glitch data-text=404>404</div><h1>Страница не найдена</h1><p class=muted>Такого адреса нет или страница была перемещена.</p><a class=btn href=/>На главную</a></section>"""
     response = page("404", body)
     response.status_code = 404
     return response
@@ -432,7 +428,7 @@ def dial_numbers():
 
 @app.get(ADMIN_LOGIN_PATH, responses=HTTP_RESPONSES)
 def admin_login_form():
-    return page("Вход", "<section class=card><p class=muted>Используйте учётную запись администратора.</p><form class=stack method=post><label>Логин<input name=username autocomplete=username placeholder=admin required></label><label>Пароль<input name=password type=password autocomplete=current-password placeholder='••••••••' required></label><label>Код 2FA<input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code placeholder=123456></label><label style='display:flex;grid-template-columns:auto 1fr;align-items:center'><input style='width:auto' type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form></section>")
+    return page("Вход", "<section class=card><p class=muted>Используйте учётную запись администратора.</p><form class=stack method=post><label>Логин<input name=username autocomplete=username placeholder=admin required></label><label>Пароль<input name=password type=password autocomplete=current-password placeholder='••••••••' required></label><label>Код 2FA<input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code placeholder=123456></label><label class=check-label><input type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form></section>")
 
 
 @app.post(ADMIN_LOGIN_PATH, responses=HTTP_RESPONSES)
@@ -715,7 +711,7 @@ def rename_device(request: Request, device_id: int, name: str = Form(...)):
     row = owned_device(request, device_id)
     name = name.strip()[:40]
     if not name:
-        raise HTTPException(400, "Укажите название")
+        raise HTTPException(400, NAME_REQUIRED)
     with db() as con:
         con.execute("UPDATE devices SET name=? WHERE id=?", (name, device_id))
     return device_redirect(request, row["phone"])
@@ -725,20 +721,47 @@ def assignment_author(administrator):
     return 'admin' if administrator else 'user'
 
 
+def validate_exit_assignment(con, phone, administrator, exit_id):
+    permission = con.execute("SELECT can_change_ru_exit FROM users WHERE phone=?", (phone,)).fetchone()
+    if not administrator and not permission[0]:
+        raise HTTPException(403, "Смена RU-выхода запрещена администратором")
+    if exit_id and not con.execute("SELECT 1 FROM ru_exits WHERE id=?", (exit_id,)).fetchone():
+        raise HTTPException(400, "RU-выход не найден")
+
+
+def save_exit_assignment(con, device_id, exit_id, administrator):
+    con.execute("UPDATE devices SET ru_exit_id=?,assigned_by=? WHERE id=?",
+                (exit_id or None, assignment_author(administrator) if exit_id else None, device_id))
+    changed(con)
+
+
+@app.post("/device/{device_id}/update", responses=HTTP_RESPONSES)
+def update_device(request: Request, device_id: int, name: str = Form(...), ru_exit_id: int | None = Form(None)):
+    row = owned_device(request, device_id)
+    name = name.strip()[:40]
+    if not name:
+        raise HTTPException(400, NAME_REQUIRED)
+    administrator = admin_ok(request)
+    with db() as con:
+        con.execute(BEGIN_WRITE)
+        if ru_exit_id is not None:
+            validate_exit_assignment(con, row['phone'], administrator, ru_exit_id)
+            current = con.execute('SELECT ru_exit_id FROM devices WHERE id=?', (device_id,)).fetchone()
+            # Saving a name must not claim an unchanged administrator assignment.
+            if current[0] != (ru_exit_id or None):
+                save_exit_assignment(con, device_id, ru_exit_id, administrator)
+        con.execute("UPDATE devices SET name=? WHERE id=?", (name, device_id))
+    return device_redirect(request, row['phone'])
+
+
 @app.post("/device/{device_id}/ru-exit", responses=HTTP_RESPONSES)
 def assign_exit(request: Request, device_id: int, ru_exit_id: int = Form(0)):
     row = owned_device(request, device_id)
     administrator = admin_ok(request)
     with db() as con:
         con.execute(BEGIN_WRITE)
-        permission = con.execute("SELECT can_change_ru_exit FROM users WHERE phone=?", (row["phone"],)).fetchone()
-        if not administrator and not permission[0]:
-            raise HTTPException(403, "Смена RU-выхода запрещена администратором")
-        if ru_exit_id and not con.execute("SELECT 1 FROM ru_exits WHERE id=?", (ru_exit_id,)).fetchone():
-            raise HTTPException(400, "RU-выход не найден")
-        con.execute("UPDATE devices SET ru_exit_id=?,assigned_by=? WHERE id=?",
-                    (int(ru_exit_id) if ru_exit_id else None, assignment_author(administrator) if ru_exit_id else None, device_id))
-        changed(con)
+        validate_exit_assignment(con, row['phone'], administrator, ru_exit_id)
+        save_exit_assignment(con, device_id, ru_exit_id, administrator)
     return device_redirect(request, row["phone"])
 
 
@@ -910,8 +933,8 @@ def device_actions(device):
     device_id = device['id']
     name = html.escape(device['name'], quote=True)
     return f"""<div class=device-actions>
-      <button type=button class=qr-button data-qr-url='/device/{device_id}/qr'>QR</button>
-      <a class=btn href='/device/{device_id}/config'>Файл</a>
+      <button type=button class='secondary qr-button' data-qr-url='/device/{device_id}/qr'>QR</button>
+      <a class='btn secondary' href='/device/{device_id}/config'>Файл</a>
       <button type=button class='secondary share-button' data-device-id='{device_id}' data-device-name='{name}'>Поделиться QR</button>
       <button type=button class='danger-soft delete-device' data-delete-url='/device/{device_id}/delete' data-device-name='{name}'>Удалить</button>
     </div>"""
@@ -933,12 +956,17 @@ def device_routing_forms(devices, user, administrator):
         result += f"<section class='card device-card'><div class=device-head><h2>{html.escape(device['name'])}</h2>{device_actions(device)}</div><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
         if not device['vpn_ip']:
             result += '<p class=muted>Ожидает сопоставления VPN-IP</p>'
-        result += f"<form class=device-form method=post action='/device/{device['id']}/rename'><label>Название<input name=name maxlength=40 value='{html.escape(device['name'], quote=True)}' required></label><button>Переименовать</button></form>"
-        if administrator or user['can_change_ru_exit']:
-            options = '<option value="">По умолчанию</option>' + ''.join(f"<option value='{x['id']}' {'selected' if x['id'] == selected else ''}>{html.escape(x['name'])}</option>" for x in exits)
-            result += f"<form class=device-form method=post action='/device/{device['id']}/ru-exit'><label>RU-выход<select name=ru_exit_id>{options}</select></label><button>Сохранить выход</button></form>"
+        result += device_edit_form(device, exits, administrator or user['can_change_ru_exit'])
         result += '</section>'
     return result
+
+
+def device_edit_form(device, exits, can_change_exit):
+    form = f"<form class='device-form {'device-edit' if can_change_exit else ''}' method=post action='/device/{device['id']}/update'><label>Название<input name=name maxlength=40 value='{html.escape(device['name'], quote=True)}' required></label>"
+    if can_change_exit:
+        options = '<option value="0">По умолчанию</option>' + ''.join(f"<option value='{node['id']}' {'selected' if node['id'] == device['ru_exit_id'] else ''}>{html.escape(node['name'])}</option>" for node in exits)
+        form += f'<label>RU-выход<select name=ru_exit_id>{options}</select></label>'
+    return form + '<button>Сохранить</button></form>'
 
 
 def exit_health_label(status, node_id):
@@ -1012,7 +1040,7 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
     require_admin(request)
     name = name.strip()[:80]
     if not name:
-        raise HTTPException(400, 'Укажите название')
+        raise HTTPException(400, NAME_REQUIRED)
     endpoint, config_text = await uploaded_endpoint(config_text, config_upload)
     with db() as con:
         con.execute(BEGIN_WRITE)

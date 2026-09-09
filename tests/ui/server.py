@@ -29,10 +29,20 @@ with portal.db() as connection:
                            [('+79990000001', 'Александр Константинопольский', 1), ('+79990000002', 'Мария', 0)])
     connection.executemany('INSERT INTO devices(phone,name,wg_client_id,created_at,vpn_ip) VALUES(?,?,?,0,?)',
                            [('+79990000001', 'Рабочий ноутбук', '41', '10.19.0.2'),
-                            ('+79990000001', 'Телефон с длинным названием устройства', '42', '10.19.0.3')])
+                            ('+79990000001', 'Телефон с длинным названием устройства', '42', '10.19.0.3'),
+                            ('+79990000002', 'Личный телефон', '43', '10.19.0.4')])
     connection.execute("UPDATE ru_exits SET config_file='fixture.json' WHERE id=1")
-    connection.execute("INSERT INTO ru_exits(name,legacy,config_file) VALUES('Домашний Keenetic',0,'fixture.json')")
+    connection.execute("INSERT INTO ru_exits(name,legacy,config_file) VALUES('Домашний Keenetic с длинным названием выхода',0,'fixture.json')")
     connection.execute("INSERT INTO settings(key,value) VALUES('dial_numbers',?)", ('+79990000003',))
+
+@portal.app.get('/fixture/phone-login/{phone}')
+def fixture_phone_login(phone: str):
+    if phone not in {'+79990000001', '+79990000002'}:
+        raise portal.HTTPException(404)
+    response = portal.RedirectResponse('/cabinet', 303)
+    response.set_cookie('aas_session', portal.phone_signer().dumps({'phone': phone}), httponly=True, samesite='lax')
+    return response
+
 
 if __name__ == '__main__':
     uvicorn.run(portal.app, host='127.0.0.1', port=8765, log_level='warning')

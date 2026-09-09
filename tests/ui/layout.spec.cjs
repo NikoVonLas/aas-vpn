@@ -26,10 +26,12 @@ for (const [name, path, active] of [
   });
 }
 
-test('login layout', async ({ page }) => {
-  await page.goto('/admin/login');
-  await expect(page).toHaveScreenshot('login.png', { fullPage: true });
-});
+for (const [name, path] of [['login', '/admin/login'], ['not-found', '/missing-page']]) {
+  test(`${name} layout`, async ({ page }) => {
+    await page.goto(path);
+    await expect(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
+  });
+}
 
 test('button with formaction keeps its own endpoint', async ({ page }) => {
   await login(page);
@@ -108,3 +110,56 @@ test('country hover stays inside the phone field and dropdown opens', async ({ p
   await country.click();
   await expect(page.locator('.iti__country-list:visible')).toBeVisible();
 });
+
+test('device has one save action for both fields', async ({ page }) => {
+  await login(page);
+  await page.goto('/admin/users/+79990000001/devices');
+  const form = page.locator('.device-card form').first();
+  const name = form.locator('[name=name]');
+  const exit = form.locator('select');
+  const save = form.getByRole('button', { name: 'Сохранить', exact: true });
+  await expect(form.getByRole('button')).toHaveCount(1);
+  const controls = await form.locator('input[name=name],select,button').evaluateAll(elements => elements.map(element => {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.x, top: rect.top, bottom: rect.bottom, height: rect.height };
+  }));
+  if (page.viewportSize().width > 720) {
+    expect(new Set(controls.map(rect => rect.bottom)).size).toBe(1);
+    expect(controls[0].x).toBeLessThan(controls[1].x);
+    expect(controls[1].x).toBeLessThan(controls[2].x);
+  } else {
+    expect(controls[0].bottom).toBeLessThan(controls[1].top);
+    expect(controls[1].bottom).toBeLessThan(controls[2].top);
+  }
+  await expect(exit).toHaveCSS('padding-right', '40px');
+  await expect(exit).toHaveCSS('background-position', 'calc(100% - 12px) 50%');
+  await exit.selectOption('2');
+  await exit.focus();
+  await expect(form).toHaveScreenshot('device-form-focus.png');
+  await name.fill('Совместное сохранение');
+  await exit.selectOption('2');
+  const sent = page.waitForRequest(request => request.url().endsWith('/device/1/update') && request.method() === 'POST');
+  await save.click();
+  const values = new URLSearchParams((await sent).postData());
+  expect(values.get('name')).toBe('Совместное сохранение');
+  expect(values.get('ru_exit_id')).toBe('2');
+  await page.reload();
+  await expect(name).toHaveValue('Совместное сохранение');
+  await expect(exit).toHaveValue('2');
+  await name.fill('Рабочий ноутбук');
+  await exit.selectOption('0');
+  await save.click();
+  await expect(name).toHaveValue('Рабочий ноутбук');
+});
+
+for (const [phone, allowed] of [['+79990000001', true], ['+79990000002', false]]) {
+  test(`cabinet layout with exit permission ${allowed}`, async ({ page }) => {
+    await page.goto('/fixture/phone-login/' + phone);
+    await expect(page).toHaveURL(/\/cabinet$/);
+    await expect(page).toHaveScreenshot(`cabinet-${allowed ? 'exit' : 'name'}.png`, { fullPage: true });
+    const form = page.locator('.device-card form').first();
+    await expect(form.getByRole('button')).toHaveText('Сохранить');
+    await expect(form.locator('select')).toHaveCount(allowed ? 1 : 0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}

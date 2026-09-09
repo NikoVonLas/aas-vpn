@@ -272,3 +272,31 @@ def test_saved_exit_editor_roundtrip_and_access(portal):
     assert post(client, '/admin/ru-exits/2', {'name': 'Denied', 'config_text': WG}).status_code == 303
     client.cookies.clear()
     assert KEY not in client.get('/admin/ru-exits').text
+
+
+def test_combined_device_save_is_atomic_and_permission_checked(portal):
+    app, client = portal
+    admin_login(app, client)
+    assert post(client, '/device/2/update', {'name': 'Admin name', 'ru_exit_id': '1'}).status_code == 303
+    with app.db() as con:
+        assert tuple(con.execute('SELECT name,ru_exit_id,assigned_by FROM devices WHERE id=2').fetchone()) == ('Admin name', 1, 'admin')
+    assert post(client, '/device/2/update', {'name': 'Must not save', 'ru_exit_id': '999'}).status_code == 400
+    phone_login(app, client, '+79990000002')
+    page = client.get('/cabinet').text
+    assert 'action=\'/device/2/update\'' in page
+    assert '<select name=ru_exit_id>' not in page
+    assert post(client, '/device/2/update', {'name': 'Forbidden', 'ru_exit_id': '0'}).status_code == 403
+    assert post(client, '/device/1/update', {'name': 'Stolen'}).status_code == 404
+    with app.db() as con:
+        assert con.execute('SELECT name FROM devices WHERE id=2').fetchone()[0] == 'Admin name'
+    assert post(client, '/device/2/update', {'name': 'Owner name'}).status_code == 303
+    with app.db() as con:
+        assert tuple(con.execute('SELECT name,ru_exit_id,assigned_by FROM devices WHERE id=2').fetchone()) == ('Owner name', 1, 'admin')
+        con.execute('UPDATE users SET can_change_ru_exit=1')
+    assert post(client, '/device/2/update', {'name': 'Same assignment', 'ru_exit_id': '1'}).status_code == 303
+    with app.db() as con:
+        assert con.execute('SELECT assigned_by FROM devices WHERE id=2').fetchone()[0] == 'admin'
+    assert post(client, '/device/2/update', {'name': 'Default', 'ru_exit_id': '0'}).status_code == 303
+    with app.db() as con:
+        assert tuple(con.execute('SELECT name,ru_exit_id,assigned_by FROM devices WHERE id=2').fetchone()) == ('Default', None, None)
+    assert client.post('/device/2/update', data={'name': 'No CSRF'}).status_code == 403

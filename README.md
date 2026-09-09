@@ -56,7 +56,7 @@ sudo ./scripts/rollback.sh /opt/aas-vpn/backups/YYYYMMDDTHHMMSSZ
 
 ## Проверки и внешний Caddy
 
-Проверка вёрстки на телефоне, планшете и компьютере — [скриншотные тесты Playwright](tests/ui/README.md).
+Общие правила интерфейса — [DESIGN.md](DESIGN.md). Проверка вёрстки на телефоне, планшете и компьютере — [скриншотные тесты Playwright](tests/ui/README.md).
 
 `./scripts/validate.sh` проверяет конфигурацию; `docker compose ps` показывает состояние сервисов. Для тестов установите зависимости из `portal/requirements.txt` и `tests/requirements.txt`, выполните `npm ci --ignore-scripts --prefix portal`, затем `./scripts/validate.sh --tests` (нужны Python, Node.js и Compose CLI). Сетевые сценарии — в [tests/LINUX.md](tests/LINUX.md). Перед релизом обязателен успешный SonarQube всего `main`, включая старый код; требования — в [AGENTS.md](AGENTS.md).
 

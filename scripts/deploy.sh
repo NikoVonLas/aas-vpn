@@ -43,7 +43,7 @@ if [[ "$source_dir" != "$target_dir" ]]; then
     mkdir -p "$target_dir/$directory"
     cp -R "$source_dir/$directory/." "$target_dir/$directory/"
   done
-  install -m 0644 compose.yml compose.edge.yml .env.example .dockerignore .gitignore .sonarcloud.properties AGENTS.md README.md "$target_dir/"
+  install -m 0644 compose.yml compose.edge.yml .env.example .dockerignore .gitignore .sonarcloud.properties AGENTS.md DESIGN.md README.md "$target_dir/"
   [[ -f "$target_dir/.env" ]] || install -m 0600 .env "$target_dir/.env"
   mkdir -p "$target_dir/config/adguard"
   for file in Caddyfile sing-box.json adguard/AdGuardHome.yaml; do
