@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 027
 # Install before wg-easy brings up wg0. RETURN precedes its MASQUERADE.
 # Mark only decrypted client packets, preserving their source for sing-box.
 iptables -t mangle -C PREROUTING -i wg0 -j MARK --set-xmark 0xa450/0xffff 2>/dev/null || \

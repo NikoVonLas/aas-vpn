@@ -137,7 +137,7 @@ services:
         condition: service_completed_successfully
     container_name: aas-auth-sync
     command: [python, sync.py]
-    user: "1000:65532"
+    user: "65532:65532"
     network_mode: none
     volumes:
       - portal_data:/data
