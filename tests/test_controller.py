@@ -63,3 +63,19 @@ def test_network_snapshot_preserves_ru_interface(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='overlaps'):
         controller.sync_network_routes('br-test')
     assert not any('replace' in args for args in calls)
+
+
+def test_wireguard_peer_uses_actual_underlay_route(monkeypatch):
+    controller.endpoint_interface.cache_clear()
+    calls = []
+    def route(*args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(stdout=b'[{"dev":"br-vpn","gateway":"192.0.2.45"}]')
+    monkeypatch.setattr(controller, 'run', route)
+    config = {'endpoints': [{'peers': [{'address': '10.19.0.45', 'port': 41495}]},
+                            {'listen_port': 51820, 'peers': [{}]}]}
+    controller.bind_endpoint_interfaces(config)
+    assert config['endpoints'][0]['bind_interface'] == 'br-vpn'
+    assert 'bind_interface' not in config['endpoints'][1]
+    assert calls == [('ip','-j','route','get','10.19.0.45','mark','0x2024')]
+    controller.endpoint_interface.cache_clear()

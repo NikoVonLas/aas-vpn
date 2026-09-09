@@ -1,5 +1,6 @@
 """Host-network routing supervisor. Logs deliberately exclude config/check output."""
 import concurrent.futures
+from functools import lru_cache
 import hashlib
 import ipaddress
 import json
@@ -142,6 +143,33 @@ def advance(previous, ok):
     return previous
 
 
+@lru_cache(maxsize=2048)
+def endpoint_interface(host, _minute):
+    """Refresh DNS/route selection each minute, including VPN-reachable peers."""
+    try:
+        try:
+            address = str(ipaddress.IPv4Address(host))
+        except ValueError:
+            result = subprocess.run(['getent', 'hosts', host], capture_output=True, text=True, check=True, timeout=2)
+            address = str(ipaddress.IPv4Address(result.stdout.split()[0]))
+        route = json.loads(run('ip', '-j', 'route', 'get', address, 'mark', '0x2024').stdout)[0]
+        return route['dev']
+    except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+def bind_endpoint_interfaces(config):
+    hosts = {peer['address'] for endpoint in config.get('endpoints', [])
+             for peer in endpoint.get('peers', []) if peer.get('address')}
+    minute = int(time.monotonic() // 60)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
+        bindings = dict(zip(hosts, pool.map(lambda host: endpoint_interface(host, minute), hosts)))
+    for endpoint in config.get('endpoints', []):
+        interfaces = {bindings.get(peer.get('address')) for peer in endpoint.get('peers', [])} - {None}
+        if len(interfaces) == 1:
+            endpoint['bind_interface'] = interfaces.pop()
+
+
 APPLY_ERRORS = (OSError, ValueError, KeyError, sqlite3.Error, subprocess.SubprocessError, RuntimeError)
 
 
@@ -191,6 +219,7 @@ class Supervisor:
     def install(self, base, model, health):
         healthy = {key: value.get('healthy', False) for key, value in health.items()}
         config = compile_config(base, model['exits'], model['devices'], model['rules'], model['default'], healthy, self.bridge, CONFIGS)
+        bind_endpoint_interfaces(config)
         digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
         if digest != self.signature or not process or process.poll() is not None:
             apply(config)
