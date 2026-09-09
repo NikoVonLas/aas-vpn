@@ -141,7 +141,8 @@ def test_legacy_exit_config_can_be_replaced_without_losing_assignments(portal):
     assert post(client, '/admin/ru-exits/1', {'name': 'Домашний', 'config_text': WG}).status_code == 303
     with app.db() as con:
         node = con.execute('SELECT * FROM ru_exits WHERE id=1').fetchone()
-        assert node['legacy'] == 0 and node['config_file']
+        assert node['legacy'] == 0
+        assert node['config_file']
         assert con.execute("SELECT value FROM settings WHERE key='ru_default'").fetchone()[0] == '1'
         assert con.execute('SELECT ru_exit_id FROM devices WHERE id=1').fetchone()[0] == 1
     assert KEY not in client.get('/admin/ru-exits').text
