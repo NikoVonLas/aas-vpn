@@ -56,3 +56,30 @@ test('logout after AJAX save uses its own action', async ({ page }) => {
   await page.goto('/admin');
   await expect(page).toHaveURL(/\/admin\/login$/);
 });
+
+test('RU file import is editable and save is the last action', async ({ page }) => {
+  await login(page);
+  await expect(page.locator('form.user').first().getByRole('button').last()).toHaveText('Сохранить');
+  await page.goto('/admin/ru-exits');
+  const legacy = page.locator('form[action="/admin/ru-exits/1"]');
+  await expect(legacy.locator('textarea')).toBeVisible();
+  await expect(legacy.locator('.exit-actions button')).toHaveText(['Удалить', 'По умолчанию', 'Сохранить']);
+  const boxes = await legacy.locator('.exit-actions button').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().top));
+  expect(new Set(boxes).size).toBe(1);
+  const form = page.locator('form[action="/admin/ru-exits"]');
+  const key = Buffer.alloc(32, 1).toString('base64');
+  const imported = `[Interface]\nPrivateKey = ${key}\nAddress = 10.55.0.2/32\n[Peer]\nPublicKey = ${key}\nAllowedIPs = 0.0.0.0/0\nEndpoint = 192.0.2.10:51820\n`;
+  await form.locator('[name=config_upload]').setInputFiles({ name: 'test.conf', mimeType: 'text/plain', buffer: Buffer.from(imported) });
+  await expect(form.locator('textarea')).toHaveValue(imported);
+  await expect(form.locator('[role=status]')).toContainText('Текст можно изменить');
+  const edited = imported.replace('10.55.0.2', '10.55.0.3');
+  await form.locator('textarea').fill(edited);
+  await form.locator('[name=name]').fill('Проверка импорта');
+  const sent = page.waitForRequest(request => request.url().endsWith('/admin/ru-exits') && request.method() === 'POST');
+  await form.getByRole('button', { name: 'Добавить выход', exact: true }).click();
+  expect((await sent).postData()).toContain('10.55.0.3/32');
+  const card = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Проверка импорта', exact: true }) });
+  await expect(card).toBeVisible();
+  await card.getByRole('button', { name: 'Удалить', exact: true }).click();
+  await expect(card).toHaveCount(0);
+});

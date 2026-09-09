@@ -309,6 +309,7 @@ document.addEventListener('click',event=>{
 </script>"""
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
 <script src=/assets/js/routing-status.js defer></script>
+<script src=/assets/js/config-editor.js defer></script>
 <meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>{phone_head}
 <link rel=stylesheet href=/assets/css/portal.css>
 <main>{heading}{body}</main><dialog id=qr-dialog class=qr-dialog><img id=qr-image alt='QR-код подключения'><button type=button onclick="this.closest('dialog').close()">Закрыть</button></dialog><dialog id=delete-dialog class=confirm-dialog><form id=delete-form method=post><h2>Удалить устройство?</h2><p>Настройки <b id=delete-device-name></b> сразу перестанут работать.</p><div class=confirm-actions><button type=button class=secondary onclick="this.closest('dialog').close()">Отмена</button><button class=danger-soft>Удалить</button></div></form></dialog>{phone_script}{share_script}</html>""")
@@ -806,7 +807,7 @@ def admin(request: Request):
       <label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel value='{html.escape(x['phone'])}' required></label>
       <label><span class=label-row><span>Лимит</span><span class=device-count title='Выдано конфигураций'>{x['device_count']}/{x['device_limit']}</span></span><input name=device_limit type=number min=1 max=20 value='{x['device_limit']}' required></label>
       <div class=user-footer><label class=check-label><input type=checkbox name=can_change_ru_exit value=1 {'checked' if x['can_change_ru_exit'] else ''}> Смена RU-выхода</label><div class=actions><a class='btn secondary' href='/admin/users/{html.escape(x['phone'])}/devices'>Устройства</a>
-      <button>Сохранить</button><button class='secondary{' danger-soft' if x['enabled'] else ''}' formaction='/admin/toggle/{html.escape(x['phone'])}'>{'Запретить выдачу' if x['enabled'] else 'Разрешить выдачу'}</button></div></div>
+      <button class='secondary{' danger-soft' if x['enabled'] else ''}' formaction='/admin/toggle/{html.escape(x['phone'])}'>{'Запретить выдачу' if x['enabled'] else 'Разрешить выдачу'}</button><button>Сохранить</button></div></div>
     </form>""" for x in users)
     number_fields = "".join(f"""<div class=dial-number-row><input class=phone-input name=numbers type=tel autocomplete=off inputmode=tel value='{html.escape(number)}' required><button type=button class='secondary remove-number'>Удалить</button></div>""" for number in dial_numbers())
     body = f"""
@@ -968,13 +969,10 @@ def ru_exits_page(request: Request):
         available = exit_health_label(status, node['id'])
         body += f"<section class=card><h2>{html.escape(node['name'])}{' · По умолчанию' if node['id'] == default else ''}</h2><p data-exit-state='{node['id']}'>{available}</p>"
         body += f"<form class=stack method=post enctype=multipart/form-data action='/admin/ru-exits/{node['id']}'><label>Название<input name=name maxlength=80 value='{html.escape(node['name'], quote=True)}' required></label>"
-        if not node['legacy']:
-            body += '<label>Заменить конфиг<input type=file name=config_upload accept=.conf></label><label>Или вставить новый конфиг<textarea name=config_text rows=4 autocomplete=off></textarea></label>'
-        body += '<div class=form-submit><button>Сохранить</button></div></form><div class=exit-actions>'
-        if node['id'] != default:
-            body += f"<form method=post action='/admin/ru-exits/{node['id']}/default'><button>Сделать выходом по умолчанию</button></form>"
-        body += f"<form method=post action='/admin/ru-exits/{node['id']}/delete'><button class=danger-soft>Удалить</button></form></div></section>"
-    body += '''<section class=card><h2>Добавить RU-выход</h2><form class=stack method=post enctype=multipart/form-data action=/admin/ru-exits><label>Название<input name=name maxlength=80 required></label><label>WireGuard .conf<input type=file name=config_upload accept=.conf></label><label>Или вставьте текст<textarea name=config_text rows=8 autocomplete=off></textarea></label><p class=muted>Загрузите файл .conf или вставьте его текст. Настройки DNS применяются централизованно.</p><div class=form-submit><button>Добавить выход</button></div></form></section>'''
+        body += '<label>Заменить конфиг<input type=file name=config_upload accept=.conf></label><label>Конфиг<textarea name=config_text rows=4 autocomplete=off spellcheck=false placeholder="Загрузите файл или вставьте новый конфиг"></textarea></label><p class="muted config-file-status" role=status>Оставьте поле пустым, чтобы сохранить текущий конфиг.</p>'
+        body += f"<div class=exit-actions><button class=danger-soft formaction='/admin/ru-exits/{node['id']}/delete' formnovalidate>Удалить</button>"
+        body += f"<button class=secondary formaction='/admin/ru-exits/{node['id']}/default' formnovalidate {'disabled' if node['id'] == default else ''}>По умолчанию</button><button>Сохранить</button></div></form></section>"
+    body += '''<section class=card><h2>Добавить RU-выход</h2><form class=stack method=post enctype=multipart/form-data action=/admin/ru-exits><label>Название<input name=name maxlength=80 required></label><label>WireGuard .conf<input type=file name=config_upload accept=.conf></label><label>Конфиг<textarea name=config_text rows=8 autocomplete=off spellcheck=false></textarea></label><p class="muted config-file-status" role=status></p><p class=muted>Загрузите файл .conf или вставьте его текст. Настройки DNS применяются централизованно.</p><div class=form-submit><button>Добавить выход</button></div></form></section>'''
     return page('RU-выходы', body, show_header=True)
 
 
@@ -1008,8 +1006,6 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
         old = con.execute('SELECT * FROM ru_exits WHERE id=?', (exit_id,)).fetchone() if exit_id else None
         if exit_id and not old:
             raise HTTPException(404, 'RU-выход не найден')
-        if old and old['legacy'] and endpoint:
-            raise HTTPException(400, 'Для нового конфига добавьте отдельный RU-выход')
         if not old and not endpoint:
             raise HTTPException(400, 'Загрузите или вставьте WireGuard-конфиг')
         if not old and con.execute('SELECT count(*) FROM ru_exits').fetchone()[0] >= 64:
@@ -1020,7 +1016,7 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
             filename = secrets.token_hex(16) + '.json'
             atomic_json(RU_CONFIG_DIR / filename, endpoint)
         if old:
-            con.execute('UPDATE ru_exits SET name=?,config_file=? WHERE id=?', (name, filename, exit_id))
+            con.execute('UPDATE ru_exits SET name=?,config_file=?,legacy=? WHERE id=?', (name, filename, 0 if endpoint else old['legacy'], exit_id))
         else:
             con.execute('INSERT INTO ru_exits(name,config_file) VALUES(?,?)', (name, filename))
         changed(con)

@@ -32,8 +32,10 @@ button:hover,.btn:hover{background:var(--red-hover)} .secondary{background:#e5e5
 .user-footer{grid-column:1/-1;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:14px;margin-top:4px}
 .grid>button{grid-column:1/-1;justify-self:end}
 .form-submit{display:flex;justify-content:flex-end}
-.exit-actions{display:flex;flex-wrap:wrap;gap:10px;padding-top:16px;margin-top:16px;border-top:1px solid var(--line)}
-.exit-actions form{margin:0}
+.exit-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:10px;padding-top:16px;margin-top:16px;border-top:1px solid var(--line)}
+.config-file-status{margin:0;font-size:13px;overflow-wrap:anywhere}
+.config-file-status:empty{display:none}
+button:disabled{opacity:.5;cursor:default}
 .routing-form{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
 .routing-form .card{margin:0;font-size:17px;font-weight:600;gap:14px}
 .routing-form textarea{font-size:14px;font-weight:400;line-height:1.6;min-height:300px}
@@ -59,6 +61,8 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid var
  .dial-number-row{grid-template-columns:minmax(0,1fr)}
  .dial-number-row>button{justify-self:end}
  .routing-form textarea{min-height:220px}
+ .exit-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+ .exit-actions button{padding:10px 5px;font-size:12px}
 }
 @media(min-width:721px) and (max-width:1000px){
  .user-footer .actions{margin-left:auto}
