@@ -66,8 +66,12 @@ set +a
 : "${VPN_SITE_ADDRESS:?Set VPN_SITE_ADDRESS}" "${PORTAL_SITE_ADDRESS:?Set PORTAL_SITE_ADDRESS}"
 [[ "$VPN_DOMAIN" != *.example.com ]] || { echo 'Set real domains in .env' >&2; exit 2; }
 docker compose config --quiet
-docker compose build --pull
-docker compose pull --ignore-buildable
+if [[ "${AAS_USE_PREBUILT_IMAGES:-}" == 1 ]]; then
+  while IFS= read -r image; do docker image inspect "$image" >/dev/null; done < <(docker compose config --images)
+else
+  docker compose build --pull
+  docker compose pull --ignore-buildable
+fi
 for unit in systemd/*.service systemd/*.timer; do
   sed "s|/opt/aas-vpn|$target_dir|g" "$unit" > "/etc/systemd/system/$(basename "$unit")"
   chmod 0644 "/etc/systemd/system/$(basename "$unit")"
