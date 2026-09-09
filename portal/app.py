@@ -670,6 +670,7 @@ async def download_amneziawg_windows(request: Request):
 @app.get("/admin")
 def admin(request: Request):
     require_admin(request)
+    admin_auth = auth_cache(refresh=True)
     with db() as con:
         users = con.execute("SELECT u.*,count(d.id) device_count FROM users u LEFT JOIN devices d ON d.phone=u.phone GROUP BY u.phone ORDER BY u.name").fetchall()
     issued_total = sum(user["device_count"] for user in users)
@@ -683,6 +684,7 @@ def admin(request: Request):
     </form>""" for x in users)
     number_fields = "".join(f"""<div class=dial-number-row><input class=phone-input name=numbers type=tel autocomplete=off inputmode=tel value='{html.escape(number)}' required><button type=button class='secondary remove-number'>Удалить</button></div>""" for number in dial_numbers())
     body = f"""
+    <section class=card><div class=section-head><div><h2>Двухфакторная авторизация</h2><div class=muted>{'TOTP включён' if admin_auth['totp_verified'] else 'TOTP отключён'}</div></div><a class=btn href=/admin/totp/setup>Настроить TOTP</a></div></section>
     <section class=card><div class=section-head><div><h2>Добавить человека</h2><div class=muted>Номер должен совпадать с номером входящего звонка.</div></div></div>
       <form class=grid method=post action=/admin/user><label>Имя<input name=name placeholder='Вася Пупкин' required></label><label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel placeholder='999 123-45-67' required></label><label>Устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить</button></form>
     </section>
@@ -690,6 +692,34 @@ def admin(request: Request):
     <section class=card><div class=section-head><div><h2>Номера подтверждения Zvonok</h2><div class=muted>Выдаются последовательно по кругу.</div></div><button id=add-dial-number type=button class=secondary>Добавить номер</button></div><form class=stack method=post action=/admin/settings/dial-numbers><div id=dial-numbers>{number_fields}</div><div class=dial-save><button>Сохранить номера</button></div></form></section>
     <form method=post action=/admin/logout><button class='secondary'>Выйти</button></form>"""
     return page("Управление доступом", body, show_header=True, phone_widget=True)
+
+
+@app.get("/admin/totp/setup")
+async def admin_totp_setup(request: Request):
+    require_admin(request)
+    async with await wg_session() as client:
+        response = await client.post("/api/me/totp", json={"type": "setup"})
+        response.raise_for_status()
+        setup = response.json()
+    image = qrcode.make(setup["uri"])
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    encoded = base64.b64encode(output.getvalue()).decode()
+    body = f"""<section class=card><h2>Новый TOTP</h2><p>Удалите старую запись, отсканируйте этот QR-код и сразу введите шестизначный код ниже.</p><img src='data:image/png;base64,{encoded}' alt='QR-код TOTP' style='display:block;width:min(100%,320px);margin:18px auto;border-radius:10px;background:#fff'><form class=stack method=post action=/admin/totp/setup><label>Код из приложения<input name=code inputmode=numeric autocomplete=one-time-code pattern='[0-9]{{6}}' maxlength=6 placeholder=123456 required></label><button>Подтвердить</button></form></section>"""
+    return page("Настройка TOTP", body, show_header=True)
+
+
+@app.post("/admin/totp/setup")
+async def admin_totp_confirm(request: Request, code: str = Form(...)):
+    require_admin(request)
+    code = re.sub(r"\D", "", code)
+    if len(code) != 6:
+        raise HTTPException(400, "Введите шестизначный код")
+    async with await wg_session() as client:
+        response = await client.post("/api/me/totp", json={"type": "create", "code": code})
+    if not response.is_success:
+        raise HTTPException(400, "Код не совпал. Вернитесь назад, получите новый QR и попробуйте ещё раз.")
+    return page("TOTP включён", "<section class=card><p>Двухфакторная авторизация настроена.</p><a class=btn href=/admin>Вернуться в админку</a></section>", show_header=True)
 
 
 @app.post("/admin/user")
