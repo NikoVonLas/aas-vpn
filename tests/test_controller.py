@@ -58,6 +58,9 @@ def test_network_snapshot_preserves_ru_interface(tmp_path, monkeypatch):
     (tmp_path / 'wg-network.json').write_text('{"cidrs":["10.19.0.0/24"]}')
     controller.sync_network_routes('br-test')
     assert calls[-1] == ('ip','route','replace','10.19.0.0/24','via',controller.AWG_IP,'dev','br-test')
+    (tmp_path / 'wg-network.json').write_text('{"cidrs":["10.19.0.0/24"],"mtus":{"10.19.0.0/24":1280}}')
+    controller.sync_network_routes('br-test')
+    assert calls[-1][-2:] == ('mtu', '1280')
     calls.clear()
     (tmp_path / 'wg-network.json').write_text('{"cidrs":["10.8.0.0/24"]}')
     with pytest.raises(ValueError, match='overlaps'):

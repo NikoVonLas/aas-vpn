@@ -61,8 +61,10 @@ def sync_network_routes(bridge):
     """Read actual wg-easy subnets; never guess or replace a connected RU route."""
     network_file = DATA / 'wg-network.json'
     networks = [VPN_CIDR] if VPN_CIDR else []
+    mtus = {}
     if network_file.exists():
-        networks = json.loads(network_file.read_text())['cidrs']
+        network_state = json.loads(network_file.read_text())
+        networks, mtus = network_state['cidrs'], network_state.get('mtus', {})
     if not networks:
         raise ValueError('Waiting for wg-easy network snapshot')
     connected = json.loads(run('ip', '-j', '-4', 'route', 'show', 'scope', 'link').stdout)
@@ -72,7 +74,9 @@ def sync_network_routes(bridge):
     if any(network.overlaps(other) for network in networks for other in protected):
         raise ValueError('VPN subnet overlaps a connected host network')
     for network in networks:
-        run('ip', 'route', 'replace', str(network), 'via', AWG_IP, 'dev', bridge)
+        mtu = int(mtus.get(str(network), 0))
+        metrics = ['mtu', str(mtu)] if 576 <= mtu <= 9000 else []
+        run('ip', 'route', 'replace', str(network), 'via', AWG_IP, 'dev', bridge, *metrics)
 
 
 def snapshot():

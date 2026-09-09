@@ -19,11 +19,12 @@ def snapshot():
         con.execute('BEGIN')
         user = con.execute('SELECT id,username,password,totp_key,totp_verified,enabled FROM users_table WHERE role=1 ORDER BY id LIMIT 1').fetchone()
         general = con.execute('SELECT session_password,session_timeout FROM general_table WHERE id=1').fetchone()
-        networks = [str(ipaddress.IPv4Network(r[0], strict=False)) for r in con.execute('SELECT ipv4_cidr FROM interfaces_table')]
+        networks = {str(ipaddress.IPv4Network(r['ipv4_cidr'], strict=False)): int(r['mtu'])
+                    for r in con.execute('SELECT ipv4_cidr,mtu FROM interfaces_table')}
         clients = con.execute('SELECT id,ipv4_address FROM clients_table').fetchall()
     finally:
         con.close()
-    atomic_json(os.path.join(os.path.dirname(TARGET), 'wg-network.json'), {'cidrs': networks}, 0o640)
+    atomic_json(os.path.join(os.path.dirname(TARGET), 'wg-network.json'), {'cidrs': list(networks), 'mtus': networks}, 0o640)
     if user and general:
         data = {
             'user_id': user['id'], 'username': user['username'], 'password_hash': user['password'],
