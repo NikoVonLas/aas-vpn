@@ -6,10 +6,13 @@ services:
     image: aas-vpn-portal:local
     user: "0:0"
     network_mode: none
-    command: [python, -c, "import os; os.chown('/ru-configs',65532,65532); os.chmod('/ru-configs',0o700); os.chown('/data',65532,65532); os.chmod('/data',0o770)"]
+    command: [python, init_storage.py]
     volumes:
       - ru_configs:/ru-configs
       - portal_data:/data
+      - router_state:/router-state
+      - routing_status:/routing-status
+      - awg2_wireguard:/wg-easy
     cap_drop: [ALL]
     cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
@@ -37,7 +40,8 @@ services:
     networks:
       vpn:
         ipv4_address: 10.42.42.45
-    cap_add: [NET_ADMIN, SYS_MODULE]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       net.ipv4.ip_forward: "1"
     healthcheck:
@@ -69,11 +73,15 @@ services:
       dockerfile: router/Dockerfile
     container_name: sing-box
     stop_grace_period: 30s
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
     environment:
       VPN_CLIENT_CIDR: ${VPN_CLIENT_CIDR:-}
       VPN_DOCKER_CIDR: ${VPN_DOCKER_CIDR:-10.42.42.0/24}
       AWG_CONTAINER_IP: 10.42.42.45
     network_mode: host
+    cap_drop: [ALL]
     cap_add: [NET_ADMIN, NET_RAW]
     devices:
       - /dev/net/tun:/dev/net/tun
@@ -129,7 +137,7 @@ services:
         condition: service_completed_successfully
     container_name: aas-auth-sync
     command: [python, sync.py]
-    user: "0:65532"
+    user: "1000:65532"
     network_mode: none
     volumes:
       - portal_data:/data

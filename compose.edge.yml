@@ -1,6 +1,9 @@
 # Server-specific overlay for running behind an existing edge Caddy.
 # Enable with COMPOSE_FILE=compose.yml:compose.edge.yml in the local .env.
 services:
+  awg2:
+    ports: !override
+      - "${AWG_PORT:-443}:1234/udp"
   adguard-home:
     volumes:
       - ./data/adguard:/opt/adguardhome/conf
