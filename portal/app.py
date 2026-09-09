@@ -20,7 +20,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.exceptions import RequestValidationError
 from pathlib import Path
-from routing import migrate, changed, parse_wireguard, normalize_rule, atomic_json
+from routing import migrate, changed, parse_wireguard, normalize_rule, atomic_json, stored_config_text, store_config
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -961,7 +961,7 @@ def device_state_labels(device, names, default, status):
 def ru_exits_page(request: Request):
     require_admin(request)
     with db() as con:
-        exits = con.execute('SELECT id,name,legacy FROM ru_exits ORDER BY id').fetchall()
+        exits = con.execute('SELECT id,name,legacy,config_file FROM ru_exits ORDER BY id').fetchall()
         default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
     status = routing_status()
     body = admin_nav(RU_EXITS_PATH) + f'<p data-routing-state>{html.escape(status_text(status))}</p>'
@@ -969,7 +969,8 @@ def ru_exits_page(request: Request):
         available = exit_health_label(status, node['id'])
         body += f"<section class=card><h2>{html.escape(node['name'])}{' · По умолчанию' if node['id'] == default else ''}</h2><p data-exit-state='{node['id']}'>{available}</p>"
         body += f"<form class=stack method=post enctype=multipart/form-data action='/admin/ru-exits/{node['id']}'><label>Название<input name=name maxlength=80 value='{html.escape(node['name'], quote=True)}' required></label>"
-        body += '<label>Заменить конфиг<input type=file name=config_upload accept=.conf></label><label>Конфиг<textarea name=config_text rows=4 autocomplete=off spellcheck=false placeholder="Загрузите файл или вставьте новый конфиг"></textarea></label><p class="muted config-file-status" role=status>Оставьте поле пустым, чтобы сохранить текущий конфиг.</p>'
+        config = html.escape(stored_config_text(RU_CONFIG_DIR, node['config_file']))
+        body += f'<label>Заменить конфиг<input type=file name=config_upload accept=.conf></label><label>Конфиг<textarea name=config_text rows=8 autocomplete=off spellcheck=false placeholder="Загрузите файл или вставьте новый конфиг">{config}</textarea></label><p class="muted config-file-status" role=status>Редактируйте текст и нажмите «Сохранить». Настройки DNS применяются централизованно.</p>'
         body += f"<div class=exit-actions><button class=danger-soft formaction='/admin/ru-exits/{node['id']}/delete' formnovalidate>Удалить</button>"
         body += f"<button class=secondary formaction='/admin/ru-exits/{node['id']}/default' formnovalidate {'disabled' if node['id'] == default else ''}>По умолчанию</button><button>Сохранить</button></div></form></section>"
     body += '''<section class=card><h2>Добавить RU-выход</h2><form class=stack method=post enctype=multipart/form-data action=/admin/ru-exits><label>Название<input name=name maxlength=80 required></label><label>WireGuard .conf<input type=file name=config_upload accept=.conf></label><label>Конфиг<textarea name=config_text rows=8 autocomplete=off spellcheck=false></textarea></label><p class="muted config-file-status" role=status></p><p class=muted>Загрузите файл .conf или вставьте его текст. Настройки DNS применяются централизованно.</p><div class=form-submit><button>Добавить выход</button></div></form></section>'''
@@ -990,7 +991,19 @@ async def uploaded_endpoint(config_text, config_upload):
             endpoint = parse_wireguard(config_text)
         except ValueError as error:
             raise HTTPException(400, str(error)) from None
-    return endpoint
+    return endpoint, config_text
+
+
+def updated_exit_config(old, endpoint, text):
+    filename = old['config_file'] if old else None
+    legacy = old['legacy'] if old else 0
+    if not endpoint:
+        return filename, legacy
+    if filename and stored_config_text(RU_CONFIG_DIR, filename) == text:
+        return filename, legacy
+    filename = secrets.token_hex(16) + '.json'
+    store_config(RU_CONFIG_DIR, filename, endpoint, text)
+    return filename, 0
 
 
 @app.post(RU_EXITS_PATH, responses=HTTP_RESPONSES)
@@ -1000,7 +1013,7 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
     name = name.strip()[:80]
     if not name:
         raise HTTPException(400, 'Укажите название')
-    endpoint = await uploaded_endpoint(config_text, config_upload)
+    endpoint, config_text = await uploaded_endpoint(config_text, config_upload)
     with db() as con:
         con.execute(BEGIN_WRITE)
         old = con.execute('SELECT * FROM ru_exits WHERE id=?', (exit_id,)).fetchone() if exit_id else None
@@ -1010,13 +1023,9 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
             raise HTTPException(400, 'Загрузите или вставьте WireGuard-конфиг')
         if not old and con.execute('SELECT count(*) FROM ru_exits').fetchone()[0] >= 64:
             raise HTTPException(400, 'Достигнут лимит 64 выходов')
-        filename = old['config_file'] if old else None
-        if endpoint:
-            # Immutable filenames keep a consistent snapshot across DB commits.
-            filename = secrets.token_hex(16) + '.json'
-            atomic_json(RU_CONFIG_DIR / filename, endpoint)
+        filename, legacy = updated_exit_config(old, endpoint, config_text)
         if old:
-            con.execute('UPDATE ru_exits SET name=?,config_file=?,legacy=? WHERE id=?', (name, filename, 0 if endpoint else old['legacy'], exit_id))
+            con.execute('UPDATE ru_exits SET name=?,config_file=?,legacy=? WHERE id=?', (name, filename, legacy, exit_id))
         else:
             con.execute('INSERT INTO ru_exits(name,config_file) VALUES(?,?)', (name, filename))
         changed(con)

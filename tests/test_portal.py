@@ -118,10 +118,11 @@ def test_config_privacy_and_rules(portal):
     admin_login(app, client)
     result = post(client, '/admin/ru-exits', {'name':'Upload'}, files={'config_upload':('test.conf', WG, 'text/plain')})
     assert result.status_code == 303, result.text
-    assert KEY not in client.get('/admin/ru-exits').text
+    assert KEY in client.get('/admin/ru-exits').text
     files = list(app.RU_CONFIG_DIR.iterdir())
-    assert len(files) == 1
-    assert files[0].stat().st_mode & 0o777 == 0o600
+    assert len(files) == 2
+    for file in files:
+        assert file.stat().st_mode & 0o777 == 0o600
     result = post(client, '/admin/ru-exits', {'name': 'bad', 'config_text': WG + '\nPostUp = ' + KEY})
     assert result.status_code == 400
     assert KEY not in result.text
@@ -145,7 +146,7 @@ def test_legacy_exit_config_can_be_replaced_without_losing_assignments(portal):
         assert node['config_file']
         assert con.execute("SELECT value FROM settings WHERE key='ru_default'").fetchone()[0] == '1'
         assert con.execute('SELECT ru_exit_id FROM devices WHERE id=1').fetchone()[0] == 1
-    assert KEY not in client.get('/admin/ru-exits').text
+    assert KEY in client.get('/admin/ru-exits').text
 
 
 def test_admin_device_crud_and_client_id(portal, monkeypatch):
@@ -242,3 +243,32 @@ def test_live_status_exposes_only_owned_devices(portal):
     result = client.get('/routing/status?admin_view=true').json()
     assert set(result['devices']) == {'1','2'}
     assert KEY not in json.dumps(result)
+
+
+def test_saved_exit_editor_roundtrip_and_access(portal):
+    app, client = portal
+    admin_login(app, client)
+    original = WG + '\n# comment </textarea><script>alert(1)</script>\n'
+    assert post(client, '/admin/ru-exits', {'name': 'Editor', 'config_text': original}).status_code == 303
+    page = client.get('/admin/ru-exits')
+    assert page.headers['cache-control'] == 'no-store'
+    assert '&lt;/textarea&gt;&lt;script&gt;' in page.text
+    assert '<script>alert(1)</script>' not in page.text
+    with app.db() as con:
+        filename = con.execute('SELECT config_file FROM ru_exits WHERE id=2').fetchone()[0]
+    assert app.stored_config_text(app.RU_CONFIG_DIR, filename) == original
+    assert post(client, '/admin/ru-exits/2', {'name': 'Renamed', 'config_text': original}).status_code == 303
+    with app.db() as con:
+        assert con.execute('SELECT config_file FROM ru_exits WHERE id=2').fetchone()[0] == filename
+    edited = original.replace('10.55.0.2', '10.55.0.3')
+    assert post(client, '/admin/ru-exits/2', {'name': 'Edited', 'config_text': edited}).status_code == 303
+    assert '10.55.0.3/32' in client.get('/admin/ru-exits').text
+    assert KEY not in client.get('/routing/status?admin_view=true').text
+    phone_login(app, client)
+    denied = client.get('/admin/ru-exits')
+    assert denied.status_code == 303
+    assert KEY not in denied.text
+    assert KEY not in client.get('/cabinet').text
+    assert post(client, '/admin/ru-exits/2', {'name': 'Denied', 'config_text': WG}).status_code == 303
+    client.cookies.clear()
+    assert KEY not in client.get('/admin/ru-exits').text

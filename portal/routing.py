@@ -223,6 +223,42 @@ def atomic_json(path, data, mode=0o600):
     os.replace(temporary, path)
 
 
+
+def wireguard_text(endpoint):
+    """Reconstruct old imports whose original .conf text was not retained."""
+    lines = ['[Interface]', 'PrivateKey = ' + endpoint['private_key'],
+             'Address = ' + ', '.join(endpoint['address'])]
+    for field, label in [('listen_port', 'ListenPort'), ('mtu', 'MTU'), ('routing_mark', 'FwMark')]:
+        if field in endpoint:
+            lines.append(f'{label} = {endpoint[field]}')
+    for peer in endpoint['peers']:
+        lines.extend(['', '[Peer]', 'PublicKey = ' + peer['public_key'],
+                      'AllowedIPs = ' + ', '.join(peer['allowed_ips'])])
+        if 'address' in peer:
+            lines.append(f"Endpoint = {peer['address']}:{peer['port']}")
+        for field, label in [('pre_shared_key', 'PresharedKey'), ('persistent_keepalive_interval', 'PersistentKeepalive')]:
+            if field in peer:
+                lines.append(f'{label} = {peer[field]}')
+    return '\n'.join(lines) + '\n'
+
+
+def stored_config_text(directory, filename):
+    if not filename:
+        return ''
+    path = Path(directory) / Path(filename).name
+    source = path.with_suffix('.source.json')
+    if source.exists():
+        return json.loads(source.read_text())
+    return wireguard_text(json.loads(path.read_text()))
+
+
+def store_config(directory, filename, endpoint, text):
+    path = Path(directory) / Path(filename).name
+    # Both immutable files are durable before the DB points to them.
+    atomic_json(path, endpoint)
+    atomic_json(path.with_suffix('.source.json'), text)
+
+
 def effective_exit(assigned, default, health):
     chosen = assigned or default
     if health.get(str(chosen), False):

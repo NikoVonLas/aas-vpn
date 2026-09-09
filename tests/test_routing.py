@@ -140,3 +140,12 @@ def test_migration_imports_server_rules_once(portal):
         count = con.execute('SELECT count(*) FROM routing_rules').fetchone()[0]
         migrate(con, {'route':{'rules':[]}})
         assert con.execute('SELECT count(*) FROM routing_rules').fetchone()[0] == count
+
+
+def test_old_import_text_roundtrip(tmp_path):
+    from routing import atomic_json, stored_config_text, wireguard_text
+    for text in [WG, WG.replace('Endpoint = 192.0.2.1:51820', '').replace('[Interface]', '[Interface]\nListenPort = 41495\nMTU = 1280\nFwMark = 0x2024') + f'PresharedKey = {KEY}\n']:
+        endpoint = parse_wireguard(text)
+        assert parse_wireguard(wireguard_text(endpoint)) == endpoint
+        atomic_json(tmp_path / 'old.json', endpoint)
+        assert parse_wireguard(stored_config_text(tmp_path, 'old.json')) == endpoint

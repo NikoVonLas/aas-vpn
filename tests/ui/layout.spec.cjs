@@ -62,7 +62,7 @@ test('RU file import is editable and save is the last action', async ({ page }) 
   await expect(page.locator('form.user').first().getByRole('button').last()).toHaveText('Сохранить');
   await page.goto('/admin/ru-exits');
   const legacy = page.locator('form[action="/admin/ru-exits/1"]');
-  await expect(legacy.locator('textarea')).toBeVisible();
+  await expect(legacy.locator('textarea')).toHaveValue(/\[Interface\]/);
   await expect(legacy.locator('.exit-actions button')).toHaveText(['Удалить', 'По умолчанию', 'Сохранить']);
   const boxes = await legacy.locator('.exit-actions button').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().top));
   expect(new Set(boxes).size).toBe(1);
@@ -80,6 +80,31 @@ test('RU file import is editable and save is the last action', async ({ page }) 
   expect((await sent).postData()).toContain('10.55.0.3/32');
   const card = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Проверка импорта', exact: true }) });
   await expect(card).toBeVisible();
+  await page.reload();
+  await expect(card.locator('textarea')).toHaveValue(edited);
+  const revised = edited.replace('10.55.0.3', '10.55.0.4');
+  await card.locator('textarea').fill(revised);
+  await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(card.locator('textarea')).toHaveValue(revised);
+  await page.reload();
+  await expect(card.locator('textarea')).toHaveValue(revised);
   await card.getByRole('button', { name: 'Удалить', exact: true }).click();
   await expect(card).toHaveCount(0);
+});
+
+test('country hover stays inside the phone field and dropdown opens', async ({ page }) => {
+  await login(page);
+  const phone = page.locator('.iti').first();
+  const country = phone.locator('.iti__selected-country');
+  await country.hover();
+  const bounds = await phone.evaluate(element => {
+    const input = element.querySelector('input[type=tel]').getBoundingClientRect();
+    const button = element.querySelector('.iti__selected-country').getBoundingClientRect();
+    return { top: button.top - input.top, bottom: input.bottom - button.bottom };
+  });
+  expect(bounds.top).toBeGreaterThanOrEqual(0);
+  expect(bounds.bottom).toBeGreaterThanOrEqual(0);
+  await expect(phone).toHaveScreenshot('phone-hover.png');
+  await country.click();
+  await expect(page.locator('.iti__country-list:visible')).toBeVisible();
 });
