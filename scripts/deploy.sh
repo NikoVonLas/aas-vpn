@@ -39,7 +39,7 @@ if [[ -f "$target_dir/.env" && -f "$target_dir/compose.yml" ]]; then
 fi
 install -d -m 0755 "$target_dir"
 if [[ "$source_dir" != "$target_dir" ]]; then
-  for directory in portal router awg scripts systemd tests; do
+  for directory in portal router awg scripts systemd tests examples; do
     mkdir -p "$target_dir/$directory"
     cp -R "$source_dir/$directory/." "$target_dir/$directory/"
   done

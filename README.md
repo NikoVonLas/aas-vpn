@@ -4,7 +4,7 @@
 
 ## Установка
 
-Нужны Debian 12+/Ubuntu 22.04+, root и два домена с A-записями на сервер. Caddy использует TCP 80/443, AmneziaWG — UDP 443 и 1234.
+Нужны Debian 12+/Ubuntu 22.04+, модуль ядра AmneziaWG, root и два домена с A-записями на сервер. Caddy использует TCP 80/443, AmneziaWG — UDP 443 и 1234.
 
 ```bash
 git clone https://github.com/NikoVonLas/aas-vpn.git
