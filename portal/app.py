@@ -309,38 +309,7 @@ document.addEventListener('click',event=>{
     return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
 <script src=/assets/js/routing-status.js defer></script>
 <meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>{phone_head}
-<style>
-:root{{--bg:#f5f5f5;--card:#fff;--text:#262626;--muted:#737373;--line:#e5e5e5;--input:#fff;--red:#b91c1c;--red-hover:#991b1b;--soft:#f5f5f5}}
-*{{box-sizing:border-box}} body{{font:15px Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;max-width:920px;margin:0 auto;padding:38px 18px 70px;background:var(--bg);color:var(--text)}}
-h1{{font-size:30px;margin:0 0 22px;font-weight:650}} h2{{font-size:17px;margin:0 0 16px}} p{{line-height:1.55}} small,.muted{{color:var(--muted)}}
-.card{{background:var(--card);padding:22px;border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 3px #0000000d;margin-bottom:16px}}
-.grid{{display:grid;grid-template-columns:2fr 2fr 1fr auto;gap:10px;align-items:end}} .stack{{display:grid;gap:10px}} .section-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}}
-label{{display:grid;gap:6px;font-size:13px;color:var(--muted)}} input,textarea,select{{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #d4d4d4;background:var(--input);color:var(--text);font:inherit;outline:none}}
-input:focus,textarea:focus{{border-color:var(--red);box-shadow:0 0 0 3px #b91c1c1a}} textarea{{resize:vertical;min-height:92px}}
-button,.btn{{border:0;border-radius:8px;background:var(--red);color:#fff;font:inherit;font-size:14px;font-weight:600;padding:10px 14px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}}
-button:hover,.btn:hover{{background:var(--red-hover)}} .secondary{{background:#e5e5e5;color:#262626}} .secondary:hover{{background:#d4d4d4}} .danger-soft{{background:#fee2e2;color:#991b1b}} .danger-soft:hover{{background:#fecaca}}
-.users{{display:grid;gap:10px}} .user{{display:grid;grid-template-columns:2fr 1.5fr 100px auto;gap:10px;align-items:end;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}}
-.actions{{display:flex;gap:7px}} .actions button{{padding:9px 11px}} .badge{{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:12px;background:#dcfce7;color:#166534}} .badge.off{{background:#fee2e2;color:#991b1b}}
-.label-row{{display:flex;align-items:center;justify-content:space-between;gap:6px;white-space:nowrap}} .device-count{{display:inline-flex;align-items:center;justify-content:center;min-width:28px;padding:2px 6px;border-radius:999px;background:#e5e5e5;color:#525252;font-size:11px;font-weight:650;line-height:16px}}
-.topbar{{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}} .brand{{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--muted)}} .logo{{width:32px;height:32px;border-radius:50%;background:var(--red);display:grid;place-items:center;color:#fff;font-size:13px;font-weight:800}}
-.iti{{width:100%;--iti-country-selector-bg:var(--card);--iti-border-color:var(--line);--iti-hover-color:#b91c1c14;--iti-icon-color:var(--muted)}}
-.iti input{{width:100%}} .iti__selected-country,.iti__selected-country-primary{{border-radius:7px 0 0 7px}} .iti__selected-country-primary{{padding-left:12px;padding-right:12px}}
-.iti__selected-dial-code{{margin-left:6px;margin-right:5px}} .iti__country-selector{{background:var(--card);color:var(--text);border:1px solid var(--line)!important;border-radius:8px;box-shadow:0 8px 24px #0003;overflow:hidden}}
-.iti__country-list{{background:var(--card);color:var(--text)}} .iti__country.iti__highlight{{background:#b91c1c14}} .iti__search-input{{background:var(--input);color:var(--text);border-radius:0}}
-.dial-number-row{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}} #dial-numbers{{display:grid;gap:10px}} .dial-save{{display:flex;justify-content:flex-end}}
-.device-form{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-top:16px}}
-.device-actions{{display:flex;align-items:center;gap:7px;flex-wrap:wrap}} .device-actions form{{display:inline;margin:0}} .share-button{{display:none}}
-.devices{{display:grid;gap:10px}} .device-card{{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}} .device-name{{font-weight:600;overflow-wrap:anywhere}}
-.qr-dialog,.confirm-dialog{{border:0;border-radius:14px;padding:18px;background:var(--card);color:var(--text);box-shadow:0 20px 60px #0008}} .qr-dialog::backdrop,.confirm-dialog::backdrop{{background:#0009}} .qr-dialog img{{display:block;width:min(76vw,420px);height:auto;border-radius:8px;background:#fff}} .qr-dialog>button{{width:100%;margin-top:12px}} .confirm-dialog{{width:min(440px,calc(100vw - 36px))}} .confirm-dialog h2{{margin-bottom:8px}} .confirm-actions{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:18px}}
-.guide summary{{cursor:pointer;font-size:17px;font-weight:650;list-style-position:inside}} .guide[open] summary{{margin-bottom:18px}} .guide h3{{font-size:15px;margin:16px 0 6px}} .guide ul{{list-style:none;margin:0;padding:0}} .guide li{{position:relative;padding-left:16px;margin-bottom:7px;line-height:1.5}} .guide li::before{{content:'•';position:absolute;left:0;color:var(--red);font-weight:800}}
-.app-links{{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}} .app-links a{{padding:8px 11px;border:1px solid var(--line);border-radius:8px;color:var(--text);text-decoration:none;background:var(--soft);font-size:13px;font-weight:600}} .app-links a:hover{{border-color:var(--red);color:var(--red)}}
-@media(min-width:721px) and (max-width:1920px){{
-  .grid{{grid-template-columns:2fr 2fr 1fr}} .grid>button{{grid-column:1/-1;justify-self:end}}
-  .user{{grid-template-columns:2fr 1.5fr 100px}} .user>.actions{{grid-column:1/-1;justify-content:flex-end}}
-}}
-@media(max-width:720px){{body{{padding-top:24px}} input,textarea,select{{font-size:16px}} .grid,.user,.device-form,.device-card{{grid-template-columns:1fr}} .actions{{display:grid;grid-template-columns:1fr 1fr}} .actions button,.dial-save button,.device-form button{{width:100%}} .device-actions{{display:grid;grid-template-columns:1fr 1fr}} .device-actions>*{{width:100%}} .device-actions .btn,.device-actions button{{width:100%}}}}
-@media(prefers-color-scheme:dark){{:root{{--bg:#171717;--card:#262626;--text:#f5f5f5;--muted:#a3a3a3;--line:#404040;--input:#171717;--soft:#303030}} .secondary{{background:#404040;color:#f5f5f5}} .secondary:hover{{background:#525252}} .device-count{{background:#404040;color:#d4d4d4}}}}
-</style>
+<link rel=stylesheet href=/assets/css/portal.css>
 <main>{heading}{body}</main><dialog id=qr-dialog class=qr-dialog><img id=qr-image alt='QR-код подключения'><button type=button onclick="this.closest('dialog').close()">Закрыть</button></dialog><dialog id=delete-dialog class=confirm-dialog><form id=delete-form method=post><h2>Удалить устройство?</h2><p>Настройки <b id=delete-device-name></b> сразу перестанут работать.</p><div class=confirm-actions><button type=button class=secondary onclick="this.closest('dialog').close()">Отмена</button><button class=danger-soft>Удалить</button></div></form></dialog>{phone_script}{share_script}</html>""")
 
 
@@ -664,15 +633,14 @@ def cabinet(request: Request, phone: str = ""):
         devices = con.execute("SELECT * FROM devices WHERE phone=? ORDER BY id", (phone,)).fetchall()
     if not user:
         raise HTTPException(403)
-    rows = "".join(f"""<div class=device-card><div class=device-name>{html.escape(x['name'])}</div><div class=device-actions><button type=button class='qr-button' data-qr-url='/device/{x['id']}/qr'>QR</button><a class=btn href='/device/{x['id']}/config'>Файл</a><button type=button class='secondary share-button' data-device-id='{x['id']}' data-device-name='{html.escape(x['name'], quote=True)}'>Поделиться QR</button><button type=button class='danger-soft delete-device' data-delete-url='/device/{x['id']}/delete' data-device-name='{html.escape(x['name'], quote=True)}'>Удалить</button></div></div>""" for x in devices)
-    rows += device_routing_forms(devices, user, is_admin)
+    rows = device_routing_forms(devices, user, is_admin)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Телефон' required></label><button>Добавить устройство</button></form>"
     if is_admin:
         create = create.replace("action=/device>", f"action=/device><input type=hidden name=phone value=\"{html.escape(phone)}\">")
     guide = """<details class='card guide'><summary>Как подключиться</summary><h3>Скачать AmneziaWG</h3><div class=app-links><a href='https://play.google.com/store/apps/details?id=org.amnezia.awg' target=_blank rel=noopener>Android</a><a href='https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>iPhone / iPad</a><a href='https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>macOS</a><a href='https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest' target=_blank rel=noopener>Windows</a></div><h3>На сайте</h3><ul><li>Под этой инструкцией найдите поле <b>«Название устройства»</b>.</li><li>Напишите любое понятное название, например <b>Телефон</b>, и нажмите <b>«Добавить устройство»</b>.</li><li>Ниже появится карточка устройства с кнопками.</li></ul><h3>Если сайт открыт на телефоне или компьютере, на который нужно установить VPN</h3><ul><li>Установите <b>AmneziaWG</b> по подходящей ссылке выше.</li><li>В карточке устройства на этом сайте нажмите <b>«Файл»</b>.</li><li>Откройте AmneziaWG и нажмите кнопку добавления подключения.</li><li>Выберите импорт из файла, найдите скачанный файл настроек и откройте его.</li><li>Либо нажмите <b>«Поделиться QR»</b>, отправьте картинку на другое устройство и следуйте инструкции ниже.</li></ul><h3>Если сайт или отправленный QR открыт на другом устройстве</h3><ul><li>Установите и откройте <b>AmneziaWG</b> на подключаемом устройстве.</li><li>Нажмите в приложении кнопку добавления подключения и выберите сканирование QR-кода.</li><li>На другом устройстве откройте полученную картинку. Если там открыт сайт, нажмите <b>«QR»</b> в карточке устройства.</li><li>Отсканируйте появившийся код.</li></ul></details>"""
     guide = guide.replace("https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>macOS", "macappstore://apps.apple.com/app/id6478942365'>macOS")
     guide = guide.replace("https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest' target=_blank rel=noopener>Windows", "/download/amneziawg/windows'>Windows")
-    return page(f"Привет, {user['name']}", f"{admin_nav() if is_admin else ''}{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
+    return page(f"Устройства: {user['name']}" if is_admin else f"Привет, {user['name']}", f"{admin_nav() if is_admin else ''}{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
 
 
 @app.get("/admin/users/{phone}/devices", responses=HTTP_RESPONSES)
@@ -836,8 +804,8 @@ def admin(request: Request):
       <label>Имя<input name=name maxlength=80 value='{html.escape(x['name'])}' required></label>
       <label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel value='{html.escape(x['phone'])}' required></label>
       <label><span class=label-row><span>Лимит</span><span class=device-count title='Выдано конфигураций'>{x['device_count']}/{x['device_limit']}</span></span><input name=device_limit type=number min=1 max=20 value='{x['device_limit']}' required></label>
-      <label><input style='width:auto' type=checkbox name=can_change_ru_exit value=1 {'checked' if x['can_change_ru_exit'] else ''}> Смена RU-выхода</label><a class=btn href='/admin/users/{html.escape(x['phone'])}/devices'>Устройства</a>
-      <div class=actions><button>Сохранить</button><button class='secondary{' danger-soft' if x['enabled'] else ''}' formaction='/admin/toggle/{html.escape(x['phone'])}'>{'Запретить выдачу' if x['enabled'] else 'Разрешить выдачу'}</button></div>
+      <div class=user-footer><label class=check-label><input type=checkbox name=can_change_ru_exit value=1 {'checked' if x['can_change_ru_exit'] else ''}> Смена RU-выхода</label><div class=actions><a class='btn secondary' href='/admin/users/{html.escape(x['phone'])}/devices'>Устройства</a>
+      <button>Сохранить</button><button class='secondary{' danger-soft' if x['enabled'] else ''}' formaction='/admin/toggle/{html.escape(x['phone'])}'>{'Запретить выдачу' if x['enabled'] else 'Разрешить выдачу'}</button></div></div>
     </form>""" for x in users)
     number_fields = "".join(f"""<div class=dial-number-row><input class=phone-input name=numbers type=tel autocomplete=off inputmode=tel value='{html.escape(number)}' required><button type=button class='secondary remove-number'>Удалить</button></div>""" for number in dial_numbers())
     body = f"""
@@ -910,8 +878,11 @@ def upstream_error(request: Request, exc):
     return friendly_http_error(request, HTTPException(502, 'Сервис VPN временно недоступен'))
 
 
-def admin_nav():
-    return '<nav class=app-links><a href=/admin>Пользователи</a><a href=/admin/ru-exits>RU-выходы</a><a href=/admin/routing>Маршрутизация</a></nav>'
+def admin_nav(active=ADMIN_PATH):
+    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), ('/admin/routing', 'Маршрутизация')]
+    return '<nav class="app-links admin-nav" aria-label="Администрирование">' + ''.join(
+        f'<a href="{path}"' + (' aria-current="page"' if path == active else '') + f'>{label}</a>'
+        for path, label in links) + '</nav>'
 
 
 def routing_status():
@@ -933,20 +904,31 @@ def status_text(status):
             'pending': 'Ожидание контроллера', 'stale': 'Контроллер не отвечает'}.get(status.get('state'), 'Ожидает применения')
 
 
+def device_actions(device):
+    device_id = device['id']
+    name = html.escape(device['name'], quote=True)
+    return f"""<div class=device-actions>
+      <button type=button class=qr-button data-qr-url='/device/{device_id}/qr'>QR</button>
+      <a class=btn href='/device/{device_id}/config'>Файл</a>
+      <button type=button class='secondary share-button' data-device-id='{device_id}' data-device-name='{name}'>Поделиться QR</button>
+      <button type=button class='danger-soft delete-device' data-delete-url='/device/{device_id}/delete' data-device-name='{name}'>Удалить</button>
+    </div>"""
+
+
 def device_routing_forms(devices, user, administrator):
     with db() as con:
         exits = con.execute('SELECT id,name FROM ru_exits ORDER BY id').fetchall()
         default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
     names = {x['id']: x['name'] for x in exits}
     status = routing_status()
-    result = f'<p class=muted data-routing-state>{html.escape(status_text(status))}</p>'
+    result = f'<p class=muted data-routing-state>{html.escape(status_text(status))}</p>' if devices else ''
     for device in devices:
         selected = device['ru_exit_id']
         actual = status.get('devices', {}).get(str(device['id']), {})
         effective = names.get(actual.get('effective'), UNAVAILABLE_LABEL) if status.get('state') not in {'stale', 'pending'} else 'Неизвестно'
         assigned = names.get(selected, 'По умолчанию: ' + names.get(default, '—'))
         fallback = ' · резервный режим' if actual.get('fallback') else ''
-        result += f"<section class=card><h3>{html.escape(device['name'])}</h3><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
+        result += f"<section class='card device-card'><div class=device-head><h2>{html.escape(device['name'])}</h2>{device_actions(device)}</div><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
         if not device['vpn_ip']:
             result += '<p class=muted>Ожидает сопоставления VPN-IP</p>'
         result += f"<form class=device-form method=post action='/device/{device['id']}/rename'><label>Название<input name=name maxlength=40 value='{html.escape(device['name'], quote=True)}' required></label><button>Переименовать</button></form>"
@@ -980,18 +962,18 @@ def ru_exits_page(request: Request):
         exits = con.execute('SELECT id,name,legacy FROM ru_exits ORDER BY id').fetchall()
         default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
     status = routing_status()
-    body = admin_nav() + f'<p data-routing-state>{html.escape(status_text(status))}</p>'
+    body = admin_nav(RU_EXITS_PATH) + f'<p data-routing-state>{html.escape(status_text(status))}</p>'
     for node in exits:
         available = exit_health_label(status, node['id'])
         body += f"<section class=card><h2>{html.escape(node['name'])}{' · По умолчанию' if node['id'] == default else ''}</h2><p data-exit-state='{node['id']}'>{available}</p>"
         body += f"<form class=stack method=post enctype=multipart/form-data action='/admin/ru-exits/{node['id']}'><label>Название<input name=name maxlength=80 value='{html.escape(node['name'], quote=True)}' required></label>"
         if not node['legacy']:
             body += '<label>Заменить конфиг<input type=file name=config_upload accept=.conf></label><label>Или вставить новый конфиг<textarea name=config_text rows=4 autocomplete=off></textarea></label>'
-        body += '<button>Сохранить</button></form>'
+        body += '<div class=form-submit><button>Сохранить</button></div></form><div class=exit-actions>'
         if node['id'] != default:
             body += f"<form method=post action='/admin/ru-exits/{node['id']}/default'><button>Сделать выходом по умолчанию</button></form>"
-        body += f"<form method=post action='/admin/ru-exits/{node['id']}/delete'><button class=secondary>Удалить</button></form></section>"
-    body += '''<section class=card><h2>Добавить RU-выход</h2><form class=stack method=post enctype=multipart/form-data action=/admin/ru-exits><label>Название<input name=name maxlength=80 required></label><label>WireGuard .conf<input type=file name=config_upload accept=.conf></label><label>Или вставьте текст<textarea name=config_text rows=8 autocomplete=off></textarea></label><p class=muted>DNS остаётся под управлением AdGuard. Командные hooks не допускаются. IPv6 отключён.</p><button>Добавить</button></form></section>'''
+        body += f"<form method=post action='/admin/ru-exits/{node['id']}/delete'><button class=danger-soft>Удалить</button></form></div></section>"
+    body += '''<section class=card><h2>Добавить RU-выход</h2><form class=stack method=post enctype=multipart/form-data action=/admin/ru-exits><label>Название<input name=name maxlength=80 required></label><label>WireGuard .conf<input type=file name=config_upload accept=.conf></label><label>Или вставьте текст<textarea name=config_text rows=8 autocomplete=off></textarea></label><p class=muted>Загрузите файл .conf или вставьте его текст. Настройки DNS применяются централизованно.</p><div class=form-submit><button>Добавить выход</button></div></form></section>'''
     return page('RU-выходы', body, show_header=True)
 
 
@@ -1073,11 +1055,11 @@ def routing_page(request: Request):
     require_admin(request)
     with db() as con:
         rules = con.execute('SELECT * FROM routing_rules ORDER BY value').fetchall()
-    body = admin_nav() + f'<p data-routing-state>{html.escape(status_text(routing_status()))}</p><form class=stack method=post action=/admin/routing>'
+    body = admin_nav('/admin/routing') + f'<p data-routing-state>{html.escape(status_text(routing_status()))}</p><form class="stack routing-form" method=post action=/admin/routing>'
     for target, title in [('ru', 'Через RU'), ('direct', 'Через обычный выход')]:
         values = '\n'.join(('.' if x['kind'] == 'suffix' else '') + x['value'] for x in rules if x['target'] == target)
-        body += f'<label>{title}<textarea name={target} rows=12>{html.escape(values)}</textarea></label>'
-    body += '<p class=muted>По одному правилу на строку: example.ru — точный домен; .example.ru — домен и поддомены; IPv4 или CIDR. Сначала проверяются домены от точного к общему, затем IP от узкой подсети к широкой. При равной точности побеждает обычный выход.</p><button>Сохранить правила</button></form>'
+        body += f'<label class=card>{title}<textarea name={target} rows=12>{html.escape(values)}</textarea></label>'
+    body += '<p class="muted routing-help">По одному правилу на строку: example.ru — точный домен; .example.ru — домен и поддомены; IPv4 или CIDR. Сначала проверяются домены от точного к общему, затем IP от узкой подсети к широкой. При равной точности побеждает обычный выход.</p><button>Сохранить правила</button></form>'
     return page('Маршрутизация', body, show_header=True)
 
 

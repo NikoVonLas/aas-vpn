@@ -9,6 +9,8 @@ node_modules/
 .pytest_cache/
 .coverage
 coverage.xml
+test-results/
+playwright-report/
 *.py[cod]
 *.swp
 !examples/*.conf.example
