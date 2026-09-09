@@ -6,17 +6,14 @@ import os
 import re
 import secrets
 import sqlite3
-import subprocess
 import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
 
 import httpx
-import pyotp
+import auth
 import qrcode
-from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.exceptions import RequestValidationError
 from pathlib import Path
@@ -28,7 +25,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 ADMIN_LOGIN_PATH = '/admin/login'
 ADMIN_PATH = '/admin'
 CABINET_PATH = '/cabinet'
-WG_CLIENT_PATH = '/api/client'
+WG_CLIENT_PATH = '/clients'
 USER_BY_PHONE = 'SELECT * FROM users WHERE phone=?'
 ACTIVE_USER_BY_PHONE = 'SELECT * FROM users WHERE phone=? AND enabled=1'
 
@@ -58,9 +55,9 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, responses=HTTP_RE
 app.mount("/assets", StaticFiles(directory="static"), name="assets")
 DB = os.getenv("PORTAL_DB", "/data/portal.db")
 ZVONOK = "https://zvonok.com/manager/cabapi_external/api/v1/phones"
-WG_AUTH_SNAPSHOT = os.getenv("WG_AUTH_SNAPSHOT", "/data/wg-auth.json")
-COOKIE_DOMAIN = os.environ["COOKIE_DOMAIN"]
-password_hasher = PasswordHasher()
+COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", "")
+auth_store = auth.Auth(os.getenv("AUTH_DB", str(Path(DB).with_name("auth.db"))))
+password_hasher = auth.HASHER
 RU_CONFIG_DIR = Path(os.getenv("RU_CONFIG_DIR", "/ru-configs"))
 ROUTER_STATUS = Path(os.getenv("ROUTER_STATUS", "/routing-status/status.json"))
 device_lock = asyncio.Lock()
@@ -87,6 +84,8 @@ async def validate_csrf(request, token):
 
 @app.middleware("http")
 async def csrf_and_privacy(request, call_next):
+    if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and request.url.path not in {'/admin/login', '/admin/logout'} and Path(DB).with_name('maintenance').exists():
+        return JSONResponse({'detail': 'Сервис обновляется. Повторите действие через несколько минут'}, 503, headers={'Retry-After': '30'})
     token = request.cookies.get("__Host-aas_csrf") or secrets.token_urlsafe(32)
     error = await validate_csrf(request, token)
     if error is not None:
@@ -133,74 +132,21 @@ def startup():
             created_at INTEGER NOT NULL, verified_at INTEGER);
           CREATE TABLE IF NOT EXISTS devices(
             id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT NOT NULL, name TEXT NOT NULL,
-            wg_client_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
-          CREATE TABLE IF NOT EXISTS auth_cache(
-            singleton INTEGER PRIMARY KEY CHECK(singleton=1), user_id INTEGER NOT NULL,
-            username TEXT NOT NULL, password_hash TEXT NOT NULL, totp_key TEXT,
-            totp_verified INTEGER NOT NULL, enabled INTEGER NOT NULL,
-            session_password TEXT NOT NULL, session_timeout INTEGER NOT NULL,
-            synced_at INTEGER NOT NULL);
+            client_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
         base_path = Path(os.getenv("ROUTING_BASE_CONFIG", "/etc/sing-box/config.json"))
         migrate(con, json.loads(base_path.read_text()) if base_path.exists() else None)
-        con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('session_secret',?)", (secrets.token_hex(32),))
+        columns = {r[1] for r in con.execute('PRAGMA table_info(devices)')}
+        if 'wg_client_id' in columns:
+            con.execute('ALTER TABLE devices RENAME COLUMN wg_client_id TO client_id')
+        if 'operation' not in columns:
+            con.execute("ALTER TABLE devices ADD COLUMN operation TEXT NOT NULL DEFAULT 'applied'")
+        old_secret = con.execute("SELECT value FROM settings WHERE key='session_secret'").fetchone()
+        auth_store.initialize(old_secret[0] if old_secret else None)
+        con.execute("DELETE FROM settings WHERE key='session_secret'")
+        con.execute('DROP TABLE IF EXISTS auth_cache')
     RU_CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    sync_auth_cache()
-
-
-def sync_auth_cache():
-    """Refresh the standalone cache from the isolated synchronizer snapshot."""
-    try:
-        with open(WG_AUTH_SNAPSHOT, encoding="utf-8") as stream:
-            snapshot = json.load(stream)
-        with db() as con:
-            con.execute("""INSERT INTO auth_cache(singleton,user_id,username,password_hash,totp_key,totp_verified,enabled,session_password,session_timeout,synced_at)
-              VALUES(1,?,?,?,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET
-              user_id=excluded.user_id,username=excluded.username,password_hash=excluded.password_hash,
-              totp_key=excluded.totp_key,totp_verified=excluded.totp_verified,enabled=excluded.enabled,
-              session_password=excluded.session_password,session_timeout=excluded.session_timeout,synced_at=excluded.synced_at""",
-              (snapshot["user_id"], snapshot["username"], snapshot["password_hash"], snapshot["totp_key"], snapshot["totp_verified"], snapshot["enabled"], snapshot["session_password"], snapshot["session_timeout"], snapshot["synced_at"]))
-        return True
-    except (OSError, ValueError, KeyError):
-        return False
-
-
-def auth_cache(refresh=False):
-    if refresh:
-        sync_auth_cache()
-    with db() as con:
-        row = con.execute("SELECT * FROM auth_cache WHERE singleton=1").fetchone()
-    if not row:
-        raise HTTPException(503, "Сервис авторизации временно недоступен")
-    return row
-
-
-def iron_operation(operation, value, secret, ttl=0):
-    """Delegate wg-easy's wire format to its upstream library, not custom crypto."""
-    try:
-        result = subprocess.run(
-            ['node', str(Path(__file__).with_name('session.mjs'))],
-            input=json.dumps({'operation': operation, 'value': value, 'secret': secret, 'ttl': ttl}),
-            text=True, capture_output=True, check=True, timeout=5,
-        )
-        return json.loads(result.stdout)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        raise ValueError('Invalid session') from None
-
-
-def iron_seal(payload, secret, ttl=0):
-    return iron_operation('seal', payload, secret, ttl * 1000)
-
-
-def iron_unseal(value, secret):
-    return iron_operation('unseal', value, secret)
-
-
-def make_wg_cookie(user_id, remember=False):
-    cached = auth_cache(refresh=True)
-    payload = {"id": str(uuid.uuid4()), "createdAt": int(time.time() * 1000), "data": {"userId": user_id}}
-    return iron_seal(payload, cached["session_password"], cached["session_timeout"] if remember else 0)
 
 
 def page(title, body, show_header=False, phone_widget=False):
@@ -317,9 +263,7 @@ document.addEventListener('click',event=>{
 
 
 def phone_signer():
-    with db() as con:
-        secret = con.execute("SELECT value FROM settings WHERE key='session_secret'").fetchone()[0]
-    return URLSafeTimedSerializer(secret, salt="aas-portal")
+    return URLSafeTimedSerializer(auth_store.setting('phone_secret'), salt='aas-portal')
 
 
 def phone_normalize(value):
@@ -358,25 +302,16 @@ def session_phone(request):
 
 
 def admin_ok(request):
-    raw = request.cookies.get("wg-easy", "")
-    if not raw:
-        return False
-    cached = auth_cache(refresh=True)
-    try:
-        session = iron_unseal(raw, cached["session_password"])
-        return cached["enabled"] == 1 and session.get("data", {}).get("userId") == cached["user_id"]
-    except (ValueError, KeyError, TypeError):
-        cached = auth_cache(refresh=True)
-        try:
-            session = iron_unseal(raw, cached["session_password"])
-            return cached["enabled"] == 1 and session.get("data", {}).get("userId") == cached["user_id"]
-        except (ValueError, KeyError, TypeError):
-            return False
+    row = auth_store.session(request.cookies.get(auth.COOKIE, ''))
+    return bool(row and not row['must_change'])
 
 
 def require_admin(request):
-    if not admin_ok(request):
+    row = auth_store.session(request.cookies.get(auth.COOKIE, ''))
+    if not row:
         raise HTTPException(303, headers={"Location": ADMIN_LOGIN_PATH})
+    if row['must_change']:
+        raise HTTPException(303, headers={"Location": '/admin/administrators'})
 
 
 @app.exception_handler(HTTPException)
@@ -432,29 +367,30 @@ def admin_login_form():
 
 
 @app.post(ADMIN_LOGIN_PATH, responses=HTTP_RESPONSES)
-def admin_login(username: str = Form(...), password: str = Form(...), totp: str = Form(""), remember: str = Form("")):
-    cached = auth_cache(refresh=True)
-    user_ok = secrets.compare_digest(username, cached["username"])
+def admin_login(request: Request, username: str = Form(...), password: str = Form(...), totp: str = Form(""), remember: str = Form("")):
     try:
-        password_ok = bool(cached["password_hash"]) and password_hasher.verify(cached["password_hash"], password)
-    except (VerifyMismatchError, InvalidHashError):
-        password_ok = False
-    totp_ok = True
-    if cached["totp_verified"]:
-        totp_ok = bool(cached["totp_key"] and pyotp.TOTP(cached["totp_key"]).verify(totp, valid_window=1))
-    if not (cached["enabled"] and user_ok and password_ok and totp_ok):
-        raise HTTPException(401, "Неверный логин, пароль или код 2FA")
-    response = RedirectResponse(ADMIN_PATH, 303)
-    max_age = cached["session_timeout"] if remember else None
-    response.set_cookie("wg-easy", make_wg_cookie(cached["user_id"], bool(remember)), domain=COOKIE_DOMAIN, path="/", httponly=True, secure=True, samesite="lax", max_age=max_age)
+        token, ttl = auth_store.login(username, password, totp, request.client.host, bool(remember))
+    except ValueError as exc:
+        raise HTTPException(401, str(exc)) from None
+    session = auth_store.session(token)
+    response = RedirectResponse('/admin/administrators' if session['must_change'] else ADMIN_PATH, 303)
+    response.set_cookie(auth.COOKIE, token, path="/", httponly=True, secure=True, samesite="lax", max_age=ttl if remember else None)
+    clear_legacy_cookies(response)
     return response
 
 
-@app.post("/admin/logout", responses=HTTP_RESPONSES)
-def admin_logout():
-    response = RedirectResponse(ADMIN_LOGIN_PATH, 303)
-    response.delete_cookie("wg-easy", domain=COOKIE_DOMAIN, path="/")
+def clear_legacy_cookies(response):
+    if COOKIE_DOMAIN:
+        response.delete_cookie("wg-easy", domain=COOKIE_DOMAIN, path="/")
     response.delete_cookie("wg-easy", path="/")
+
+
+@app.post("/admin/logout", responses=HTTP_RESPONSES)
+def admin_logout(request: Request):
+    auth_store.logout(request.cookies.get(auth.COOKIE, ''))
+    response = RedirectResponse(ADMIN_LOGIN_PATH, 303)
+    response.delete_cookie(auth.COOKIE, path="/", secure=True, httponly=True, samesite="lax")
+    clear_legacy_cookies(response)
     return response
 
 
@@ -613,10 +549,8 @@ async def verify_status(token: str):
 
 
 def wg_session():
-    client = httpx.AsyncClient(base_url=os.environ["AWG_API_URL"], timeout=20)
-    cached = auth_cache(refresh=True)
-    client.cookies.set("wg-easy", make_wg_cookie(cached["user_id"]), path="/")
-    return client
+    transport = httpx.AsyncHTTPTransport(uds=os.getenv('AWG_SOCKET', '/awg-control/control.sock'))
+    return httpx.AsyncClient(base_url='http://controller', transport=transport, timeout=20)
 
 
 @app.get(CABINET_PATH, responses=HTTP_RESPONSES)
@@ -656,40 +590,62 @@ async def create_device(request: Request, name: str = Form(...), phone: str = Fo
     name = name.strip()[:40]
     if not name:
         raise HTTPException(400, "Укажите название устройства")
-    # Serialize create + quota check so concurrent requests cannot exceed the limit.
-    async with device_lock:
-        with db() as con:
-            user = con.execute(USER_BY_PHONE, (phone,)).fetchone()
-            count = con.execute("SELECT count(*) FROM devices WHERE phone=?", (phone,)).fetchone()[0]
-        if not user or (not user["enabled"] and not admin_ok(request)) or count >= user["device_limit"]:
-            raise HTTPException(403, "Лимит устройств исчерпан или выдача запрещена")
-        wg_name = f"{latin_slug(user['name'], 'user')}-{latin_slug(name, 'device')}-{secrets.token_hex(3)}"
-        async with wg_session() as client:
-            response = await client.post(WG_CLIENT_PATH, json={"name": wg_name, "expiresAt": None})
-            response.raise_for_status()
-            client_id = str(response.json()["clientId"])
-            # Persist identity before reconciliation; no name-based lookup.
-            with db() as con:
-                con.execute("INSERT INTO devices(phone,name,wg_client_id,created_at) VALUES(?,?,?,?)", (phone, name, client_id, int(time.time())))
-                changed(con)
-            try:
-                response = await client.get(WG_CLIENT_PATH)
-                response.raise_for_status()
-                reconcile_clients(response.json())
-            except (httpx.HTTPError, ValueError):
-                pass  # Isolated sync retries from the wg-easy database every 15 seconds.
+    with db() as con:
+        con.execute(BEGIN_WRITE)
+        user = con.execute(USER_BY_PHONE, (phone,)).fetchone()
+        count = con.execute("SELECT count(*) FROM devices WHERE phone=?", (phone,)).fetchone()[0]
+        if not user or (not user['enabled'] and not admin_ok(request)) or count >= user['device_limit']:
+            raise HTTPException(403, 'Лимит устройств исчерпан или выдача запрещена')
+        client_id = str(uuid.uuid4())
+        con.execute("INSERT INTO devices(phone,name,client_id,created_at,operation) VALUES(?,?,?,?,'create')",
+                    (phone, name, client_id, int(time.time())))
+    await process_device_operations()
     return device_redirect(request, phone)
 
 
-def reconcile_clients(clients):
-    import ipaddress
-    mapping = {str(x["id"]): str(ipaddress.IPv4Address(x["ipv4Address"])) for x in clients}
-    with db() as con:
-        for row in con.execute("SELECT id,wg_client_id,vpn_ip FROM devices").fetchall():
-            ip = mapping.get(row["wg_client_id"])
-            if ip != row["vpn_ip"]:
-                con.execute("UPDATE devices SET vpn_ip=? WHERE id=?", (ip, row["id"]))
-                changed(con)
+async def process_device_operations():
+    async with device_lock:
+        with db() as con:
+            rows = con.execute("SELECT * FROM devices WHERE operation!='applied'").fetchall()
+        for row in rows:
+            try:
+                await apply_device_operation(row)
+            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                continue  # Durable intent is retried; never log credentials or API bodies.
+
+
+async def apply_device_operation(row):
+    async with wg_session() as client:
+        path = f"/clients/{row['client_id']}"
+        response = await (client.put(path, json={'name': row['name']}) if row['operation'] == 'create' else client.delete(path))
+        response.raise_for_status()
+        result = response.json()
+        if not result['applied']:
+            return
+        with db() as con:
+            if row['operation'] == 'delete':
+                con.execute("DELETE FROM devices WHERE id=? AND operation='delete'", (row['id'],))
+            else:
+                con.execute("UPDATE devices SET vpn_ip=?,operation='applied' WHERE id=? AND operation='create'", (result['ipv4Address'], row['id']))
+            changed(con)
+
+
+@app.on_event('startup')
+async def start_device_worker():
+    async def worker():
+        while True:
+            await process_device_operations()
+            await asyncio.sleep(2)
+    app.state.device_worker = asyncio.create_task(worker())
+
+
+@app.on_event('shutdown')
+async def stop_device_worker():
+    app.state.device_worker.cancel()
+    try:
+        await app.state.device_worker
+    except asyncio.CancelledError:
+        pass
 
 
 def owned_device(request, device_id):
@@ -768,21 +724,19 @@ def assign_exit(request: Request, device_id: int, ru_exit_id: int = Form(0)):
 @app.post("/device/{device_id}/delete", responses=HTTP_RESPONSES)
 async def delete_device(request: Request, device_id: int):
     row = owned_device(request, device_id)
-    async with wg_session() as client:
-        response = await client.delete(f"/api/client/{row['wg_client_id']}")
-        if response.status_code != 404:
-            response.raise_for_status()
     with db() as con:
-        con.execute("DELETE FROM devices WHERE id=? AND phone=?", (device_id, row["phone"]))
-        changed(con)
+        con.execute("UPDATE devices SET operation='delete' WHERE id=?", (device_id,))
+    await process_device_operations()
     return device_redirect(request, row["phone"])
 
 
 @app.get("/device/{device_id}/config", responses=HTTP_RESPONSES)
 async def config(request: Request, device_id: int):
     row = owned_device(request, device_id)
+    if row['operation'] != 'applied':
+        raise HTTPException(409, 'Изменения устройства ещё применяются')
     async with wg_session() as client:
-        response = await client.get(f"/api/client/{row['wg_client_id']}/configuration")
+        response = await client.get(f"/clients/{row['client_id']}/configuration")
         response.raise_for_status()
         data = response.content
     filename = f"{latin_slug(row['name'], f'device-{device_id}')}.conf"
@@ -793,8 +747,10 @@ async def config(request: Request, device_id: int):
 @app.get("/device/{device_id}/qr", responses=HTTP_RESPONSES)
 async def qr(request: Request, device_id: int):
     row = owned_device(request, device_id)
+    if row['operation'] != 'applied':
+        raise HTTPException(409, 'Изменения устройства ещё применяются')
     async with wg_session() as client:
-        response = await client.get(f"/api/client/{row['wg_client_id']}/configuration")
+        response = await client.get(f"/clients/{row['client_id']}/configuration")
         response.raise_for_status()
         config = response.text
     image = qrcode.make(config)
@@ -904,7 +860,7 @@ def upstream_error(request: Request, exc):
 
 
 def admin_nav(active=ADMIN_PATH):
-    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация')]
+    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), ('/admin/administrators', 'Администраторы'), ('/admin/unowned', 'Без владельца')]
     return '<nav class="app-links admin-nav" aria-label="Администрирование">' + ''.join(
         f'<a href="{path}"' + (' aria-current="page"' if path == active else '') + f'>{label}</a>'
         for path, label in links) + '</nav>'
@@ -931,6 +887,8 @@ def status_text(status):
 
 def device_actions(device):
     device_id = device['id']
+    if device['operation'] != 'applied':
+        return '<p class=muted>Создание или удаление ожидает применения</p>'
     name = html.escape(device['name'], quote=True)
     return f"""<div class=device-actions>
       <button type=button class='secondary qr-button' data-qr-url='/device/{device_id}/qr'>QR</button>
@@ -1133,3 +1091,10 @@ def live_routing_status(request: Request, admin_view: bool = False):
     device_states = {str(device['id']): device_state_labels(device, names, default, status) for device in devices}
     exits = {str(node_id): exit_health_label(status, node_id) for node_id in names} if administrator else {}
     return JSONResponse({'message': status_text(status), 'devices': device_states, 'exits': exits})
+
+
+import admin_auth
+import unowned
+import sys
+admin_auth.register(sys.modules[__name__])
+unowned.register(sys.modules[__name__])

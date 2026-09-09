@@ -12,18 +12,13 @@ def owned_tree(directory, owner):
 
 
 def initialize():
-    for directory, mode in [('/ru-configs', 0o700), ('/data', 0o770),
+    for directory, mode in [('/ru-configs', 0o700), ('/data', 0o770), ('/auth', 0o700),
                             ('/router-state', 0o700), ('/routing-status', 0o750)]:
         owned_tree(directory, 65532)
         os.chmod(directory, mode)
-    # Existing keys and SQLite files retain their contents and private modes.
-    root = Path('/wg-easy')
-    owned_tree(root, 1000)
-    os.chmod(root, 0o750)
-    for name in ['wg-easy.db', 'wg-easy.db-wal', 'wg-easy.db-shm']:
-        path = root / name
-        if path.exists() and not path.is_symlink():
-            os.chmod(path, 0o640)
+    for directory, mode in [('/awg-data', 0o700), ('/awg-control', 0o750), ('/awg-network', 0o750)]:
+        owned_tree(directory, 1000)
+        os.chmod(directory, mode)
 
 
 if __name__ == '__main__':

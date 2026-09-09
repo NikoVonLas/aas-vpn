@@ -1,7 +1,5 @@
 {$VPN_SITE_ADDRESS} {
-    reverse_proxy awg2:51821 {
-        header_down Set-Cookie "Path=/" "Path=/; Domain={$COOKIE_DOMAIN}"
-    }
+    redir https://{$PORTAL_DOMAIN}/admin 308
     encode gzip zstd
     header {
         +Set-Cookie "wg-easy=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"

@@ -28,8 +28,14 @@ for service in config['services']:
 if images:
     subprocess.run(['docker', 'image', 'save', '-o', str(path / 'images.tar'), *sorted(images)], check=True)
 PY
-# The EXIT trap restarts the old stack even when archiving fails.
-trap 'docker compose up -d --pull never >/dev/null' EXIT
+# Restart on failure; a migration can retain the successful frozen snapshot.
+finish_backup() {
+  local backup_status=$?
+  if [[ "$backup_status" != 0 || "${AAS_BACKUP_KEEP_STOPPED:-0}" != 1 ]]; then
+    docker compose up -d --pull never >/dev/null
+  fi
+}
+trap finish_backup EXIT
 docker compose stop
 tar --exclude='./backups' --exclude='./.git' -czf "$backup_dir/project.tar.gz" .
 while IFS=$'\t' read -r key volume; do
@@ -38,4 +44,7 @@ while IFS=$'\t' read -r key volume; do
     sh -c 'cd /volume && tar czf "/backup/volume-$1.tar.gz" .' sh "$key"
 done < <(jq -r '.volumes | to_entries[] | [.key,.value.name] | @tsv' "$backup_dir/compose-resolved.json")
 touch "$backup_dir/COMPLETE"
+if [[ -n "${AAS_BACKUP_RESULT_FILE:-}" ]]; then
+  printf '%s\n' "$backup_dir" > "$AAS_BACKUP_RESULT_FILE"
+fi
 printf 'Backup: %s\n' "$backup_dir"

@@ -12,6 +12,8 @@ for (const [name, path, active] of [
   ['users', '/admin', 'Пользователи'],
   ['exits', '/admin/ru-exits', 'RU-выходы'],
   ['routing', '/admin/routing', 'Маршрутизация'],
+  ['administrators', '/admin/administrators', 'Администраторы'],
+  ['unowned', '/admin/unowned', 'Без владельца'],
   ['devices', '/admin/users/+79990000001/devices', 'Пользователи'],
 ]) {
   test(`${name} layout`, async ({ page }) => {
@@ -163,3 +165,16 @@ for (const [phone, allowed] of [['+79990000001', true], ['+79990000002', false]]
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }
+
+test('administrator forms share controls and hide unused password', async ({ page }) => {
+  await login(page);
+  await page.goto('/admin/administrators');
+  const ownForm = page.locator('form.settings-form').first();
+  await expect(ownForm.getByRole('button', { name: 'Сохранить', exact: true })).toHaveCount(1);
+  await ownForm.locator('[data-admin-action]').selectOption('totp-start');
+  await expect(ownForm.locator('[data-admin-password]')).toBeHidden();
+  await ownForm.locator('[data-admin-action]').selectOption('password');
+  await expect(ownForm.locator('[data-admin-password]')).toBeVisible();
+  const widths = await page.locator('.admin-nav a').evaluateAll(links => links.map(link => link.scrollWidth <= link.clientWidth));
+  expect(widths.every(Boolean)).toBe(true);
+});

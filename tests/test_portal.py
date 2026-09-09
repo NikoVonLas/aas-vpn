@@ -16,7 +16,8 @@ def test_migration_repeat_and_nullable_password(portal):
         assert con.execute('SELECT count(*) FROM ru_exits').fetchone()[0] == 1
         assert con.execute('SELECT count(*) FROM devices').fetchone()[0] == 2
         assert con.execute('SELECT can_change_ru_exit FROM users').fetchone()[0] == 0
-        con.execute('UPDATE auth_cache SET password_hash=NULL')
+    with app.auth_store.db() as con:
+        con.execute('UPDATE admins SET password_hash=NULL')
     assert post(client, '/admin/login', {'username': 'admin', 'password': 'anything'}).status_code == 401
     admin_login(app, client)
     assert client.get('/admin').status_code == 200
@@ -24,13 +25,13 @@ def test_migration_repeat_and_nullable_password(portal):
 
 def test_session_integrity_and_expiration(portal):
     app, client = portal
-    payload = {'data': {'userId': 1}}
-    sealed = app.iron_seal(payload, 'a' * 64)
-    assert app.iron_unseal(sealed, 'a' * 64) == payload
-    for value, secret in [(sealed[:-1] + '!', 'a' * 64), (sealed, 'b' * 64), (app.iron_seal(payload, 'a' * 64, -120), 'a' * 64)]:
-        with pytest.raises(ValueError, match='Invalid session'):
-            app.iron_unseal(value, secret)
-    client.cookies.set('wg-easy', sealed[:-1] + '!', domain='.example.test')
+    token, _ = app.auth_store.login('admin', 'test-password', '', 'test')
+    assert app.auth_store.session(token)['id'] == 1
+    assert app.auth_store.session(token + '!') is None
+    with app.auth_store.db() as con:
+        con.execute('UPDATE sessions SET expires=0')
+    assert app.auth_store.session(token) is None
+    client.cookies.set(app.auth.COOKIE, token)
     assert client.get('/admin').status_code == 303
 
 
@@ -71,8 +72,8 @@ def test_logout_cookies_and_form_js(portal, tmp_path):
 def test_totp_and_csrf(portal):
     app, client = portal
     secret = pyotp.random_base32()
-    with app.db() as con:
-        con.execute('UPDATE auth_cache SET totp_key=?,totp_verified=1', (secret,))
+    with app.auth_store.db() as con:
+        con.execute('UPDATE admins SET totp_key=?,totp_verified=1', (secret,))
     assert client.post('/admin/login', data={'username': 'admin', 'password': 'test-password'}).status_code == 403
     assert post(client, '/admin/login', {'username': 'admin', 'password': 'test-password'}).status_code == 401
     assert post(client, '/admin/login', {'username': 'admin', 'password': 'test-password', 'totp': pyotp.TOTP(secret).now()}).status_code == 303
@@ -155,12 +156,12 @@ def test_admin_device_crud_and_client_id(portal, monkeypatch):
     calls = []
     async def api(request):
         calls.append((request.method, request.url.path))
-        if request.method == 'POST':
-            return httpx.Response(200, json={'success':True, 'clientId':99})
+        if request.method == 'PUT':
+            return httpx.Response(200, json={'applied':True, 'ipv4Address':'10.8.0.4'})
         if request.url.path.endswith('/configuration'):
             return httpx.Response(200, text=WG)
         if request.method == 'DELETE':
-            return httpx.Response(200)
+            return httpx.Response(200, json={'applied':True, 'deleted':True})
         return httpx.Response(200, json=[{'id':41,'ipv4Address':'10.8.0.2'}, {'id':42,'ipv4Address':'10.8.0.3'}, {'id':99,'ipv4Address':'10.8.0.4'}, {'id':100,'ipv4Address':'10.8.0.5'}])
     def session():
         return httpx.AsyncClient(transport=httpx.MockTransport(api), base_url='http://awg.test')
@@ -169,10 +170,10 @@ def test_admin_device_crud_and_client_id(portal, monkeypatch):
     assert result.status_code == 303
     assert result.headers['location'].endswith('/+79990000002/devices')
     with app.db() as con:
-        row = con.execute("SELECT * FROM devices WHERE wg_client_id='99'").fetchone()
+        row = con.execute("SELECT * FROM devices WHERE name='New'").fetchone()
         assert row['phone'] == '+79990000002'
         assert row['vpn_ip'] == '10.8.0.4'
-        assert not con.execute("SELECT 1 FROM devices WHERE wg_client_id='100'").fetchone()
+        assert not con.execute("SELECT 1 FROM devices WHERE client_id='100'").fetchone()
     assert post(client, f"/device/{row['id']}/rename", {'name':'Renamed'}).status_code == 303
     assert client.get(f"/device/{row['id']}/config").text == WG
     assert client.get(f"/device/{row['id']}/qr").headers['content-type'] == 'image/png'
@@ -180,7 +181,7 @@ def test_admin_device_crud_and_client_id(portal, monkeypatch):
         con.execute("UPDATE users SET device_limit=2 WHERE phone='+79990000002'")
     assert post(client, '/device', {'name':'Over limit', 'phone':'+79990000002'}).status_code == 403
     assert post(client, f"/device/{row['id']}/delete").status_code == 303
-    assert ('DELETE', '/api/client/99') in calls
+    assert ('DELETE', '/clients/' + row['client_id']) in calls
 
 
 def test_admin_javascript_submit_routing(portal, tmp_path):

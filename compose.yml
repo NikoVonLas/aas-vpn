@@ -2,7 +2,9 @@ name: ${COMPOSE_PROJECT_NAME:-aas-vpn}
 
 services:
   storage-init:
-    build: ./portal
+    build:
+      context: .
+      dockerfile: portal/Dockerfile
     image: aas-vpn-portal:local
     user: "0:0"
     network_mode: none
@@ -12,26 +14,28 @@ services:
       - portal_data:/data
       - router_state:/router-state
       - routing_status:/routing-status
-      - awg2_wireguard:/wg-easy
+      - auth_data:/auth
+      - awg_data:/awg-data
+      - awg_control:/awg-control
+      - awg_network:/awg-network
     cap_drop: [ALL]
     cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     restart: "no"
 
   awg2:
-    image: aas-vpn-wg-easy:15.4.0
-    build: ./awg
+    image: aas-vpn-awg:3.0.20260805
+    build:
+      context: .
+      dockerfile: awg/Dockerfile
     container_name: awg2
     depends_on:
-      sing-box:
-        condition: service_healthy
-    environment:
-      DISABLE_IPV6: "true"
-      EXPERIMENTAL_AWG: "true"
-      OVERRIDE_AUTO_AWG: awg
-      DEBUG: ""
+      storage-init:
+        condition: service_completed_successfully
     volumes:
-      - awg2_wireguard:/etc/wireguard
+      - awg_data:/awg-data
+      - awg_control:/awg-control
+      - awg_network:/awg-network
       - /lib/modules:/lib/modules:ro
       - routing_status:/routing-status:ro
     ports:
@@ -44,8 +48,10 @@ services:
     cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       net.ipv4.ip_forward: "1"
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
     healthcheck:
-      test: ["CMD", "/usr/sbin/capsh", "--inh=cap_net_admin,cap_net_raw", "--addamb=cap_net_admin,cap_net_raw", "--shell=/bin/sh", "--", "-c", "awg show interfaces | grep -qx wg0"]
+      test: ["CMD", "python", "-c", "import json,time; s=json.load(open('/awg-control/status.json')); assert s['state']=='applied' and time.time()-s['updated_at']<15"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -88,6 +94,7 @@ services:
     volumes:
       - ./config/sing-box.json:/etc/sing-box/config.json:ro
       - portal_data:/data:ro
+      - awg_network:/awg-network:ro
       - ru_configs:/ru-configs:ro
       - router_state:/router-state
       - routing_status:/routing-status
@@ -104,7 +111,9 @@ services:
     restart: unless-stopped
 
   portal:
-    build: ./portal
+    build:
+      context: .
+      dockerfile: portal/Dockerfile
     image: aas-vpn-portal:local
     depends_on:
       storage-init:
@@ -117,9 +126,12 @@ services:
       ZVONOK_CAMPAIGN_ID: ${ZVONOK_CAMPAIGN_ID}
       ZVONOK_DIAL_NUMBERS: ${ZVONOK_DIAL_NUMBERS}
       ZVONOK_SUCCESS_STATUSES: ${ZVONOK_SUCCESS_STATUSES:-processed,success,confirmed,pincode_ok}
-      AWG_API_URL: http://awg2:51821
+      AUTH_DB: /auth/auth.db
+      AWG_SOCKET: /awg-control/control.sock
     volumes:
       - portal_data:/data
+      - auth_data:/auth
+      - awg_control:/awg-control:ro
       - ru_configs:/ru-configs
       - ./config/sing-box.json:/etc/sing-box/config.json:ro
       - routing_status:/routing-status:ro
@@ -129,23 +141,20 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
-  auth-sync:
-    build: ./portal
+  migrate-native:
+    profiles: [migration]
     image: aas-vpn-portal:local
-    depends_on:
-      storage-init:
-        condition: service_completed_successfully
-    container_name: aas-auth-sync
-    command: [python, sync.py]
-    user: "65532:65532"
+    user: "0:0"
+    command: [python, migrate_native.py]
     network_mode: none
     volumes:
-      - portal_data:/data
-      - awg2_wireguard:/wg-easy:ro
+      - awg2_wireguard:/legacy:ro
+      - portal_data:/data:ro
+      - auth_data:/auth
+      - awg_data:/awg-data
     cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE, CHOWN, FOWNER]
     security_opt: [no-new-privileges:true]
-    read_only: true
-    restart: unless-stopped
 
   caddy:
     image: caddy:2
@@ -188,3 +197,8 @@ volumes:
   routing_status:
   caddy_data:
   caddy_config:
+
+  auth_data:
+  awg_data:
+  awg_control:
+  awg_network:

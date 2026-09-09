@@ -46,6 +46,7 @@ def test_success_updates_working_copy_after_launch(tmp_path, monkeypatch):
 
 def test_network_snapshot_preserves_ru_interface(tmp_path, monkeypatch):
     monkeypatch.setattr(controller, 'DATA', tmp_path)
+    monkeypatch.setenv('AWG_NETWORK_FILE', str(tmp_path / 'wg-network.json'))
     monkeypatch.setattr(controller, 'VPN_CIDR', '')
     calls = []
     def run(*args, **kwargs):

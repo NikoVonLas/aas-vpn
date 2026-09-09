@@ -36,16 +36,6 @@ def migrate(con, base=None):
         con.execute("INSERT INTO settings VALUES('routing_revision','1')")
         seeds = imported_rules(base) if base else default_rules()
         con.executemany('INSERT OR IGNORE INTO routing_rules(target,kind,value) VALUES(?,?,?)', seeds)
-    # wg-easy 15.4 allows NULL passwords (OAuth-only accounts).
-    columns = list(con.execute('PRAGMA table_info(auth_cache)'))
-    if any(r[1] == 'password_hash' and r[3] for r in columns):
-        con.execute('ALTER TABLE auth_cache RENAME TO old_auth_cache')
-        con.execute('''CREATE TABLE auth_cache(singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-          user_id INTEGER NOT NULL, username TEXT NOT NULL, password_hash TEXT, totp_key TEXT,
-          totp_verified INTEGER NOT NULL, enabled INTEGER NOT NULL, session_password TEXT NOT NULL,
-          session_timeout INTEGER NOT NULL, synced_at INTEGER NOT NULL)''')
-        con.execute('INSERT INTO auth_cache SELECT * FROM old_auth_cache')
-        con.execute('DROP TABLE old_auth_cache')
 
 
 def imported_rules(base):

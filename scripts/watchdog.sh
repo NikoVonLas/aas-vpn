@@ -19,8 +19,7 @@ healthy() {
   docker inspect --format "$running_format" adguard-home 2>/dev/null | grep -qx true &&
   router_healthy &&
   docker inspect --format "$running_format" aas-caddy 2>/dev/null | grep -qx true &&
-  docker inspect --format "$running_format" aas-portal 2>/dev/null | grep -qx true &&
-  docker inspect --format "$running_format" aas-auth-sync 2>/dev/null | grep -qx true
+  docker inspect --format "$running_format" aas-portal 2>/dev/null | grep -qx true
   return $?
 }
 

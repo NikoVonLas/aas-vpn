@@ -58,15 +58,15 @@ def network_guard():
 
 
 def sync_network_routes(bridge):
-    """Read actual wg-easy subnets; never guess or replace a connected RU route."""
-    network_file = DATA / 'wg-network.json'
+    """Read actual controller subnets; never guess or replace a connected RU route."""
+    network_file = Path(os.getenv('AWG_NETWORK_FILE', '/awg-network/wg-network.json'))
     networks = [VPN_CIDR] if VPN_CIDR else []
     mtus = {}
     if network_file.exists():
         network_state = json.loads(network_file.read_text())
         networks, mtus = network_state['cidrs'], network_state.get('mtus', {})
     if not networks:
-        raise ValueError('Waiting for wg-easy network snapshot')
+        raise ValueError('Waiting for AWG network snapshot')
     connected = json.loads(run('ip', '-j', '-4', 'route', 'show', 'scope', 'link').stdout)
     networks = [ipaddress.IPv4Network(network) for network in networks]
     protected = [ipaddress.IPv4Network(route['dst']) for route in connected if 'dst' in route]
