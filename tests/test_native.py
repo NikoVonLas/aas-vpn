@@ -177,6 +177,8 @@ def test_portal_pending_creation_recovers_without_new_identity(portal, monkeypat
     identities = []
     ready = False
     def api(request):
+        if request.method == 'GET':
+            return httpx.Response(200, json=[])
         identities.append(request.url.path)
         if not ready:
             raise httpx.ReadTimeout('Timed out')
@@ -240,3 +242,24 @@ def test_delete_before_delayed_create_cannot_resurrect(tmp_path):
     assert store.delete('delayed')['applied']
     with pytest.raises(ValueError, match='deleted'):
         store.create('delayed', 'Late request')
+
+
+def test_reconcile_native_addresses_without_importing_external_clients(portal, monkeypatch):
+    app, client = portal
+    records = [{'id':'41', 'ipv4Address':'10.8.0.9', 'effective_enabled':False},
+               {'id':'999', 'ipv4Address':'10.8.0.10', 'effective_enabled':True}]
+    monkeypatch.setattr(app, 'wg_session', lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=records)), base_url='http://controller'))
+    client.portal.call(app.reconcile_native_clients)
+    with app.db() as con:
+        assert tuple(con.execute('SELECT vpn_ip,native_enabled FROM devices WHERE id=1').fetchone()) == ('10.8.0.9', 0)
+        assert con.execute('SELECT count(*) FROM devices').fetchone()[0] == 2
+
+
+def test_legacy_portal_schema_requires_completed_auth_migration(portal):
+    app, _ = portal
+    with app.db() as con:
+        con.execute('ALTER TABLE devices RENAME COLUMN client_id TO wg_client_id')
+    with pytest.raises(RuntimeError, match='migration has not completed'):
+        app.startup()
+    with app.db() as con:
+        assert 'wg_client_id' in {row[1] for row in con.execute('PRAGMA table_info(devices)')}

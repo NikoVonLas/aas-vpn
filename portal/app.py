@@ -1,6 +1,7 @@
 import asyncio
 import html
 import io
+import ipaddress
 import json
 import os
 import re
@@ -147,6 +148,8 @@ def startup():
             con.execute('ALTER TABLE devices RENAME COLUMN wg_client_id TO client_id')
         if 'operation' not in columns:
             con.execute("ALTER TABLE devices ADD COLUMN operation TEXT NOT NULL DEFAULT 'applied'")
+        if 'native_enabled' not in columns:
+            con.execute('ALTER TABLE devices ADD COLUMN native_enabled INTEGER NOT NULL DEFAULT 1')
         old_secret = con.execute("SELECT value FROM settings WHERE key='session_secret'").fetchone()
         auth_store.initialize(old_secret[0] if old_secret else None)
         con.execute('PRAGMA secure_delete=ON')
@@ -619,6 +622,34 @@ async def process_device_operations():
                 await apply_device_operation(row)
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 continue  # Durable intent is retried; never log credentials or API bodies.
+        if time.monotonic() - getattr(app.state, 'reconciled_at', 0) >= 15:
+            try:
+                await reconcile_native_clients()
+                app.state.reconciled_at = time.monotonic()
+            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                pass
+
+
+async def reconcile_native_clients():
+    async with wg_session() as client:
+        response = await client.get('/clients')
+        response.raise_for_status()
+    records = response.json()
+    if not isinstance(records, list):
+        raise ValueError('Invalid controller snapshot')
+    mapping = {str(row['id']): row for row in records}
+    with db() as con:
+        dirty = False
+        for device in con.execute('SELECT id,client_id,vpn_ip FROM devices').fetchall():
+            peer = mapping.get(device['client_id'])
+            if peer is None:
+                continue
+            address = str(ipaddress.IPv4Address(peer['ipv4Address']))
+            enabled = int(peer.get('effective_enabled', peer.get('enabled', True)))
+            con.execute('UPDATE devices SET vpn_ip=?,native_enabled=? WHERE id=?', (address, enabled, device['id']))
+            dirty |= address != device['vpn_ip']
+        if dirty:
+            changed(con)
 
 
 async def apply_device_operation(row):
@@ -924,6 +955,8 @@ def device_routing_forms(devices, user, administrator):
         result += f"<section class='card device-card'><div class=device-head><h2>{html.escape(device['name'])}</h2>{device_actions(device)}</div><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
         if not device['vpn_ip']:
             result += '<p class=muted>Ожидает сопоставления VPN-IP</p>'
+        if not device['native_enabled']:
+            result += '<p class=muted>Устройство отключено или срок действия истёк</p>'
         result += device_edit_form(device, exits, administrator or user['can_change_ru_exit'])
         result += '</section>'
     return result

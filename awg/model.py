@@ -126,6 +126,7 @@ class Store:
     def result(self, con, row):
         data = json.loads(row['data'])
         return {**{key: data.get(key) for key in PUBLIC}, 'ipv4Address': row['address'],
+                'effective_enabled': active(data),
                 'applied': row['revision'] <= self.setting(con, 'applied'), 'deleted': bool(row['deleted'])}
 
     def create(self, client_id, name):

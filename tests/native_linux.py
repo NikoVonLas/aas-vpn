@@ -90,6 +90,11 @@ class Check:
                '-v', f'{self.root}/data:/awg-data', '-v', f'{self.root}/control:/awg-control',
                '-v', f'{self.root}/network:/awg-network', '-v', f'{self.root}/guard:/routing-status:ro', IMAGE)
         self.until(lambda: self.api('GET', '/health')['state'] == 'applied')
+        docker('run', '--rm', '--network', 'none', '--cap-drop', 'ALL', '--user', '65532:65532',
+               '-v', f'{self.root}/control:/awg-control:ro', '--entrypoint', 'python',
+               os.getenv('PORTAL_TEST_IMAGE', 'aas-vpn-portal:native-test'), '-c',
+               "import httpx; c=httpx.Client(transport=httpx.HTTPTransport(uds='/awg-control/control.sock'), base_url='http://controller'); assert c.get('/health').json()['state']=='applied'")
+        print('Unprivileged portal connects through read-only socket mount: passed', flush=True)
         for index, client in enumerate(CLIENTS):
             client_id = 'test-' + str(index)
             self.api('PUT', '/clients/'+client_id, {'name':client})
