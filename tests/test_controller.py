@@ -66,16 +66,30 @@ def test_network_snapshot_preserves_ru_interface(tmp_path, monkeypatch):
 
 
 def test_wireguard_peer_uses_actual_underlay_route(monkeypatch):
-    controller.endpoint_interface.cache_clear()
+    controller.endpoint_transport.cache_clear()
     calls = []
     def route(*args, **kwargs):
         calls.append(args)
-        return SimpleNamespace(stdout=b'[{"dev":"br-vpn","gateway":"192.0.2.45"}]')
+        return SimpleNamespace(stdout=b'[{"dev":"br-vpn","gateway":"192.0.2.45","metrics":[{"mtu":1280}]}]')
     monkeypatch.setattr(controller, 'run', route)
     config = {'endpoints': [{'peers': [{'address': '10.19.0.45', 'port': 41495}]},
                             {'listen_port': 51820, 'peers': [{}]}]}
     controller.bind_endpoint_interfaces(config)
     assert config['endpoints'][0]['bind_interface'] == 'br-vpn'
+    assert config['endpoints'][0]['mtu'] == 1200
     assert 'bind_interface' not in config['endpoints'][1]
     assert calls == [('ip','-j','route','get','10.19.0.45','mark','0x2024')]
-    controller.endpoint_interface.cache_clear()
+    controller.endpoint_transport.cache_clear()
+
+
+def test_endpoint_mtu_uses_link_and_preserves_explicit_value(monkeypatch):
+    controller.endpoint_transport.cache_clear()
+    def route(*args, **kwargs):
+        return SimpleNamespace(stdout=b'[{"dev":"eth0"}]' if 'route' in args else b'[{"mtu":1500}]')
+    monkeypatch.setattr(controller, 'run', route)
+    config = {'endpoints': [{'peers': [{'address': '192.0.2.1'}]},
+                            {'mtu': 1100, 'peers': [{'address': '192.0.2.1'}]}]}
+    controller.bind_endpoint_interfaces(config)
+    assert config['endpoints'][0]['mtu'] == 1408
+    assert config['endpoints'][1]['mtu'] == 1100
+    controller.endpoint_transport.cache_clear()

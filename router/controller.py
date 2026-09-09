@@ -144,7 +144,7 @@ def advance(previous, ok):
 
 
 @lru_cache(maxsize=2048)
-def endpoint_interface(host, _minute):
+def endpoint_transport(host, _minute):
     """Refresh DNS/route selection each minute, including VPN-reachable peers."""
     try:
         try:
@@ -153,7 +153,10 @@ def endpoint_interface(host, _minute):
             result = subprocess.run(['getent', 'hosts', host], capture_output=True, text=True, check=True, timeout=2)
             address = str(ipaddress.IPv4Address(result.stdout.split()[0]))
         route = json.loads(run('ip', '-j', 'route', 'get', address, 'mark', '0x2024').stdout)[0]
-        return route['dev']
+        metrics = [metric['mtu'] for metric in route.get('metrics', []) if 'mtu' in metric]
+        mtu = min(metrics) if metrics else json.loads(run('ip', '-j', 'link', 'show', 'dev', route['dev']).stdout)[0]['mtu']
+        # Leave room for outer IP, UDP and WireGuard, including nested tunnels.
+        return {'interface': route['dev'], 'mtu': max(576, min(1408, mtu - 80))}
     except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
         return None
 
@@ -163,11 +166,14 @@ def bind_endpoint_interfaces(config):
              for peer in endpoint.get('peers', []) if peer.get('address')}
     minute = int(time.monotonic() // 60)
     with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
-        bindings = dict(zip(hosts, pool.map(lambda host: endpoint_interface(host, minute), hosts)))
+        bindings = dict(zip(hosts, pool.map(lambda host: endpoint_transport(host, minute), hosts)))
     for endpoint in config.get('endpoints', []):
-        interfaces = {bindings.get(peer.get('address')) for peer in endpoint.get('peers', [])} - {None}
+        paths = [bindings[peer['address']] for peer in endpoint.get('peers', []) if bindings.get(peer.get('address'))]
+        interfaces = {path['interface'] for path in paths}
         if len(interfaces) == 1:
             endpoint['bind_interface'] = interfaces.pop()
+        if paths and 'mtu' not in endpoint:
+            endpoint['mtu'] = min(path['mtu'] for path in paths)
 
 
 APPLY_ERRORS = (OSError, ValueError, KeyError, sqlite3.Error, subprocess.SubprocessError, RuntimeError)
