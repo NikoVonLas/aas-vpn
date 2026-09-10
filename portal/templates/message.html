@@ -1,0 +1,2 @@
+{% from 'components/forms.html' import link with context %}
+<section class="card{% if not_found %} not-found{% endif %}">{% if not_found %}<div class="glitch" data-text="404">404</div>{% endif %}<p {% if error %}role="alert"{% endif %}>{{ message }}</p>{% if account_id %}<p>ID аккаунта: {{ account_id }}</p>{% endif %}{% if codes %}<pre>{{ codes }}</pre>{% endif %}{% if recovery %}<p>Страница восстановления: <a href="/login/recovery">/login/recovery</a></p>{% endif %}{{ link(back_label, back_url) }}</section>

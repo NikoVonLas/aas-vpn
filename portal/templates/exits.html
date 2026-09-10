@@ -1,0 +1,6 @@
+{% from 'components/forms.html' import status, csrf, button with context %}
+<p data-routing-state>{{ routing_status }}</p>
+{% for node in nodes %}<section class="card"><div class="section-head"><h2>{{ node.name }}</h2>{% if node.id == default %}{{ status('Глобальный выход') }}{% endif %}</div><p data-exit-state="{{ node.id }}">{{ node.health }}</p>
+{% if node.editor or node.config %}<details><summary>{{ 'Редактировать' if node.editor else 'Посмотреть конфиг' }}</summary>{{ node.editor }}{% if not node.editor %}<pre>{{ node.config }}</pre>{% endif %}</details>{% endif %}
+{% if can_default and not can_edit %}<form method="post" action="/admin/ru-exits/{{ node.id }}/default">{{ csrf() }}{{ button('По умолчанию', 'secondary', disabled=node.id == default) }}</form>{% endif %}</section>{% endfor %}
+{% if can_edit %}<section class="card"><details><summary>Добавить RU-выход</summary>{{ new_editor }}</details></section>{% endif %}

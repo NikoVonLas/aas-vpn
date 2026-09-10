@@ -1,5 +1,4 @@
 """Role, account and scoped routing pages built with shared portal components."""
-import html
 import json
 import sqlite3
 import time
@@ -8,9 +7,10 @@ from fastapi import Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 import identity
 from routing import changed, normalize_rule
+from views import render
+from urllib.parse import urlencode
 
 ROLES_PATH = '/admin/roles'
-SAVE_BUTTON = '<button>Сохранить</button>'
 CREATE_ACCOUNT = 'accounts.create'
 EDIT_ACCOUNT = 'accounts.edit'
 ACCOUNT_LIMITS = 'accounts.limits'
@@ -18,17 +18,12 @@ ACCOUNT_STATE = 'accounts.state'
 ACCOUNTS_PATH = '/admin'
 
 
-def esc(value):
-    return html.escape(str(value or ''), quote=True)
-
-def choices(name, catalog, selected):
-    return ''.join((f'''<label class=check-label><input type=checkbox name={name} value="{esc(key)}" {('checked' if key in selected else '')}> {esc(label)}</label>''' for (key, label) in catalog.items()))
 METHODS = {method.value: label for method, label in (
     (identity.LoginMethod.PASSWORD, 'Логин и пароль'),
     (identity.LoginMethod.PHONE, 'Телефон'),
     (identity.LoginMethod.EMAIL, 'Почта'),
     (identity.LoginMethod.WEBAUTHN, 'Ключ / passkey'),
-    (identity.LoginMethod.TOTP, 'TOTP'),
+    (identity.LoginMethod.TOTP, 'Приложение-аутентификатор'),
 )}
 
 def parse_rules(ru, direct):
@@ -60,27 +55,45 @@ class AccessPages:
 
     def roles(self, request: Request):
         self.p.require_owner(request)
+        self.p.admin_nav(ROLES_PATH)
         with self.p.auth_store.db() as con:
-            rows = con.execute('SELECT * FROM roles ORDER BY protected DESC,name').fetchall()
-        body = self.p.admin_nav(ROLES_PATH) + '<p class=muted>Здесь создаются и настраиваются роли. Назначайте их в разделе <a href=/admin>Пользователи</a>. Права и способы входа всех ролей складываются.</p>'
-        for row in [*rows, {'id': '', 'name': '', 'permissions': '[]', 'primary_methods': '["password"]', 'secondary_methods': '["totp","webauthn"]', 'require_2fa': 0, 'protected': 0}]:
-            body += f"<section class=card><details {('open' if not row['id'] else '')}><summary>{esc(row['name']) or 'Новая роль'}</summary>"
-            body += f'''<form class=stack method=post action=/admin/roles/save><input type=hidden name=role_id value="{esc(row['id'])}">'''
-            body += f'''<label>Название<input name=name maxlength=80 value="{esc(row['name'])}" required></label>'''
-            body += '<details><summary>Права</summary>' + choices('permissions', identity.ACTIONS, json.loads(row['permissions'])) + '</details>'
-            body += '<fieldset><legend>Основные способы входа</legend>' + choices('primary', {k: METHODS[k] for k in sorted(identity.PRIMARY)}, json.loads(row['primary_methods'])) + '</fieldset>'
-            body += '<fieldset><legend>Вторые способы</legend>' + choices('secondary', METHODS, json.loads(row['secondary_methods'])) + '</fieldset>'
-            body += f"<label class=check-label><input type=checkbox name=required value=1 {('checked' if row['require_2fa'] else '')}> Обязательная 2FA</label><div class=form-actions>"
-            if row['id']:
-                body += '<button class=secondary name=copy value=1>Создать копию</button>'
-            body += SAVE_BUTTON
-            body += '</div></form></details></section>'
-        return self.p.page('Роли и доступ', body, show_header=True)
+            rows = [self.role_model(row) for row in con.execute('SELECT * FROM roles ORDER BY protected DESC,name')]
+        return self.p.page('Роли и доступ', render('roles.html', roles=rows), show_header=True)
+
+    def role_model(self, row):
+        result = dict(row)
+        for field in ('permissions', 'primary_methods', 'secondary_methods'):
+            result[field] = json.loads(result[field])
+        result['primary_labels'] = [METHODS[key] for key in result['primary_methods']]
+        return result
+
+    def edit_role(self, request: Request, role_id: str=''):
+        self.p.require_owner(request)
+        self.p.admin_nav(ROLES_PATH)
+        role = dict(id='', name='', permissions=[], primary_methods=['password'], secondary_methods=['totp', 'webauthn'], require_2fa=0, protected=0)
+        if role_id:
+            with self.p.auth_store.db() as con:
+                row = con.execute('SELECT * FROM roles WHERE id=?', (role_id,)).fetchone()
+            if not row:
+                raise HTTPException(404)
+            role = self.role_model(row)
+        groups = {name: {} for name in ('Аккаунты', 'Устройства', 'Маршрутизация', 'Инфраструктура')}
+        for key, label in identity.ACTIONS.items():
+            group = 'Инфраструктура'
+            if key.startswith('accounts.'):
+                group = 'Аккаунты'
+            elif key.startswith('devices.'):
+                group = 'Устройства'
+            elif 'routing' in key or key in {'account.exit', 'device.exit'}:
+                group = 'Маршрутизация'
+            groups[group][key] = label
+        return self.p.page(role['name'] or 'Новая роль', render('role_edit.html', role=role, groups=groups,
+                           primary={key: METHODS[key] for key in sorted(identity.PRIMARY)}, methods=METHODS), show_header=True)
 
     def save_role(self, request: Request, name: str=Form(...), role_id: str=Form(''), permissions: list[str]=Form([]), primary: list[str]=Form([]), secondary: list[str]=Form([]), required: str=Form(''), copy_role: str=Form('', alias='copy')):
         actor = self.p.require_owner(request, fresh=True)
-        self.p.identities.save_role(actor['account_id'], '' if copy_role else role_id, name + (' — копия' if copy_role else ''), permissions, primary, secondary, bool(required))
-        return RedirectResponse(ROLES_PATH, 303)
+        key = self.p.identities.save_role(actor['account_id'], '' if copy_role else role_id, name + (' — копия' if copy_role else ''), permissions, primary, secondary, bool(required))
+        return RedirectResponse(f'{ROLES_PATH}/{key}/edit', 303)
 
     def assign(self, request: Request, account_id: str=Form(...), role_id: str=Form(''), scope: str=Form('self'), targets: list[str]=Form([]), remove: str=Form('')):
         actor = self.p.require_owner(request, fresh=True)
@@ -88,7 +101,7 @@ class AccessPages:
             if not con.execute('SELECT 1 FROM accounts WHERE id=?', (account_id,)).fetchone():
                 raise HTTPException(404)
         self.p.identities.assign(actor['account_id'], account_id, role_id, scope, targets, remove)
-        return RedirectResponse(ACCOUNTS_PATH + '#account-' + account_id, 303)
+        return RedirectResponse(f'/accounts/{account_id}/edit', 303)
 
     def account_page(self, request: Request, account_id: str):
         self.p.require_permission(request, 'devices.view', account_id)
@@ -119,33 +132,28 @@ class AccessPages:
             inherited = con.execute("SELECT * FROM scoped_routing_rules WHERE scope='account' AND owner_id=?", (resource['account_id'],)).fetchall() if scope == 'device' else []
             exits = con.execute('SELECT id,name FROM ru_exits').fetchall()
             default = con.execute("SELECT value FROM settings WHERE key='ru_default'").fetchone()[0]
-            account_default = con.execute('SELECT ru_exit_id FROM users WHERE account_id=?', (resource['account_id'],)).fetchone()[0]
+            account = con.execute('SELECT name,ru_exit_id FROM users WHERE account_id=?', (resource['account_id'],)).fetchone()
+            account_default = account['ru_exit_id']
         path = f'/device/{key}/routing' if scope == 'device' else f'/accounts/{key}/routing'
         editable = self.p.identities.allowed(actor['account_id'], f'{scope}.routing.edit', resource['account_id'])
-        body = self.p.admin_nav('/admin/routing') if self.p.admin_ok(request) else '<p><a href=/cabinet>Устройства</a> · <a href=/security>Безопасность профиля</a></p>'
-        body += f'''<section class=card><h2>{esc(resource['name'])}</h2><p>Приоритет: устройство → аккаунт → глобальные правила.</p><p data-routing-state>{esc(self.p.status_text(self.p.routing_status()))}</p><form class=stack method=post action="{path}">'''
-        for (target, label) in [('ru', 'Через RU'), ('direct', 'Основной VPS')]:
-            body += f"<label>{label}<textarea name={target} rows=8 {('readonly' if not editable else '')}>{esc(rules_text(rows, target))}</textarea></label>"
+        self.p.admin_nav('/admin' if self.p.admin_ok(request) else '/cabinet')
         can_exit = scope == 'account' and self.p.identities.allowed(actor['account_id'], 'account.exit', resource['account_id'])
-        if can_exit:
-            options = '<option value=0>Глобальный дефолт</option>' + ''.join((f"<option value={node['id']} {('selected' if node['id'] == resource['ru_exit_id'] else '')}>{esc(node['name'])}</option>" for node in exits))
-            body += f'<label>RU-выход аккаунта<select name=ru_exit_id>{options}</select></label>'
-        if editable or can_exit:
-            body += SAVE_BUTTON
-        body += '</form></section>'
+        values = lambda source: {target: rules_text(source, target) for target in ('ru', 'direct')}
+        editor = render('components/routing_editor.html', path=path, values=values(rows), editable=editable,
+                        can_exit=can_exit, exits=exits, selected_exit=resource['ru_exit_id'])
         names = {str(node['id']): node['name'] for node in exits}
-        body += f"<section class=card><h2>Наследование</h2><p>RU-дефолт аккаунта: {esc(names.get(str(account_default), 'Глобальный'))} · Глобальный: {esc(names.get(default, '—'))}</p>"
-        body += self.inherited_rules(inherited, global_rules)
-        return self.p.page('Маршрутизация', body + '</section>', show_header=True)
-
-    def inherited_rules(self, inherited, global_rules):
-        body = ''
-        for (label, source) in [('Аккаунт', inherited), ('Глобальные', global_rules)]:
-            body += f'<details><summary>{label}</summary>'
-            for (target, caption) in [('ru', 'Через RU'), ('direct', 'Основной VPS')]:
-                body += f"<h3>{caption}</h3><pre>{esc(rules_text(source, target)) or 'Пусто'}</pre>"
-            body += '</details>'
-        return body
+        chain = 'RU-выход аккаунта: ' + names.get(str(account_default), 'Глобальный выход') + ' → Глобальный: ' + names.get(default, '—')
+        status = self.p.routing_status()
+        actual = self.p.device_state_labels(resource, {int(k): v for k, v in names.items()}, account_default or int(default), status) if scope == 'device' else ''
+        inherited_sources = [('Аккаунт', values(inherited))] if scope == 'device' else []
+        inherited_sources.append(('Глобальные правила', values(global_rules)))
+        crumbs = [('Пользователи', '/admin'), (account['name'], f"/accounts/{resource['account_id']}/edit")] if self.p.admin_ok(request) else [('Мои устройства', '/cabinet')]
+        if scope == 'device':
+            crumbs.append(('Устройства', f"/accounts/{resource['account_id']}"))
+        crumbs.append(('Маршрутизация', ''))
+        return self.p.page('Маршрутизация', render('routing.html', level='Устройство' if scope == 'device' else 'Аккаунт',
+                           owner=resource['name'], status=self.p.status_text(status), editor=editor,
+                           crumbs=crumbs, chain=chain, actual=actual, inheritance=inherited_sources), show_header=True)
 
     def device_routes(self, request: Request, device_id: int):
         return self.routing_form(request, 'device', device_id)
@@ -178,43 +186,55 @@ class AccessPages:
     def save_account_routes(self, request: Request, account_id: str, ru: str=Form(''), direct: str=Form(''), ru_exit_id: int | None=Form(None)):
         return self.save_routes(request, 'account', account_id, ru, direct, ru_exit_id)
 
-    def accounts(self, request: Request):
-        actor = self.p.current_account(request)
+    def account_rows(self, actor):
         with self.p.identities.transaction() as con:
-            rows = con.execute('SELECT u.*,a.phone login_phone,c.username,\n                (SELECT count(*) FROM portal.devices d WHERE d.account_id=u.account_id) device_count\n                FROM portal.users u JOIN accounts a ON a.id=u.account_id LEFT JOIN admins c ON c.id=a.admin_id ORDER BY u.name').fetchall()
-        rows = [r for r in rows if self.p.identities.allowed(actor['account_id'], 'accounts.view', r['account_id'])]
-        body = self.p.admin_nav() + f"<p>{len(rows)} аккаунтов · устройств: {sum((r['device_count'] for r in rows))}</p>"
-        is_owner = self.p.identities.owner(actor['account_id'])
-        if self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT):
-            body += '<section class=card><h2>Новый аккаунт</h2><form class=settings-form method=post action=/admin/accounts><label>Имя<input name=name maxlength=80 required></label><label>Логин<input name=username maxlength=64 required></label><label>Временный пароль<input name=password type=password minlength=12 maxlength=128 required autocomplete=new-password></label><label>Лимит устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить аккаунт</button></form></section>'
-        access = self.account_access_model() if is_owner else None
+            rows = con.execute('''SELECT u.*,a.phone login_phone,a.email,c.username,
+                (SELECT count(*) FROM portal.devices d WHERE d.account_id=u.account_id) device_count
+                FROM portal.users u JOIN accounts a ON a.id=u.account_id
+                LEFT JOIN admins c ON c.id=a.admin_id ORDER BY u.name,u.account_id''').fetchall()
+            grants = con.execute('SELECT g.account_id,r.id,r.name FROM grants g JOIN roles r ON r.id=g.role_id').fetchall()
+            rows = [dict(row) for row in rows if identity.allowed(con, actor['account_id'], 'accounts.view', row['account_id'])]
         for row in rows:
-            body += self.account_card(actor, row, access)
-        body += '<form method=post action=/admin/logout><button class=secondary>Выйти</button></form>'
-        return self.p.page('Пользователи', body, show_header=True, phone_widget=True)
+            row['role_ids'] = {g['id'] for g in grants if g['account_id'] == row['account_id']}
+            row['roles'] = sorted({g['name'] for g in grants if g['account_id'] == row['account_id']})
+        return rows, grants
 
-    def account_card(self, actor, row, access):
-        body = ''
-        key = row['account_id']
-        body += f"<section class=card id=account-{key}><h2>{esc(row['name'])}</h2><p>{esc(row['username'] or row['login_phone'])} · {row['device_count']}/{row['device_limit']} устройств</p><form class=settings-form method=post action=/accounts/{key}/save>"
-        for (field, caption, action) in [('name', 'Имя', EDIT_ACCOUNT), ('device_limit', 'Лимит устройств', ACCOUNT_LIMITS)]:
-            if self.p.identities.allowed(actor['account_id'], action, key):
-                body += f'<label>{caption}<input name={field} value="{esc(row[field])}" required></label>'
-        if self.p.identities.allowed(actor['account_id'], ACCOUNT_STATE, key):
-            body += f"<label class=check-label><input type=checkbox name=enabled value=1 {('checked' if row['enabled'] else '')}> Аккаунт включён</label><input type=hidden name=state_present value=1>"
-        body += '<div class=form-actions>'
-        if self.p.identities.allowed(actor['account_id'], 'devices.view', key):
-            body += f'<a class="btn secondary" href=/accounts/{key}>Устройства</a>'
-        if self.p.identities.allowed(actor['account_id'], 'account.routing.view', key):
-            body += f'<a class="btn secondary" href=/accounts/{key}/routing>Маршрутизация</a>'
-        if any((self.p.identities.allowed(actor['account_id'], action, key) for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE))):
-            body += SAVE_BUTTON
-        body += '</div></form>'
-        if access is not None:
-            body += self.account_roles(key, access)
-            body += f'<form method=post action=/admin/accounts/{key}/recovery><button class=secondary>Выдать одноразовое восстановление</button></form>'
-        body += '</section>'
-        return body
+    def accounts(self, request: Request, q: str='', state: str='', role: str='', page: int=1):
+        actor = self.p.current_account(request)
+        self.p.admin_nav()
+        rows, grants = self.account_rows(actor)
+        visible = {row['account_id'] for row in rows}
+        role_options = {g['id']: g['name'] for g in grants if g['account_id'] in visible}
+        query = q.strip()[:254]
+        rows = [row for row in rows if (not query or query.casefold() in ' '.join(str(row[key] or '') for key in ('name', 'username', 'login_phone', 'email')).casefold())
+                and (not role or role in row['role_ids'])
+                and (state not in {'enabled', 'disabled'} or bool(row['enabled']) == (state == 'enabled'))]
+        total = len(rows)
+        pages = max(1, (total + 24) // 25)
+        current = min(max(1, page), pages)
+        links = [(number, '/admin?' + urlencode(dict(q=query, state=state, role=role, page=number))) for number in range(1, pages + 1)]
+        return self.p.page('Пользователи', render('accounts.html', rows=rows[(current-1)*25:current*25], total=total,
+                           device_count=sum(row['device_count'] for row in rows), query=query, state=state, role=role,
+                           role_options=role_options, current_page=current, pages=pages, page_links=links,
+                           can_create=self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT)), show_header=True, wide=True)
+
+    def new_account(self, request: Request):
+        self.p.require_permission(request, CREATE_ACCOUNT)
+        self.p.admin_nav()
+        return self.p.page('Новый аккаунт', render('account_edit.html', row=None, permissions={}, access=None, can_save=True), show_header=True)
+
+    def edit_account(self, request: Request, account_id: str):
+        actor = self.p.require_permission(request, 'accounts.view', account_id)
+        self.p.admin_nav()
+        rows, _ = self.account_rows(actor)
+        row = next((row for row in rows if row['account_id'] == account_id), None)
+        if not row:
+            raise HTTPException(404)
+        permissions = {action: self.p.identities.allowed(actor['account_id'], action, account_id)
+                       for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE, 'devices.view', 'account.routing.view')}
+        access = self.account_roles(account_id, self.account_access_model()) if self.p.identities.owner(actor['account_id']) else None
+        return self.p.page(row['name'], render('account_edit.html', row=row, permissions=permissions, access=access,
+                           can_save=any(permissions[action] for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE))), show_header=True)
 
     def account_access_model(self):
         with self.p.identities.transaction() as con:
@@ -232,17 +252,11 @@ class AccessPages:
         roles, names, grants, targets = access
         assigned = grants.get(key, [])
         summary = ', '.join(sorted({row['name'] for row in assigned})) or 'не назначены'
-        path = f'/accounts/{key}/roles'
-        body = f'<details class=account-roles><summary>Роли: {esc(summary)}</summary>'
         for row in assigned:
-            scope = {'self': 'Свой аккаунт', 'selected': 'Выбранные аккаунты', 'global': 'Глобально'}[row['scope']]
-            selected = ', '.join(names.get(target, target) for target in targets.get(row['id'], []))
-            body += f'''<form class=device-form method=post action={path}><p>{esc(row['name'])} · {scope} {esc(selected)}</p><input type=hidden name=remove value="{esc(row['id'])}"><button class=danger-soft>Отозвать назначение</button></form>'''
-        options = ''.join(f'<option value="{esc(role)}">{esc(name)}</option>' for role, name in roles.items())
-        body += f'''<form class=stack method=post action={path}><label>Роль<select name=role_id required><option value="" disabled selected>Выберите роль</option>{options}</select></label>
-<label>Область<select name=scope><option value=self>Свой аккаунт</option><option value=selected>Выбранные аккаунты</option><option value=global>Глобально</option></select></label>
-<details><summary>Выбранные аккаунты — только для этой области</summary>{choices('targets', names, [])}</details><button>Добавить роль</button></form></details>'''
-        return body
+            row['scope_label'] = {'self': 'Свой аккаунт', 'selected': 'Выбранные аккаунты', 'global': 'Глобально'}[row['scope']]
+            row['selected'] = ', '.join(names.get(target, target) for target in targets.get(row['id'], []))
+        return render('components/account_roles.html', summary=summary, assigned=assigned,
+                      path=f'/accounts/{key}/roles', roles=roles, names=names)
 
     def assign_account(self, request: Request, account_id: str, role_id: str=Form(''), scope: str=Form('self'), targets: list[str]=Form([]), remove: str=Form('')):
         return self.assign(request, account_id, role_id, scope, targets, remove)
@@ -259,7 +273,7 @@ class AccessPages:
             identity.grant(con, key, 'user')
             con.execute('INSERT INTO portal.users(phone,account_id,name,device_limit,created_at) VALUES(?,?,?,?,?)', (key, key, name.strip()[:80], device_limit, int(time.time())))
             identity.audit(con, actor['account_id'], CREATE_ACCOUNT, key)
-        return RedirectResponse(ACCOUNTS_PATH, 303)
+        return RedirectResponse(f'/accounts/{key}/edit', 303)
 
     def save_account(self, request: Request, account_id: str, name: str | None=Form(None), device_limit: int | None=Form(None), enabled: str=Form(''), state_present: str=Form('')):
         actor = self.p.current_account(request)
@@ -287,7 +301,7 @@ class AccessPages:
                 if target['enabled'] != int(bool(enabled)):
                     con.execute('DELETE FROM identity_sessions WHERE account_id=?', (account_id,))
             identity.audit(con, actor['account_id'], 'accounts.save', account_id)
-        return RedirectResponse(ACCOUNTS_PATH, 303)
+        return RedirectResponse(f'/accounts/{account_id}/edit', 303)
 
 def register(portal):
     pages = AccessPages(portal)
@@ -297,6 +311,10 @@ def register(portal):
     portal.app.add_api_route(ROLES_PATH, pages.roles, methods=['GET'])
     portal.app.add_api_route('/admin/roles/save', pages.save_role, methods=['POST'])
     portal.app.add_api_route('/admin/roles/assign', pages.assign, methods=['POST'])
+    portal.app.add_api_route('/accounts/new', pages.new_account, methods=['GET'])
+    portal.app.add_api_route('/accounts/{account_id}/edit', pages.edit_account, methods=['GET'])
+    portal.app.add_api_route('/admin/roles/new', pages.edit_role, methods=['GET'])
+    portal.app.add_api_route('/admin/roles/{role_id}/edit', pages.edit_role, methods=['GET'])
     portal.app.add_api_route('/accounts/{account_id}', pages.account_page, methods=['GET'])
     portal.app.add_api_route('/device/{device_id}/routing', pages.device_routes, methods=['GET'])
     portal.app.add_api_route('/accounts/{account_id}/routing', pages.account_routes, methods=['GET'])

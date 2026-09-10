@@ -1,0 +1,11 @@
+{% from 'components/forms.html' import csrf, button, field, check, choices, breadcrumbs with context %}
+{{ breadcrumbs([('Роли и доступ', '/admin/roles'), (role.name or 'Новая роль', '')]) }}
+<section class="card"><form class="stack" method="post" action="/admin/roles/save">{{ csrf() }}<input type="hidden" name="role_id" value="{{ role.id }}">
+{{ field('name', 'Название', role.name, required=true, readonly=role.protected) }}
+{% if role.protected %}<p class="muted">Название и права владельца защищены. Для другой области доступа создайте копию роли.</p>{% endif %}
+<details><summary>Права</summary><div class="permission-groups">{% for label, catalog in groups.items() %}<fieldset><legend>{{ label }}</legend>{{ choices('permissions', catalog, role.permissions, role.protected) }}</fieldset>{% endfor %}</div></details>
+<fieldset><legend>Основные способы входа</legend>{{ choices('primary', primary, role.primary_methods) }}</fieldset>
+<fieldset><legend>Второй фактор</legend>{{ choices('secondary', methods, role.secondary_methods) }}</fieldset>
+{{ check('required', 'Обязательная 2FA', checked=role.require_2fa) }}
+<p class="muted">При обязательной 2FA нужен другой разрешённый способ после основного. Ключ / passkey с проверкой пользователя может выполнить это требование при входе.</p>
+<div class="form-actions">{% if role.id %}{{ button('Создать копию', 'secondary', name='copy', value='1') }}{% endif %}{{ button() }}</div></form></section>

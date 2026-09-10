@@ -1,0 +1,8 @@
+{% from 'components/forms.html' import csrf, button, choices with context %}
+<details class="account-roles"><summary>Роли: {{ summary }}</summary>
+{% for row in assigned %}<form class="device-form" method="post" action="{{ path }}">{{ csrf() }}<p>{{ row.name }} · {{ row.scope_label }} {{ row.selected }}</p><input type="hidden" name="remove" value="{{ row.id }}">{{ button('Отозвать назначение', 'danger') }}</form>{% endfor %}
+<form class="stack" method="post" action="{{ path }}" data-role-assignment>{{ csrf() }}
+<label>Роль<select class="form-select" name="role_id" required><option value="" disabled selected>Выберите роль</option>{% for id, name in roles.items() %}<option value="{{ id }}">{{ name }}</option>{% endfor %}</select></label>
+<label>Область<select class="form-select" name="scope"><option value="self">Свой аккаунт</option><option value="selected">Выбранные аккаунты</option><option value="global">Глобально</option></select></label>
+<p class="muted">Глобальные права на инфраструктуру действуют только в области «Глобально». Получатель роли получает доступ к аккаунтам указанной области.</p>
+<fieldset data-targets hidden><legend>Выбранные аккаунты — только для этой области</legend><label>Поиск аккаунтов<input class="form-control" type="search"></label><p data-selected-count role="status">Выбрано: 0</p>{{ choices('targets', names, []) }}</fieldset><div class="form-actions">{{ button('Добавить роль') }}</div></form></details>

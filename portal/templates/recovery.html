@@ -1,0 +1,2 @@
+{% from 'components/forms.html' import csrf, field, button with context %}
+<section class="card"><form class="stack" method="post" action="/login/recovery">{{ csrf() }}{{ field('account_id', 'ID аккаунта', required=true) }}{{ field('code', 'Одноразовый код владельца', required=true) }}{{ button('Продолжить') }}</form></section>

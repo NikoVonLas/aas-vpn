@@ -24,7 +24,8 @@ for (const [name, path, active] of [
     await expect(page.getByRole('link', { name: 'Без владельца', exact: true })).toHaveCount(0);
     await expect(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    const current = page.locator('nav [aria-current=page]');
+    if (page.viewportSize().width < 768) await page.getByRole('button', { name: /^Меню/ }).click();
+    const current = page.locator('.admin-nav [aria-current=page]');
     await expect(current).toHaveText(active);
     await expect(current).toHaveCSS('background-color', 'rgb(185, 28, 28)');
   });
@@ -39,16 +40,18 @@ for (const [name, path] of [['login', '/admin/login'], ['not-found', '/missing-p
 
 test('account saves name, limit and state together', async ({ page }) => {
   await login(page);
-  const form = page.locator('form[action^="/accounts/"][action$="/save"]').last();
+  await page.locator('.account-row').last().click();
+  const form = page.locator('#account-form');
   const response = page.waitForResponse(r => /\/accounts\/[^/]+\/save$/.test(r.url()) && r.request().method() === 'POST');
   await form.getByRole('button', { name: 'Сохранить', exact: true }).click();
   expect((await response).status()).toBe(303);
-  await expect(page).toHaveURL(/\/admin$/);
+  await expect(page).toHaveURL(/\/accounts\/[^/]+\/edit$/);
 });
 
-test('logout after AJAX save uses its own action', async ({ page }) => {
+test('logout after native save uses its own action', async ({ page }) => {
   await login(page);
-  const row = page.locator('form[action^="/accounts/"][action$="/save"]').first();
+  await page.locator('.account-row').first().click();
+  const row = page.locator('#account-form');
   const response = page.waitForResponse(r => /\/accounts\/[^/]+\/save$/.test(r.url()) && r.request().method() === 'POST');
   await row.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await response;
@@ -63,14 +66,17 @@ test('logout after AJAX save uses its own action', async ({ page }) => {
 
 test('RU file import is editable and save is the last action', async ({ page }) => {
   await login(page);
-  await expect(page.locator('form[action^="/accounts/"][action$="/save"]').first().getByRole('button').last()).toHaveText('Сохранить');
+  await page.locator('.account-row').first().click();
+  await expect(page.locator('#account-form button').last()).toHaveText('Сохранить');
   await page.goto('/admin/ru-exits');
   const legacy = page.locator('form[action="/admin/ru-exits/1"]');
+  await legacy.locator('..').locator('summary').click();
   await expect(legacy.locator('textarea')).toHaveValue(/\[Interface\]/);
   await expect(legacy.locator('.exit-actions button')).toHaveText(['Удалить', 'По умолчанию', 'Сохранить']);
   const boxes = await legacy.locator('.exit-actions button').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().top));
   expect(new Set(boxes).size).toBe(1);
   const form = page.locator('form[action="/admin/ru-exits"]');
+  await form.locator('..').locator('summary').click();
   const key = Buffer.alloc(32, 1).toString('base64');
   const imported = `[Interface]\nPrivateKey = ${key}\nAddress = 10.55.0.2/32\n[Peer]\nPublicKey = ${key}\nAllowedIPs = 0.0.0.0/0\nEndpoint = 192.0.2.10:51820\n`;
   await form.locator('[name=config_upload]').setInputFiles({ name: 'test.conf', mimeType: 'text/plain', buffer: Buffer.from(imported) });
@@ -86,12 +92,14 @@ test('RU file import is editable and save is the last action', async ({ page }) 
   await expect(card).toBeVisible();
   await page.reload();
   await expect(card.locator('textarea')).toHaveValue(edited);
+  await card.locator('summary').click();
   const revised = edited.replace('10.55.0.3', '10.55.0.4');
   await card.locator('textarea').fill(revised);
   await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await expect(card.locator('textarea')).toHaveValue(revised);
   await page.reload();
   await expect(card.locator('textarea')).toHaveValue(revised);
+  await card.locator('summary').click();
   await card.getByRole('button', { name: 'Удалить', exact: true }).click();
   await expect(card).toHaveCount(0);
 });
@@ -154,16 +162,17 @@ test('roles are assigned and revoked inside a user card', async ({ page }) => {
   await page.goto('/admin/administrators');
   await expect(page).toHaveURL(/\/admin$/);
   await expect(page.getByRole('link', { name: 'Администраторы', exact: true })).toHaveCount(0);
-  const card = page.locator('section.card').filter({ has: page.getByRole('heading', { name: 'Александр Константинопольский', exact: true }) });
+  await page.locator('.account-row').filter({ hasText: 'Александр Константинопольский' }).click();
+  const card = page.locator('section.card');
   await card.locator('.account-roles > summary').click();
   const form = card.locator('.account-roles > form.stack');
   await form.getByRole('combobox', { name: 'Роль', exact: true }).selectOption('observer');
   await form.getByRole('combobox', { name: 'Область', exact: true }).selectOption('selected');
-  await form.getByText('Выбранные аккаунты — только для этой области', { exact: true }).click();
+  await expect(form.locator('[data-targets]')).toBeVisible();
   await form.getByRole('checkbox', { name: /^Мария ·/ }).check();
   await expect(card).toHaveScreenshot('user-role-assignment.png');
   await form.getByRole('button', { name: 'Добавить роль', exact: true }).click();
-  await expect(page).toHaveURL(/\/admin#account-/);
+  await expect(page).toHaveURL(/\/accounts\/[^/]+\/edit$/);
   await expect(card.locator('.account-roles > summary')).toContainText('Наблюдатель');
   await card.locator('.account-roles > summary').click();
   const grant = card.locator('form').filter({ hasText: 'Наблюдатель · Выбранные аккаунты Мария' });
@@ -181,7 +190,7 @@ test('profile layout', async ({ page }) => {
   await page.locator('section').filter({ has: page.getByRole('heading', { name: 'Сессии', exact: true }) }).locator('p').evaluateAll(nodes => nodes.forEach(node => { node.textContent = 'Текущая сессия'; }));
   await expect(page).toHaveScreenshot('security.png', { fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await expect(page.locator('nav [aria-current=page]')).toHaveText('Безопасность профиля');
+  await expect(page.locator('.admin-nav [aria-current=page]')).toHaveText('Безопасность профиля');
 });
 
 test('scoped routing layout and transactional save', async ({ page }) => {
@@ -206,11 +215,13 @@ test('virtual FIDO2 registration, authentication, replay and deletion', async ({
   });
   await login(page);
   await page.goto('/security');
+  await page.getByText('Настроить ключи и passkeys', { exact: true }).click();
   const enroll = page.locator('form[data-passkey=enroll]');
   await enroll.locator('[name=name]').fill('Тестовый ключ FIDO2');
   const registration = page.waitForResponse(r => r.url().endsWith('/security/passkeys/finish'));
   await enroll.getByRole('button').click();
   expect((await registration).status()).toBe(200);
+  await page.getByText('Настроить ключи и passkeys', { exact: true }).click();
   await expect(page.getByText('Тестовый ключ FIDO2 · ещё не использовался', { exact: true })).toBeVisible();
   const { credentials } = await cdp.send('WebAuthn.getCredentials', { authenticatorId });
   expect(credentials).toHaveLength(1);
@@ -255,9 +266,8 @@ test('virtual FIDO2 registration, authentication, replay and deletion', async ({
   expect(accepted.status()).toBe(200);
   const replay = await page.request.post('/security/passkeys/finish', { form: payload });
   expect(replay.status()).toBe(400);
-  await page.goto('/admin/roles');
+  await page.goto('/admin/roles/owner/edit');
   const owner = page.locator('form[action="/admin/roles/save"]').filter({ has: page.locator('[name=role_id][value=owner]') });
-  await owner.locator('..').locator('summary').first().click();
   await owner.locator('[name=primary][value=webauthn]').check();
   await owner.locator('[name=required]').check();
   await owner.getByRole('button', { name: 'Сохранить', exact: true }).click();
@@ -281,6 +291,7 @@ test('virtual FIDO2 registration, authentication, replay and deletion', async ({
   }
   await login(page);
   await page.goto('/security');
+  await page.getByText('Настроить ключи и passkeys', { exact: true }).click();
   await page.getByRole('button', { name: 'Удалить ключ', exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId });

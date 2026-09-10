@@ -1,0 +1,15 @@
+{
+  "bootstrap": {
+    "version": "5.3.8",
+    "source": "https://www.npmjs.com/package/bootstrap/v/5.3.8",
+    "license": "bootstrap.LICENSE",
+    "files": {
+      "css/bootstrap.min.css": {
+        "sha384": "sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB"
+      },
+      "js/bootstrap.bundle.min.js": {
+        "sha384": "sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI"
+      }
+    }
+  }
+}

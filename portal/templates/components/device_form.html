@@ -1,0 +1,3 @@
+{% from 'components/forms.html' import csrf, button, field with context %}
+<form class="device-form{% if can_change_exit %} device-edit{% endif %}" method="post" action="/device/{{ device.id }}/update">{{ csrf() }}{{ field('name', 'Название', device.name, required=true, readonly=not can_rename, maxlength=40) }}
+{% if can_change_exit %}<label>RU-выход<select class="form-select" name="ru_exit_id"><option value="0">По умолчанию</option>{% for node in exits %}<option value="{{ node.id }}" {% if node.id == device.ru_exit_id %}selected{% endif %}>{{ node.name }}</option>{% endfor %}</select></label>{% endif %}{{ button() }}</form>

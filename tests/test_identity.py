@@ -293,7 +293,7 @@ def test_exit_permission_does_not_require_rename_or_route_edit(portal):
         con.execute("INSERT INTO scoped_routing_rules VALUES('account',?,'ru','suffix','example.test')", (first,))
     phone_login(app, client)
     page = client.get('/cabinet').text
-    assert 'name=name' in page
+    assert 'name="name"' in page
     assert 'readonly' in page
     assert post(client, '/device/1/update', {'name': name, 'ru_exit_id': 1}).status_code == 303
     assert post(client, '/device/1/update', {'name': 'Forbidden', 'ru_exit_id': 0}).status_code == 404
@@ -310,10 +310,10 @@ def test_exit_permission_does_not_require_rename_or_route_edit(portal):
 def test_security_page_preserves_mfa_and_module_tls_selection(portal):
     app, client = portal
     admin_login(app, client)
-    assert 'value=0 selected' in client.get('/security').text
+    assert 'value="0" selected' in client.get('/security').text
     with app.auth_store.db() as con:
         con.execute('UPDATE providers SET config=? WHERE id=\'email\'', (json.dumps({'tls': 'implicit'}),))
-    assert 'value=implicit selected' in client.get('/admin/login-methods').text
+    assert 'value="implicit" selected' in client.get('/admin/login-methods').text
     assert client.get('/admin/roles').status_code == 200
 
 
@@ -393,10 +393,10 @@ def test_login_form_follows_every_method_combination(portal, mask):
         con.execute('UPDATE roles SET primary_methods=?', (json.dumps(sorted(methods)),))
         con.execute('UPDATE providers SET enabled=1')
     body = client.get('/').text
-    assert ('name=password ' in body) == ('password' in methods)
+    assert ('name="password" ' in body) == ('password' in methods)
     assert ('data-passkey-submit' in body) == ('webauthn' in methods)
-    assert ('action=/login ' in body) == bool(methods)
-    for method, text in [('phone', 'телефон с кодом страны'), ('email', 'почту'), ('password', 'Введите логин и пароль.')]:
+    assert ('action="/login" ' in body) == bool(methods)
+    for method, text in [('phone', 'телефон с кодом страны'), ('email', 'почту'), ('password', 'Пароль<input')]:
         assert (text in body) == (method in methods)
 
 
@@ -421,12 +421,13 @@ def test_user_card_role_assignment_scope_and_revoke(portal):
     owner, first, second = accounts(app)
     admin_login(app, client)
     path = '/accounts/' + first + '/roles'
-    assert 'class=account-roles' in client.get('/admin').text
+    assert 'class="account-roles"' in client.get('/accounts/' + first + '/edit').text
+    assert 'class="account-roles"' not in client.get('/admin').text
     assert '/admin/roles/assign' not in client.get('/admin/roles').text
     assert client.get('/admin/administrators').headers['location'] == '/admin'
     payload = {'role_id': 'observer', 'scope': 'selected', 'targets': [second]}
     response = post(client, path, payload)
-    assert response.headers['location'] == '/admin#account-' + first
+    assert response.headers['location'] == '/accounts/' + first + '/edit'
     assert app.identities.allowed(first, 'accounts.view', second)
     assert not app.identities.allowed(first, 'accounts.view', owner)
     with app.auth_store.db() as con:
@@ -439,7 +440,7 @@ def test_user_card_role_assignment_scope_and_revoke(portal):
         protected = con.execute("SELECT id FROM grants WHERE account_id=? AND role_id='owner'", (owner,)).fetchone()[0]
     assert post(client, '/accounts/' + owner + '/roles', {'remove': protected}).status_code == 400
     phone_login(app, client)
-    assert 'class=account-roles' not in client.get('/admin').text
+    assert 'class="account-roles"' not in client.get('/admin').text
     assert post(client, path, payload).status_code == 403
     admin_login(app, client)
     with app.auth_store.db() as con:

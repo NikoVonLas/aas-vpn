@@ -1,0 +1,6 @@
+{% if cards %}<p class="muted" data-routing-state>{{ status }}</p>{% endif %}
+{% for card in cards %}<section class="card device-card"><div class="device-head"><h2>{{ card.device.name }}</h2></div>
+<p data-device-state="{{ card.device.id }}">{{ card.state }}</p>
+{% if not card.device.vpn_ip %}<p class="muted">Ожидает назначения адреса подключения</p>{% endif %}
+{% if not card.device.native_enabled %}<p class="muted">Устройство отключено или срок действия истёк</p>{% endif %}
+{{ card.actions }}{{ card.form }}</section>{% endfor %}

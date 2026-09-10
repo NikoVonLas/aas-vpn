@@ -1,0 +1,5 @@
+{% from 'components/forms.html' import link with context %}
+{% if device.operation != 'applied' %}<p class="muted">{{ 'Создаётся' if device.operation == 'create' else 'Ожидает применения' }}</p>{% else %}<div class="device-actions">
+{% if config %}<button class="btn secondary qr-button" type="button" data-qr-url="/device/{{ device.id }}/qr" data-device-name="{{ device.name }}">QR</button>{{ link('Файл', '/device/' ~ device.id ~ '/config') }}{% endif %}
+{% if routing %}{{ link('Маршрутизация', '/device/' ~ device.id ~ '/routing') }}{% endif %}
+{% if delete %}<button class="btn danger-soft delete-device" type="button" data-delete-url="/device/{{ device.id }}/delete" data-device-name="{{ device.name }}">Удалить</button>{% endif %}</div>{% endif %}

@@ -1,0 +1,17 @@
+{% macro csrf() -%}<input type="hidden" name="csrf_token" value="{{ csrf_token }}">{%- endmacro %}
+{% macro field(name, label, value='', type='text', required=false, readonly=false, hint='', error='', autocomplete='', maxlength='', minlength='', min='', max='' ) -%}
+{% set error = error or field_errors.get(name, '') %}<label>{{ label }}<input class="form-control{% if error %} is-invalid{% endif %}" name="{{ name }}" type="{{ type }}" value="{{ form_value(name, value) }}" {% if required %}required{% endif %} {% if readonly %}readonly{% endif %} {% if hint or error %}aria-describedby="{{ name }}-help"{% endif %} {% if error %}aria-invalid="true"{% endif %} {% if autocomplete %}autocomplete="{{ autocomplete }}"{% endif %} {% if maxlength %}maxlength="{{ maxlength }}"{% endif %} {% if minlength %}minlength="{{ minlength }}"{% endif %} {% if min != '' %}min="{{ min }}"{% endif %} {% if max != '' %}max="{{ max }}"{% endif %}>
+{% if hint or error %}<span id="{{ name }}-help" class="{% if error %}invalid-feedback{% else %}muted{% endif %}">{{ error or hint }}</span>{% endif %}</label>
+{%- endmacro %}
+{% macro button(label='Сохранить', variant='primary', type='submit', name='', value='', form='', action='', disabled=false) -%}
+<button class="btn {% if variant == 'secondary' %}secondary{% elif variant == 'danger' %}danger-soft{% else %}btn-primary{% endif %}" type="{{ type }}" {% if name %}name="{{ name }}" value="{{ value }}"{% endif %} {% if form %}form="{{ form }}"{% endif %} {% if action %}formaction="{{ action }}" formnovalidate{% endif %} {% if disabled %}disabled{% endif %}>{{ label }}</button>
+{%- endmacro %}
+{% macro link(label, url, variant='secondary') -%}<a class="btn {{ variant }}" href="{{ url }}">{{ label }}</a>{%- endmacro %}
+{% macro check(name, label, value='1', checked=false, disabled=false) -%}
+<label class="check-label"><input class="form-check-input" type="checkbox" name="{{ name }}" value="{{ value }}" {% if form_checked(name, value, checked) %}checked{% endif %} {% if disabled %}disabled{% endif %}>{{ label }}</label>
+{%- endmacro %}
+{% macro choices(name, catalog, selected, readonly=false) -%}
+{% for key, label in catalog.items() %}{{ check(name, label, key, key in selected, readonly) }}{% if readonly and key in selected %}<input type="hidden" name="{{ name }}" value="{{ key }}">{% endif %}{% endfor %}
+{%- endmacro %}
+{% macro status(label, off=false) -%}<span class="badge{% if off %} off{% endif %}">{{ label }}</span>{%- endmacro %}
+{% macro breadcrumbs(items) -%}<nav aria-label="Путь страницы"><ol class="breadcrumb">{% for label, url in items %}<li class="breadcrumb-item">{% if url %}<a href="{{ url }}">{{ label }}</a>{% else %}{{ label }}{% endif %}</li>{% endfor %}</ol></nav>{%- endmacro %}

@@ -1,0 +1,4 @@
+{% from 'components/forms.html' import csrf, field, button with context %}
+<section class="card"><h2>Завершите подтверждение входа</h2><p>Устройства и управление станут доступны после обязательных проверок.</p>
+{% for method in remaining|sort %}{% if method == 'webauthn' %}<form data-passkey="second">{{ csrf() }}{{ button('Подтвердить ключом / passkey') }}</form>{% else %}<form class="device-form" method="post" action="/security/second">{{ csrf() }}<input type="hidden" name="method" value="{{ method }}">{% if method in ['password', 'totp'] %}{{ field('code', methods[method], type='password' if method == 'password' else 'text', required=true) }}{% endif %}{{ button('Подтвердить: ' ~ methods[method]) }}</form>{% endif %}{% endfor %}
+<form class="device-form" method="post" action="/security/backup">{{ csrf() }}{{ field('code', 'Резервный код', required=true) }}{{ button('Использовать код', 'secondary') }}</form></section>

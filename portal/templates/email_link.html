@@ -1,0 +1,2 @@
+{% from 'components/forms.html' import csrf, button with context %}
+<section class="card"><p>Нажмите кнопку, чтобы подтвердить вход в этом браузере.</p><form class="stack" method="post" action="/login/link" id="email-link">{{ csrf() }}<input type="hidden" name="proof">{{ button('Подтвердить') }}</form><script src="/assets/js/email-link.js" defer></script></section>

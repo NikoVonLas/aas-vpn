@@ -5,6 +5,7 @@ RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r requireme
 COPY portal/*.py ./
 COPY awg/model.py ./awg/model.py
 COPY portal/static ./static
+COPY portal/templates ./templates
 RUN mkdir -p /data /ru-configs /auth && chown 65532:65532 /data /ru-configs /auth && \
     chmod 0770 /data && chmod 0700 /ru-configs /auth
 USER 65532:65532

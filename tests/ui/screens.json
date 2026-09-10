@@ -1,0 +1,181 @@
+{
+  "shared": {
+    "base.html": "Every screenshot"
+  },
+  "existing": {
+    "accounts.html": "users layout",
+    "exits.html": "exits layout",
+    "roles.html": "roles layout",
+    "modules.html": "login-methods layout",
+    "cabinet.html": "cabinet layout",
+    "login.html": "all 16 method sets and error",
+    "routing.html": "global, account and device routing",
+    "security.html": "profile and limited states",
+    "message.html": "errors, recovery result and backup codes"
+  },
+  "states": [
+    {
+      "name": "components",
+      "path": "/fixture/components",
+      "templates": [
+        "catalog.html"
+      ]
+    },
+    {
+      "name": "account-new",
+      "path": "/accounts/new",
+      "templates": [
+        "account_edit.html"
+      ]
+    },
+    {
+      "name": "account-edit",
+      "path": "account-edit"
+    },
+    {
+      "name": "account-routing",
+      "path": "account-routing"
+    },
+    {
+      "name": "role-new",
+      "path": "/admin/roles/new",
+      "templates": [
+        "role_edit.html"
+      ]
+    },
+    {
+      "name": "role-rights",
+      "path": "/admin/roles/owner/edit",
+      "open": "Права"
+    },
+    {
+      "name": "exit-editor",
+      "path": "/admin/ru-exits",
+      "open": "Редактировать"
+    },
+    {
+      "name": "exit-new",
+      "path": "/admin/ru-exits",
+      "open": "Добавить RU-выход"
+    },
+    {
+      "name": "module-editor",
+      "path": "/admin/login-methods",
+      "open": "Настроить модуль",
+      "templates": [
+        "provider.html"
+      ]
+    },
+    {
+      "name": "password-editor",
+      "path": "/security",
+      "open": "Настроить логин и пароль",
+      "templates": [
+        "credentials.html"
+      ]
+    },
+    {
+      "name": "totp",
+      "path": "/security",
+      "state": "totp",
+      "templates": [
+        "totp.html"
+      ]
+    },
+    {
+      "name": "mfa",
+      "path": "/security",
+      "state": "mfa",
+      "templates": [
+        "second_factor.html"
+      ]
+    },
+    {
+      "name": "required",
+      "path": "/security",
+      "state": "required"
+    },
+    {
+      "name": "must-change",
+      "path": "/security",
+      "state": "must-change"
+    },
+    {
+      "name": "recovery",
+      "path": "/login/recovery",
+      "templates": [
+        "recovery.html"
+      ]
+    },
+    {
+      "name": "reauth",
+      "path": "/security/confirm"
+    },
+    {
+      "name": "email-link",
+      "path": "/login/link",
+      "templates": [
+        "email_link.html"
+      ]
+    },
+    {
+      "name": "confirm-email",
+      "path": "/fixture/confirmation/email",
+      "templates": [
+        "confirmation.html"
+      ]
+    },
+    {
+      "name": "confirm-phone",
+      "path": "/fixture/confirmation/phone"
+    },
+    {
+      "name": "expired",
+      "path": "/login/verify/missing"
+    },
+    {
+      "name": "empty-search",
+      "path": "/admin?q=not-a-real-account"
+    },
+    {
+      "name": "limit",
+      "path": "/admin/users/+79990000001/devices",
+      "state": "limit"
+    },
+    {
+      "name": "creating",
+      "path": "/admin/users/+79990000001/devices",
+      "state": "creating"
+    },
+    {
+      "name": "disabled",
+      "path": "/admin/users/+79990000001/devices",
+      "state": "disabled"
+    },
+    {
+      "name": "router-applied",
+      "path": "/device/1/routing",
+      "state": "applied"
+    },
+    {
+      "name": "router-error",
+      "path": "/device/1/routing",
+      "state": "error"
+    },
+    {
+      "name": "router-stale",
+      "path": "/device/1/routing",
+      "state": "stale"
+    },
+    {
+      "name": "router-fallback",
+      "path": "/device/1/routing",
+      "state": "fallback"
+    },
+    {
+      "name": "router-applying",
+      "path": "/device/1/routing",
+      "state": "applying"
+    }
+  ]
+}
