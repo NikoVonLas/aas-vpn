@@ -85,7 +85,7 @@ class Check:
         docker('network', 'create', '--internal', NETWORK)
         self.guard()
         docker('run', '--rm', '--network', 'none', '-v', f'{self.root}/data:/awg-data', '--entrypoint', 'python', IMAGE,
-               'bootstrap.py', '--endpoint', SERVER, '--public-port', '1234', '--network', '10.91.0.0/24')
+               'bootstrap.py', '--endpoint', SERVER, '--public-port', '1234', '--network', '10.91.0.0/24', '--dns', '192.0.2.53')
         docker('run', '-d', '--name', SERVER, '--network', NETWORK, '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_RAW',
                '-v', f'{self.root}/data:/awg-data', '-v', f'{self.root}/control:/awg-control',
                '-v', f'{self.root}/network:/awg-network', '-v', f'{self.root}/guard:/routing-status:ro', IMAGE)

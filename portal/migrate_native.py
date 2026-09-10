@@ -15,8 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from awg.model import Store, array, client_config, server_config
 
 
+INSERT_SETTING = 'INSERT INTO settings VALUES(?,?)'
+
+
 def read_source(source):
-    con = sqlite3.connect(f'file:{source}?mode=ro', uri=True)
+    con = sqlite3.connect(Path(source).resolve().as_uri() + '?mode=ro', uri=True)
     con.row_factory = sqlite3.Row
     try:
         con.execute('BEGIN')
@@ -102,7 +105,7 @@ def migration(source, portal_path, auth_path, target, apply=False, reference=Non
     admins = validate_source(data)
     compared = compare_configs(data, reference) if reference else 0
     fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
-    con = sqlite3.connect(f'file:{portal_path}?mode=ro', uri=True)
+    con = sqlite3.connect(Path(portal_path).resolve().as_uri() + '?mode=ro', uri=True)
     try:
         columns = {row[1] for row in con.execute('PRAGMA table_info(devices)')}
         client_column = 'wg_client_id' if 'wg_client_id' in columns else 'client_id'
@@ -124,13 +127,13 @@ def migration(source, portal_path, auth_path, target, apply=False, reference=Non
             require(json.loads(existing[0]) == fingerprint, 'Source changed since migration; refusing to overwrite native data')
         else:
             require(native.execute('SELECT count(*) FROM clients').fetchone()[0] == 0, 'Native data already exists')
-            native.execute('INSERT INTO settings VALUES(?,?)', ('server', json.dumps(data['interfaces_table'][0])))
-            native.execute('INSERT INTO settings VALUES(?,?)', ('defaults', json.dumps(data['user_configs_table'][0])))
+            native.execute(INSERT_SETTING, ('server', json.dumps(data['interfaces_table'][0])))
+            native.execute(INSERT_SETTING, ('defaults', json.dumps(data['user_configs_table'][0])))
             for client in data['clients_table']:
                 client['id'] = str(client['id'])
                 native.execute('INSERT INTO clients(id,address,public_key,data,revision) VALUES(?,?,?,?,0)',
                                (client['id'], client['ipv4_address'], client['public_key'], json.dumps(client)))
-            native.execute('INSERT INTO settings VALUES(?,?)', ('migration_source', json.dumps(fingerprint)))
+            native.execute(INSERT_SETTING, ('migration_source', json.dumps(fingerprint)))
     auth = Auth(auth_path)
     auth.initialize(old_secret[0] if old_secret else None)
     with auth.db() as credentials:
@@ -141,7 +144,7 @@ def migration(source, portal_path, auth_path, target, apply=False, reference=Non
                 credentials.execute('INSERT INTO admins(id,username,password_hash,totp_key,totp_verified,enabled) VALUES(?,?,?,?,?,?)',
                                     tuple(admin[key] for key in ['id', 'username', 'password', 'totp_key', 'totp_verified', 'enabled']))
             credentials.execute("UPDATE settings SET value=? WHERE key='remember_seconds'", (str(data['general_table'][0]['session_timeout']),))
-            credentials.execute('INSERT INTO settings VALUES(?,?)', ('migration_source', fingerprint))
+            credentials.execute(INSERT_SETTING, ('migration_source', fingerprint))
         else:
             require(marker[0] == fingerprint, 'Authentication migration source changed')
     return {**report, 'mode': 'migrated' if not existing else 'already-migrated'}
@@ -149,15 +152,11 @@ def migration(source, portal_path, auth_path, target, apply=False, reference=Non
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source', default='/legacy/wg-easy.db')
-    parser.add_argument('--portal', default='/data/portal.db')
-    parser.add_argument('--auth', default='/auth/auth.db')
-    parser.add_argument('--target', default='/awg-data')
     parser.add_argument('--apply', action='store_true')
-    parser.add_argument('--reference', help='Private configurations exported from the legacy API')
+    parser.add_argument('--reference', action='store_true', help='Compare the private legacy API export mounted at /reference.json')
     args = parser.parse_args()
     try:
-        print(json.dumps(migration(args.source, args.portal, args.auth, args.target, args.apply, args.reference)))
+        print(json.dumps(migration('/legacy/wg-easy.db', '/data/portal.db', '/auth/auth.db', '/awg-data', args.apply, '/reference.json' if args.reference else None)))
     except (ValueError, KeyError, sqlite3.Error, OSError):
         raise SystemExit('Migration validation failed. Source data was retained; inspect schema and compatibility using the dry-run tests.') from None
 

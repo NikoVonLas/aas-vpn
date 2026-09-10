@@ -10,6 +10,7 @@ import subprocess
 
 PARAMS = {'Jc': 'j_c', 'Jmin': 'j_min', 'Jmax': 'j_max', **{f'S{i}': f's{i}' for i in range(1, 5)},
           **{f'H{i}': f'h{i}' for i in range(1, 5)}, **{f'I{i}': f'i{i}' for i in range(1, 6)}}
+CLIENT_QUERY = 'SELECT * FROM clients WHERE id=?'
 PUBLIC = ('id', 'name', 'ipv4_address', 'enabled', 'expires_at', 'created_at')
 
 
@@ -133,7 +134,7 @@ class Store:
         with self.db() as con:
             if con.execute('SELECT 1 FROM retired_ids WHERE id=?', (client_id,)).fetchone():
                 raise ValueError('Client was deleted')
-            row = con.execute('SELECT * FROM clients WHERE id=?', (client_id,)).fetchone()
+            row = con.execute(CLIENT_QUERY, (client_id,)).fetchone()
             if row:
                 if row['deleted']:
                     raise ValueError('Client was deleted')
@@ -156,18 +157,18 @@ class Store:
             revision = self.bump(con)
             con.execute('INSERT INTO clients(id,address,public_key,data,revision) VALUES(?,?,?,?,?)',
                         (client_id, address, data['public_key'], json.dumps(data), revision))
-            return self.result(con, con.execute('SELECT * FROM clients WHERE id=?', (client_id,)).fetchone())
+            return self.result(con, con.execute(CLIENT_QUERY, (client_id,)).fetchone())
 
     def delete(self, client_id):
         with self.db() as con:
             con.execute('INSERT OR IGNORE INTO retired_ids VALUES(?)', (client_id,))
-            row = con.execute('SELECT * FROM clients WHERE id=?', (client_id,)).fetchone()
+            row = con.execute(CLIENT_QUERY, (client_id,)).fetchone()
             if not row:
                 return {'applied': True, 'deleted': True}
             if not row['deleted']:
                 revision = self.bump(con)
                 con.execute('UPDATE clients SET deleted=1,revision=? WHERE id=?', (revision, client_id))
-            return self.result(con, con.execute('SELECT * FROM clients WHERE id=?', (client_id,)).fetchone())
+            return self.result(con, con.execute(CLIENT_QUERY, (client_id,)).fetchone())
 
     def list_clients(self):
         with self.db() as con:
@@ -192,7 +193,7 @@ class Store:
                 data.update(settings)
                 revision = self.bump(con)
                 con.execute('UPDATE clients SET data=?,revision=? WHERE id=?', (json.dumps(data), revision, client_id))
-            return self.result(con, con.execute('SELECT * FROM clients WHERE id=?', (client_id,)).fetchone())
+            return self.result(con, con.execute(CLIENT_QUERY, (client_id,)).fetchone())
 
     def configuration(self, client_id):
         with self.db() as con:

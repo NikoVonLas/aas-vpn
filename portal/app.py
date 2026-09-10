@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 ADMIN_LOGIN_PATH = '/admin/login'
+ADMINISTRATORS_PATH = '/admin/administrators'
 ADMIN_PATH = '/admin'
 CABINET_PATH = '/cabinet'
 WG_CLIENT_PATH = '/clients'
@@ -321,7 +322,7 @@ def require_admin(request):
     if not row:
         raise HTTPException(303, headers={"Location": ADMIN_LOGIN_PATH})
     if row['must_change']:
-        raise HTTPException(303, headers={"Location": '/admin/administrators'})
+        raise HTTPException(303, headers={"Location": ADMINISTRATORS_PATH})
 
 
 @app.exception_handler(HTTPException)
@@ -383,7 +384,7 @@ def admin_login(request: Request, username: str = Form(...), password: str = For
     except ValueError as exc:
         raise HTTPException(401, str(exc)) from None
     session = auth_store.session(token)
-    response = RedirectResponse('/admin/administrators' if session['must_change'] else ADMIN_PATH, 303)
+    response = RedirectResponse(ADMINISTRATORS_PATH if session['must_change'] else ADMIN_PATH, 303)
     response.set_cookie(auth.COOKIE, token, path="/", httponly=True, secure=True, samesite="lax", max_age=ttl if remember else None)
     clear_legacy_cookies(response)
     return response
@@ -683,10 +684,7 @@ async def start_device_worker():
 @app.on_event('shutdown')
 async def stop_device_worker():
     app.state.device_worker.cancel()
-    try:
-        await app.state.device_worker
-    except asyncio.CancelledError:
-        pass
+    await asyncio.gather(app.state.device_worker, return_exceptions=True)
 
 
 def owned_device(request, device_id):
@@ -901,7 +899,7 @@ def upstream_error(request: Request, exc):
 
 
 def admin_nav(active=ADMIN_PATH):
-    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), ('/admin/administrators', 'Администраторы'), ('/admin/unowned', 'Без владельца')]
+    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), (ADMINISTRATORS_PATH, 'Администраторы'), ('/admin/unowned', 'Без владельца')]
     return '<nav class="app-links admin-nav" aria-label="Администрирование">' + ''.join(
         f'<a href="{path}"' + (' aria-current="page"' if path == active else '') + f'>{label}</a>'
         for path, label in links) + '</nav>'

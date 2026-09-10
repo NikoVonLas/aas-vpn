@@ -16,6 +16,7 @@ import pyotp
 COOKIE = '__Host-aas_admin'
 HASHER = PasswordHasher()
 INVALID = 'Неверный логин, пароль или код 2FA'
+REVOKE_SESSIONS = 'DELETE FROM sessions WHERE admin_id=?'
 ADMIN_QUERY = 'SELECT * FROM admins WHERE id=?'
 
 
@@ -170,7 +171,7 @@ class Auth:
             return
         else:
             raise ValueError('Неизвестное действие')
-        con.execute('DELETE FROM sessions WHERE admin_id=?', (target_id,))
+        con.execute(REVOKE_SESSIONS, (target_id,))
 
     def confirm_totp(self, admin_id, code):
         with self.db() as con:
@@ -181,7 +182,7 @@ class Auth:
                 raise ValueError('Неверный код 2FA')
             con.execute('UPDATE admins SET totp_key=pending_totp,totp_verified=1,pending_totp=NULL,last_totp=? WHERE id=?',
                         (int(time.time()) // 30, admin_id))
-            con.execute('DELETE FROM sessions WHERE admin_id=?', (admin_id,))
+            con.execute(REVOKE_SESSIONS, (admin_id,))
 
 
 def main():
@@ -204,7 +205,7 @@ def main():
                 raise SystemExit('Administrator not found')
             con.execute('UPDATE admins SET password_hash=?,enabled=1,must_change=0,totp_key=NULL,totp_verified=0,last_totp=-1,pending_totp=NULL WHERE id=?',
                         (HASHER.hash(password), row['id']))
-            con.execute('DELETE FROM sessions WHERE admin_id=?', (row['id'],))
+            con.execute(REVOKE_SESSIONS, (row['id'],))
     print('Administrator updated; existing sessions revoked on recovery')
 
 

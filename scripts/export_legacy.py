@@ -2,6 +2,8 @@
 import asyncio
 import json
 import os
+from pathlib import Path
+import tempfile
 
 import app
 
@@ -15,11 +17,21 @@ async def export():
             config = await client.get(f"/api/client/{peer['id']}/configuration")
             config.raise_for_status()
             result[str(peer['id'])] = config.text
-    descriptor = os.open('/tmp/native-reference.json', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, 'w') as stream:
-        json.dump(result, stream)
+    return result
+
+
+def save(result):
+    directory = Path('/data')
+    with tempfile.NamedTemporaryFile(mode='w', dir=directory, delete=False) as stream:
+        try:
+            json.dump(result, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(stream.name, directory / 'native-reference.json')
+        finally:
+            Path(stream.name).unlink(missing_ok=True)
     print(f'Client configurations exported privately: {len(result)}')
 
 
 if __name__ == '__main__':
-    asyncio.run(export())
+    save(asyncio.run(export()))

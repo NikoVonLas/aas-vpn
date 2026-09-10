@@ -77,8 +77,9 @@ def test_migration_rejects_orphans_and_unknown_features(tmp_path, portal):
     source, *_ = legacy_source(tmp_path, portal)
     with sqlite3.connect(source) as con:
         con.execute("UPDATE clients_table SET post_up='unexpected hook'")
+    invalid_source = read_source(source)
     with pytest.raises(ValueError, match='hooks'):
-        validate_source(read_source(source))
+        validate_source(invalid_source)
     with sqlite3.connect(source) as con:
         con.execute("UPDATE clients_table SET post_up=''")
         con.execute('DELETE FROM clients_table WHERE id=42')
@@ -97,7 +98,8 @@ def test_native_retries_reserve_keys_and_addresses(tmp_path, portal, monkeypatch
         return key(100 + len(calls))
     monkeypatch.setattr(model, 'run', fake_run)
     created = store.create('new-client', 'Phone')
-    assert not created['applied'] and created['ipv4Address'] == '10.8.0.4'
+    assert not created['applied']
+    assert created['ipv4Address'] == '10.8.0.4'
     assert store.create('new-client', 'Retry') == created
     assert len(calls) == 3
     with pytest.raises(ValueError, match='not applied'):
@@ -105,7 +107,8 @@ def test_native_retries_reserve_keys_and_addresses(tmp_path, portal, monkeypatch
     with store.db() as con:
         con.execute("UPDATE settings SET value='1' WHERE key='applied'")
     config = store.configuration('new-client')
-    assert 'MTU = 1280' in config and 'Endpoint = vpn.example.test:443' in config
+    assert 'MTU = 1280' in config
+    assert 'Endpoint = vpn.example.test:443' in config
     assert store.delete('new-client')['applied'] is False
     assert store.delete('new-client')['applied'] is False
     with pytest.raises(ValueError, match='deleted'):
@@ -121,8 +124,10 @@ def test_config_uses_exact_legacy_values_and_expiry(tmp_path, portal):
     assert f'PrivateKey = {peers[0]["private_key"]}' in text
     assert f'PublicKey = {server["public_key"]}' in text
     assert 'AllowedIPs = 0.0.0.0/0, ::/0' in text
-    assert 'Address = 10.8.0.2/32' in text and 'S1 = 15' in text
-    assert 'DNS = 10.42.42.44' in text and 'Jc = 4' in text
+    assert 'Address = 10.8.0.2/32' in text
+    assert 'S1 = 15' in text
+    assert 'DNS = 10.42.42.44' in text
+    assert 'Jc = 4' in text
     peers[0]['expires_at'] = '2000-01-01T00:00:00Z'
     assert not active(peers[0])
     assert peers[0]['public_key'] not in server_config(server, peers)
@@ -232,8 +237,9 @@ def test_native_disable_and_expiration_configuration(tmp_path, portal):
     assert store.snapshot()[3] == revision
     store.configure('41', {'enabled':True, 'expires_at':'2000-01-01T00:00:00Z'})
     assert not active(next(peer for peer in store.snapshot()[2] if peer['id']=='41'))
+    forbidden = {'private_key': key(5)}
     with pytest.raises(ValueError):
-        store.configure('42', {'private_key':key(5)})
+        store.configure('42', forbidden)
 
 
 def test_delete_before_delayed_create_cannot_resurrect(tmp_path):

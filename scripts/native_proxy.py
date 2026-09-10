@@ -1,6 +1,5 @@
 """Replace only the known legacy proxy block; retain all server-owned settings."""
 from pathlib import Path
-import sys
 
 
 def update(path):
@@ -24,4 +23,4 @@ def update(path):
 
 
 if __name__ == '__main__':
-    update(Path(sys.argv[1]))
+    update(Path(__file__).resolve().parents[1] / 'config' / 'Caddyfile')

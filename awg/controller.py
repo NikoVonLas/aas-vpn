@@ -120,7 +120,7 @@ class Handler(BaseHTTPRequestHandler):
             self.route()
         except KeyError:
             self.respond(404, {'detail': 'Client not found'})
-        except (ValueError, TypeError, json.JSONDecodeError):
+        except (ValueError, TypeError):
             self.respond(409, {'detail': 'Invalid or unapplied client operation'})
         except (OSError, RuntimeError, sqlite3.Error):
             self.respond(503, {'detail': 'Controller unavailable'})
@@ -130,6 +130,15 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 < length <= 4096:
             raise ValueError('Invalid length')
         return json.loads(self.rfile.read(length))
+
+    def client_name(self):
+        payload = self.payload()
+        if not isinstance(payload, dict):
+            raise ValueError('Invalid payload')
+        name = payload.get('name')
+        if not isinstance(name, str) or not 1 <= len(name) <= 100 or set(payload) != {'name'}:
+            raise ValueError('Invalid name')
+        return name
 
     def route(self):
         if self.path == '/health' and self.command == 'GET':
@@ -146,13 +155,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == 'GET' and suffix:
             self.respond(200, STORE.configuration(client_id), 'text/plain')
         elif self.command == 'PUT' and not suffix:
-            payload = self.payload()
-            if not isinstance(payload, dict):
-                raise ValueError('Invalid payload')
-            name = payload.get('name')
-            if not isinstance(name, str) or not 1 <= len(name) <= 100 or set(payload) != {'name'}:
-                raise ValueError('Invalid name')
-            self.respond(200, STORE.create(client_id, name))
+            self.respond(200, STORE.create(client_id, self.client_name()))
         elif self.command == 'DELETE' and not suffix:
             self.respond(200, STORE.delete(client_id))
         elif self.command == 'PATCH' and not suffix:

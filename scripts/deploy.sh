@@ -60,7 +60,8 @@ if [[ -f "$target_dir/.env" && -f "$target_dir/compose.yml" ]]; then
     docker compose stop caddy
     python3 "$source_dir/scripts/check_legacy_peers.py"
     docker exec -i aas-portal python - < "$source_dir/scripts/export_legacy.py"
-    docker cp aas-portal:/tmp/native-reference.json "$reference_path"
+    docker cp aas-portal:/data/native-reference.json "$reference_path"
+    docker exec aas-portal python -c "from pathlib import Path; Path('/data/native-reference.json').unlink()"
   fi
   AAS_BACKUP_ROOT="$target_dir" AAS_BACKUP_KEEP_STOPPED=1 AAS_BACKUP_RESULT_FILE="$backup_result" bash "$source_dir/scripts/backup.sh"
   read -r backup_dir < "$backup_result"
@@ -90,7 +91,7 @@ path = Path('.env')
 path.write_text(path.read_text().replace(':compose.rollback.json', ''))
 PYENV
 chmod 0600 .env
-python3 scripts/native_proxy.py config/Caddyfile
+python3 scripts/native_proxy.py
 set -a
 # shellcheck disable=SC1091
 source .env
@@ -102,11 +103,12 @@ docker compose config --quiet
 while IFS= read -r image; do docker image inspect "$image" >/dev/null; done < <(docker compose config --images)
 docker compose run --rm --no-deps storage-init
 if [[ "$migration_required" == 1 ]]; then
-  docker compose --profile migration run --rm --no-deps -v "$backup_dir/client-configs.json:/reference.json:ro" migrate-native python migrate_native.py --reference /reference.json
-  docker compose --profile migration run --rm --no-deps -v "$backup_dir/client-configs.json:/reference.json:ro" migrate-native python migrate_native.py --reference /reference.json --apply
+  docker compose --profile migration run --rm --no-deps -v "$backup_dir/client-configs.json:/reference.json:ro" migrate-native python migrate_native.py --reference
+  docker compose --profile migration run --rm --no-deps -v "$backup_dir/client-configs.json:/reference.json:ro" migrate-native python migrate_native.py --reference --apply
   docker compose run --rm --no-deps storage-init
 elif ! docker compose run --rm --no-deps --entrypoint python awg2 bootstrap.py --check; then
-  docker compose run --rm --no-deps --entrypoint python awg2 bootstrap.py --endpoint "$VPN_DOMAIN" --public-port "${AWG_PORT:-443}"
+  docker compose run --rm --no-deps --entrypoint python awg2 bootstrap.py --endpoint "$VPN_DOMAIN" --public-port "${AWG_PORT:-443}" \
+    --network "${VPN_CLIENT_CIDR:-10.19.0.0/24}" --dns "${AWG_CLIENT_DNS:-10.42.42.44}"
 fi
 for unit in systemd/*.service systemd/*.timer; do
   sed "s|/opt/aas-vpn|$target_dir|g" "$unit" > "/etc/systemd/system/$(basename "$unit")"
@@ -126,14 +128,15 @@ docker compose run --rm --no-deps --entrypoint python portal -c "from pathlib im
 docker compose stop awg2 sing-box
 docker compose up -d --no-build --pull never --remove-orphans
 # Wait for the native controller and router before re-enabling automatic recovery.
+health_format='{{.State.Health.Status}}'
 for _attempt in $(seq 1 60); do
-  if docker inspect --format '{{.State.Health.Status}}' awg2 | grep -qx healthy &&
-     docker inspect --format '{{.State.Health.Status}}' sing-box | grep -qx healthy &&
+  if docker inspect --format "$health_format" awg2 | grep -qx healthy &&
+     docker inspect --format "$health_format" sing-box | grep -qx healthy &&
      docker exec sing-box python -c "import json; s=json.load(open('/routing-status/status.json')); assert s['running'] and s['state']=='applied'"; then break; fi
   sleep 2
 done
-docker inspect --format '{{.State.Health.Status}}' awg2 | grep -qx healthy
-docker inspect --format '{{.State.Health.Status}}' sing-box | grep -qx healthy
+docker inspect --format "$health_format" awg2 | grep -qx healthy
+docker inspect --format "$health_format" sing-box | grep -qx healthy
 docker exec sing-box python -c "import json; s=json.load(open('/routing-status/status.json')); assert s['running'] and s['state']=='applied'"
 if [[ "${AAS_KEEP_MAINTENANCE:-0}" != 1 ]]; then
   docker compose exec -T portal python -c "from pathlib import Path; Path('/data/maintenance').unlink(missing_ok=True)"
