@@ -64,23 +64,34 @@ class SecurityPages:
             raise HTTPException(303, headers={'Location': '/security/confirm'})
         return actor
 
-    def login_page(self, method: str='password'):
-        if method not in identity.PRIMARY:
-            raise HTTPException(404)
+    def login_page(self):
         with self.p.auth_store.db() as con:
             enabled = {r['id'] for r in con.execute('SELECT id FROM providers WHERE enabled=1')}
-        available = {'password', 'webauthn'} | ({'phone'} if 'zvonok' in enabled else set()) | ({'email'} if 'email' in enabled else set())
-        if method not in available:
-            raise HTTPException(404)
-        nav = '<nav class="app-links admin-nav" aria-label="Способ входа">' + ''.join((f"""<a href="/?method={key}" {('aria-current=page' if key == method else '')}>{METHODS[key]}</a>""" for key in METHODS if key in available)) + '</nav>'
-        if method == 'password':
-            form = '<form class=stack method=post action=/login/password><label>Логин<input name=username autocomplete=username required></label><label>Пароль<input name=password type=password autocomplete=current-password required></label><button>Войти</button></form>'
-        elif method == 'webauthn':
-            form = '<form class=stack data-passkey=login><label>Логин, телефон или почта<input name=identifier autocomplete=username required></label><button>Войти с ключом / passkey</button></form><script src=/assets/js/passkeys.js defer></script>'
-        else:
-            field = '<label>Телефон<input class=phone-input name=identifier type=tel autocomplete=tel required></label>' if method == 'phone' else '<label>Почта<input name=identifier type=email autocomplete=email required></label>'
-            form = f'<form class=stack method=post action=/login/start><input type=hidden name=method value={method}>{field}<button>Продолжить</button></form>'
-        return self.p.page('Вход', '<section class=card>' + nav + form + SECTION_END, phone_widget=method == 'phone')
+        contacts = []
+        if 'zvonok' in enabled:
+            contacts.append('телефон с кодом страны, например +7')
+        if 'email' in enabled:
+            contacts.append('почту')
+        hint = 'Введите логин и пароль.'
+        if contacts:
+            hint += ' Для подтверждения без пароля укажите ' + ' или '.join(contacts) + ' и оставьте пароль пустым.'
+        form = f'''<form class=stack method=post action=/login data-passkey=login>
+<label>Логин, телефон или почта<input name=identifier autocomplete=username autocapitalize=none spellcheck=false maxlength=254 required></label>
+<label>Пароль<input name=password type=password autocomplete=current-password aria-describedby=login-hint></label>
+<p class=muted id=login-hint>{hint}</p>
+<button type=button class=secondary data-passkey-submit>Войти с ключом / passkey</button>
+<button>Войти</button></form><script src=/assets/js/passkeys.js defer></script>'''
+        return self.p.page('Вход', '<section class=card>' + form + SECTION_END)
+
+    async def login(self, request: Request, identifier: str=Form(...), password: str=Form('')):
+        identifier = identifier.strip()
+        if password:
+            return self.password_login(request, identifier, password, '')
+        if identifier.startswith('+'):
+            return await self.send_confirmation(request, 'phone', identifier)
+        if '@' in identifier:
+            return await self.send_confirmation(request, 'email', identifier)
+        raise HTTPException(400, 'Введите пароль или воспользуйтесь ключом / passkey. Телефон укажите с кодом страны, начиная с +.')
 
     def password_login(self, request: Request, username: str=Form(...), password: str=Form(...), totp: str=Form('')):
         try:
@@ -535,6 +546,7 @@ def register(portal):
     pages = SecurityPages(portal)
     portal.app.add_api_route('/', pages.login_page, methods=['GET'])
     portal.app.add_api_route('/admin/login', pages.login_page, methods=['GET'])
+    portal.app.add_api_route('/login', pages.login, methods=['POST'])
     portal.app.add_api_route('/login/password', pages.password_login, methods=['POST'])
     portal.app.add_api_route('/admin/login', pages.password_login, methods=['POST'])
     portal.app.add_api_route('/login/start', pages.login_start, methods=['POST'])

@@ -320,7 +320,7 @@ def test_maintenance_allows_signin_checks_but_freezes_device_changes(portal, mon
         con.execute('UPDATE admins SET totp_key=?,totp_verified=1 WHERE id=1', (secret,))
         con.execute('UPDATE roles SET require_2fa=1 WHERE id=\'owner\'')
     Path(app.DB).with_name('maintenance').touch()
-    response = post(client, '/login/password', {'username': 'admin', 'password': 'test-password'})
+    response = post(client, '/login', {'identifier': 'admin', 'password': 'test-password'})
     assert response.headers['location'] == '/security'
     response = post(client, '/security/second', {'method': 'totp', 'code': pyotp.TOTP(secret).now()})
     assert response.headers['location'] == '/admin'
@@ -337,7 +337,42 @@ def test_maintenance_allows_signin_checks_but_freezes_device_changes(portal, mon
     monkeypatch.setattr(ZvonokProvider, 'verify', staticmethod(verify))
     client.cookies.clear()
     client.get('/')
-    response = post(client, '/login/start', {'method': 'phone', 'identifier': '+79990000001'})
+    response = post(client, '/login', {'identifier': '+79990000001'})
     assert response.status_code == 303
     assert post(client, response.headers['location']).headers['location'] == '/cabinet'
     assert client.get('/cabinet').status_code == 200
+
+
+def test_common_login_dispatch_and_policy(portal, monkeypatch):
+    from login_methods import EmailProvider, ZvonokProvider
+    app, client = portal
+    sent = []
+
+    async def begin(config, address, code, link):
+        sent.append(address)
+        return {'dial': '+79990000003'}
+
+    monkeypatch.setattr(ZvonokProvider, 'begin', staticmethod(begin))
+    monkeypatch.setattr(EmailProvider, 'begin', staticmethod(begin))
+    assert post(client, '/login', {'identifier': 'admin'}).status_code == 400
+    assert post(client, '/login', {'identifier': '+79990000001', 'password': 'wrong'}).status_code == 401
+    assert sent == []
+    response = post(client, '/login', {'identifier': ' +7 (999) 000-00-01 '})
+    assert response.status_code == 303
+    assert sent == ['+79990000001']
+    with app.auth_store.db() as con:
+        challenge = con.execute('SELECT * FROM challenges WHERE id=?', (response.headers['location'].split('/')[-1],)).fetchone()
+        assert challenge['method'] == 'phone'
+        assert challenge['purpose'] == 'login'
+        con.execute("UPDATE providers SET enabled=0 WHERE id='zvonok'")
+    assert post(client, '/login', {'identifier': '+79990000002'}).status_code == 400
+    with app.auth_store.db() as con:
+        con.execute("UPDATE providers SET enabled=1 WHERE id='zvonok'")
+    first, _ = email_setup(app)
+    response = post(client, '/login', {'identifier': 'Person@Example.Test'})
+    assert response.status_code == 303
+    assert sent[-1] == 'person@example.test'
+    with app.auth_store.db() as con:
+        con.execute("DELETE FROM grants WHERE account_id=? AND role_id='email-role'", (first,))
+    assert post(client, '/login', {'identifier': 'person@example.test'}).status_code == 403
+    assert sent == ['+79990000001', 'person@example.test']

@@ -92,7 +92,7 @@ async def validate_csrf(request, token):
 
 @app.middleware("http")
 async def csrf_and_privacy(request, call_next):
-    authentication = request.url.path in {'/admin/login', '/admin/logout'} or request.url.path.startswith(('/login/', '/security/'))
+    authentication = request.url.path in {'/login', '/admin/login', '/admin/logout'} or request.url.path.startswith(('/login/', '/security/'))
     if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and not authentication and Path(DB).with_name('maintenance').exists():
         return JSONResponse({'detail': 'Сервис обновляется. Повторите действие через несколько минут'}, 503, headers={'Retry-After': '30'})
     token = request.cookies.get("__Host-aas_csrf") or secrets.token_urlsafe(32)

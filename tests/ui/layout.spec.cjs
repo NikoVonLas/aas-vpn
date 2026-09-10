@@ -3,7 +3,7 @@ const { test, expect } = require('@playwright/test');
 async function login(page) {
   await page.request.get('/fixture/reset-sessions');
   await page.goto('/admin/login');
-  await page.locator('[name=username]').fill('admin');
+  await page.locator('[name=identifier]').fill('admin');
   await page.locator('[name=password]').fill('visual-test-password');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
   await expect(page).toHaveURL(/\/admin$/);
@@ -95,23 +95,6 @@ test('RU file import is editable and save is the last action', async ({ page }) 
   await expect(card.locator('textarea')).toHaveValue(revised);
   await card.getByRole('button', { name: 'Удалить', exact: true }).click();
   await expect(card).toHaveCount(0);
-});
-
-test('country hover stays inside the phone field and dropdown opens', async ({ page }) => {
-  await page.goto('/?method=phone');
-  const phone = page.locator('.iti').first();
-  const country = phone.locator('.iti__selected-country');
-  await country.hover();
-  const bounds = await phone.evaluate(element => {
-    const input = element.querySelector('input[type=tel]').getBoundingClientRect();
-    const button = element.querySelector('.iti__selected-country').getBoundingClientRect();
-    return { top: button.top - input.top, bottom: input.bottom - button.bottom };
-  });
-  expect(bounds.top).toBeGreaterThanOrEqual(0);
-  expect(bounds.bottom).toBeGreaterThanOrEqual(0);
-  await expect(phone).toHaveScreenshot('phone-hover.png');
-  await country.click();
-  await expect(page.locator('.iti__country-list:visible')).toBeVisible();
 });
 
 test('device has one save action for both fields', async ({ page }) => {
@@ -267,10 +250,13 @@ test('virtual FIDO2 registration, authentication, replay and deletion', async ({
   await owner.locator('[name=primary][value=webauthn]').check();
   await owner.locator('[name=required]').check();
   await owner.getByRole('button', { name: 'Сохранить', exact: true }).click();
-  await page.goto('/?method=webauthn');
+  await page.goto('/');
+  await page.locator('[name=password]').fill('unused-password');
+  const keyRequest = page.waitForRequest(r => r.url().endsWith('/security/passkeys/start'));
   await page.locator('[name=identifier]').fill('admin');
   await page.getByRole('button', { name: 'Войти с ключом / passkey', exact: true }).click();
   await expect(page).toHaveURL(/\/admin$/);
+  expect((await keyRequest).postData()).not.toContain('unused-password');
   // A UV-verified key satisfies mandatory MFA as the primary method.
   await page.goto('/admin/roles');
   await owner.locator('..').locator('summary').first().click();
@@ -282,4 +268,26 @@ test('virtual FIDO2 registration, authentication, replay and deletion', async ({
   await page.getByRole('button', { name: 'Удалить ключ', exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId });
+});
+
+
+test('one login form serves every entry URL', async ({ page }) => {
+  for (const path of ['/', '/admin/login', '/?method=phone', '/?method=webauthn']) {
+    await page.goto(path);
+    const form = page.locator('form[action="/login"]');
+    await expect(form).toHaveCount(1);
+    await expect(page.getByRole('navigation', { name: 'Способ входа' })).toHaveCount(0);
+    await expect(form.getByLabel('Логин, телефон или почта')).toBeVisible();
+    await expect(form.getByLabel('Пароль', { exact: true })).not.toHaveAttribute('required');
+    await expect(form.getByRole('button')).toHaveText(['Войти с ключом / passkey', 'Войти']);
+  }
+});
+
+test('Enter in the common form signs in with the password', async ({ page }) => {
+  await page.request.get('/fixture/reset-sessions');
+  await page.goto('/');
+  await page.getByLabel('Логин, телефон или почта').fill('admin');
+  await page.getByLabel('Пароль', { exact: true }).fill('visual-test-password');
+  await page.getByLabel('Пароль', { exact: true }).press('Enter');
+  await expect(page).toHaveURL(/\/admin$/);
 });

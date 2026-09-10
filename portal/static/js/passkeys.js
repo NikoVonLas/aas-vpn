@@ -2,14 +2,18 @@
 const decode = value => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/')), c => c.codePointAt(0));
 const encode = value => btoa(String.fromCodePoint(...new Uint8Array(value))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 document.querySelectorAll('form[data-passkey]').forEach(form => {
-  form.addEventListener('submit', async event => {
+  const keyButton = form.querySelector('[data-passkey-submit]');
+  const trigger = keyButton || form;
+  trigger.addEventListener(keyButton ? 'click' : 'submit', async event => {
     event.preventDefault();
-    const button = form.querySelector('button');
+    if (!form.reportValidity()) return;
+    const button = keyButton || event.submitter || form.querySelector('button');
     button.disabled = true;
     let status = form.querySelector('[role=status]');
     if (!status) { status = document.createElement('p'); status.setAttribute('role', 'status'); form.append(status); }
     try {
       const data = new FormData(form);
+      data.delete('password');
       data.set('purpose', form.dataset.passkey);
       const send = async (url, body) => {
         const response = await fetch(url, { method: 'POST', body, headers: { 'X-Requested-With': 'fetch' } });
