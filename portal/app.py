@@ -31,7 +31,6 @@ DEVICE_EXIT = 'device.exit'
 DEVICE_CONFIG = 'devices.config'
 
 ADMIN_LOGIN_PATH = '/admin/login'
-ADMINISTRATORS_PATH = '/admin/administrators'
 ADMIN_PATH = '/admin'
 CABINET_PATH = '/cabinet'
 WG_CLIENT_PATH = '/clients'
@@ -760,7 +759,7 @@ def upstream_error(request: Request, exc):
 
 
 def admin_nav(active=ADMIN_PATH):
-    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), ('/admin/roles', 'Роли и доступ'), ('/admin/login-methods', 'Способы входа'), (SECURITY_PATH, 'Безопасность профиля'), (ADMINISTRATORS_PATH, 'Администраторы')]
+    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), ('/admin/roles', 'Роли и доступ'), ('/admin/login-methods', 'Способы входа'), (SECURITY_PATH, 'Безопасность профиля')]
     return '<nav class="app-links admin-nav" aria-label="Администрирование">' + ''.join(
         f'<a href="{path}"' + (' aria-current="page"' if path == active else '') + f'>{label}</a>'
         for path, label in links) + '</nav>'

@@ -62,12 +62,7 @@ class AccessPages:
         self.p.require_owner(request)
         with self.p.auth_store.db() as con:
             rows = con.execute('SELECT * FROM roles ORDER BY protected DESC,name').fetchall()
-            grants = con.execute('SELECT g.* FROM grants g JOIN accounts a ON a.id=g.account_id JOIN roles r ON r.id=g.role_id LEFT JOIN admins c ON c.id=a.admin_id ORDER BY COALESCE(c.username,a.phone,a.id),r.name,g.scope').fetchall()
-            accounts = con.execute('SELECT a.id,a.phone,c.username FROM accounts a LEFT JOIN admins c ON c.id=a.admin_id').fetchall()
-            targets = {g['id']: [r[0] for r in con.execute('SELECT account_id FROM grant_targets WHERE grant_id=?', (g['id'],))] for g in grants}
-        names = {r['id']: r['name'] for r in rows}
-        account_names = {a['id']: a['username'] or a['phone'] or a['id'] for a in accounts}
-        body = self.p.admin_nav(ROLES_PATH) + '<p class=muted>Права и способы входа всех ролей складываются. Отзыв права сохраняет маршруты и назначения.</p>'
+        body = self.p.admin_nav(ROLES_PATH) + '<p class=muted>Здесь создаются и настраиваются роли. Назначайте их в разделе <a href=/admin>Пользователи</a>. Права и способы входа всех ролей складываются.</p>'
         for row in [*rows, {'id': '', 'name': '', 'permissions': '[]', 'primary_methods': '["password"]', 'secondary_methods': '["totp","webauthn"]', 'require_2fa': 0, 'protected': 0}]:
             body += f"<section class=card><details {('open' if not row['id'] else '')}><summary>{esc(row['name']) or 'Новая роль'}</summary>"
             body += f'''<form class=stack method=post action=/admin/roles/save><input type=hidden name=role_id value="{esc(row['id'])}">'''
@@ -80,13 +75,6 @@ class AccessPages:
                 body += '<button class=secondary name=copy value=1>Создать копию</button>'
             body += SAVE_BUTTON
             body += '</div></form></details></section>'
-        account_options = ''.join((f'<option value="{esc(key)}">{esc(name)}</option>' for (key, name) in account_names.items()))
-        role_options = ''.join((f'<option value="{esc(key)}">{esc(name)}</option>' for (key, name) in names.items()))
-        body += f"<section class=card><h2>Назначения</h2><form class=stack method=post action=/admin/roles/assign><label>Аккаунт<select name=account_id>{account_options}</select></label><label>Роль<select name=role_id>{role_options}</select></label><label>Область<select name=scope><option value=self>Свой аккаунт</option><option value=selected>Выбранные аккаунты</option><option value=global>Глобально</option></select></label><fieldset><legend>Выбранные аккаунты (только для этой области)</legend>{choices('targets', account_names, [])}</fieldset><button>Добавить назначение</button></form></section>"
-        for g in grants:
-            scope = {'self': 'Свой аккаунт', 'selected': 'Выбранные аккаунты', 'global': 'Глобально'}[g['scope']]
-            selected = ', '.join((account_names.get(key, key) for key in targets[g['id']]))
-            body += f'''<section class=card><p>{esc(account_names[g['account_id']])} · {esc(names[g['role_id']])} · {scope} {esc(selected)}</p><form method=post action=/admin/roles/assign><input type=hidden name=account_id value="{g['account_id']}"><input type=hidden name=remove value="{g['id']}"><button class=danger-soft>Отозвать назначение</button></form></section>'''
         return self.p.page('Роли и доступ', body, show_header=True)
 
     def save_role(self, request: Request, name: str=Form(...), role_id: str=Form(''), permissions: list[str]=Form([]), primary: list[str]=Form([]), secondary: list[str]=Form([]), required: str=Form(''), copy_role: str=Form('', alias='copy')):
@@ -96,8 +84,11 @@ class AccessPages:
 
     def assign(self, request: Request, account_id: str=Form(...), role_id: str=Form(''), scope: str=Form('self'), targets: list[str]=Form([]), remove: str=Form('')):
         actor = self.p.require_owner(request, fresh=True)
+        with self.p.auth_store.db() as con:
+            if not con.execute('SELECT 1 FROM accounts WHERE id=?', (account_id,)).fetchone():
+                raise HTTPException(404)
         self.p.identities.assign(actor['account_id'], account_id, role_id, scope, targets, remove)
-        return RedirectResponse(ROLES_PATH, 303)
+        return RedirectResponse(ACCOUNTS_PATH + '#account-' + account_id, 303)
 
     def account_page(self, request: Request, account_id: str):
         self.p.require_permission(request, 'devices.view', account_id)
@@ -196,15 +187,16 @@ class AccessPages:
         is_owner = self.p.identities.owner(actor['account_id'])
         if self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT):
             body += '<section class=card><h2>Новый аккаунт</h2><form class=settings-form method=post action=/admin/accounts><label>Имя<input name=name maxlength=80 required></label><label>Логин<input name=username maxlength=64 required></label><label>Временный пароль<input name=password type=password minlength=12 maxlength=128 required autocomplete=new-password></label><label>Лимит устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить аккаунт</button></form></section>'
+        access = self.account_access_model() if is_owner else None
         for row in rows:
-            body += self.account_card(actor, row, is_owner)
+            body += self.account_card(actor, row, access)
         body += '<form method=post action=/admin/logout><button class=secondary>Выйти</button></form>'
-        return self.p.page('Аккаунты', body, show_header=True, phone_widget=True)
+        return self.p.page('Пользователи', body, show_header=True, phone_widget=True)
 
-    def account_card(self, actor, row, is_owner):
+    def account_card(self, actor, row, access):
         body = ''
         key = row['account_id']
-        body += f"<section class=card><h2>{esc(row['name'])}</h2><p>{esc(row['username'] or row['login_phone'])} · {row['device_count']}/{row['device_limit']} устройств</p><form class=settings-form method=post action=/accounts/{key}/save>"
+        body += f"<section class=card id=account-{key}><h2>{esc(row['name'])}</h2><p>{esc(row['username'] or row['login_phone'])} · {row['device_count']}/{row['device_limit']} устройств</p><form class=settings-form method=post action=/accounts/{key}/save>"
         for (field, caption, action) in [('name', 'Имя', EDIT_ACCOUNT), ('device_limit', 'Лимит устройств', ACCOUNT_LIMITS)]:
             if self.p.identities.allowed(actor['account_id'], action, key):
                 body += f'<label>{caption}<input name={field} value="{esc(row[field])}" required></label>'
@@ -218,10 +210,42 @@ class AccessPages:
         if any((self.p.identities.allowed(actor['account_id'], action, key) for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE))):
             body += SAVE_BUTTON
         body += '</div></form>'
-        if is_owner:
+        if access is not None:
+            body += self.account_roles(key, access)
             body += f'<form method=post action=/admin/accounts/{key}/recovery><button class=secondary>Выдать одноразовое восстановление</button></form>'
         body += '</section>'
         return body
+
+    def account_access_model(self):
+        with self.p.identities.transaction() as con:
+            roles = {r['id']: r['name'] for r in con.execute('SELECT id,name FROM roles ORDER BY protected DESC,name')}
+            names = {r['id']: r['name'] + ' · ' + (r['login'] or r['id']) for r in con.execute('SELECT a.id,u.name,COALESCE(c.username,a.phone) login FROM accounts a JOIN portal.users u ON u.account_id=a.id LEFT JOIN admins c ON c.id=a.admin_id ORDER BY u.name')}
+            grants = {}
+            for row in con.execute('SELECT g.*,r.name FROM grants g JOIN roles r ON r.id=g.role_id ORDER BY r.name,g.scope'):
+                grants.setdefault(row['account_id'], []).append(dict(row))
+            targets = {}
+            for row in con.execute('SELECT * FROM grant_targets'):
+                targets.setdefault(row['grant_id'], []).append(row['account_id'])
+        return roles, names, grants, targets
+
+    def account_roles(self, key, access):
+        roles, names, grants, targets = access
+        assigned = grants.get(key, [])
+        summary = ', '.join(sorted({row['name'] for row in assigned})) or 'не назначены'
+        path = f'/accounts/{key}/roles'
+        body = f'<details class=account-roles><summary>Роли: {esc(summary)}</summary>'
+        for row in assigned:
+            scope = {'self': 'Свой аккаунт', 'selected': 'Выбранные аккаунты', 'global': 'Глобально'}[row['scope']]
+            selected = ', '.join(names.get(target, target) for target in targets.get(row['id'], []))
+            body += f'''<form class=device-form method=post action={path}><p>{esc(row['name'])} · {scope} {esc(selected)}</p><input type=hidden name=remove value="{esc(row['id'])}"><button class=danger-soft>Отозвать назначение</button></form>'''
+        options = ''.join(f'<option value="{esc(role)}">{esc(name)}</option>' for role, name in roles.items())
+        body += f'''<form class=stack method=post action={path}><label>Роль<select name=role_id required><option value="" disabled selected>Выберите роль</option>{options}</select></label>
+<label>Область<select name=scope><option value=self>Свой аккаунт</option><option value=selected>Выбранные аккаунты</option><option value=global>Глобально</option></select></label>
+<details><summary>Выбранные аккаунты — только для этой области</summary>{choices('targets', names, [])}</details><button>Добавить роль</button></form></details>'''
+        return body
+
+    def assign_account(self, request: Request, account_id: str, role_id: str=Form(''), scope: str=Form('self'), targets: list[str]=Form([]), remove: str=Form('')):
+        return self.assign(request, account_id, role_id, scope, targets, remove)
 
     def create_account(self, request: Request, name: str=Form(...), username: str=Form(...), password: str=Form(...), device_limit: int=Form(2)):
         actor = self.p.require_permission(request, CREATE_ACCOUNT)
@@ -258,6 +282,7 @@ class AccessPages:
             if state_present:
                 con.execute('UPDATE portal.users SET enabled=? WHERE account_id=?', (int(bool(enabled)), account_id))
                 con.execute('UPDATE accounts SET enabled=? WHERE id=?', (int(bool(enabled)), account_id))
+                con.execute('UPDATE admins SET enabled=? WHERE id=?', (int(bool(enabled)), target['admin_id']))
                 identity.ensure_owner(con)
                 if target['enabled'] != int(bool(enabled)):
                     con.execute('DELETE FROM identity_sessions WHERE account_id=?', (account_id,))
@@ -279,4 +304,5 @@ def register(portal):
     portal.app.add_api_route('/accounts/{account_id}/routing', pages.save_account_routes, methods=['POST'])
     portal.app.add_api_route(ACCOUNTS_PATH, pages.accounts, methods=['GET'])
     portal.app.add_api_route('/admin/accounts', pages.create_account, methods=['POST'])
+    portal.app.add_api_route('/accounts/{account_id}/roles', pages.assign_account, methods=['POST'])
     portal.app.add_api_route('/accounts/{account_id}/save', pages.save_account, methods=['POST'])

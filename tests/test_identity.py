@@ -144,6 +144,13 @@ def test_new_password_account_without_phone_and_immutable_id(portal):
         key = row['id']
         assert row['phone'] is None
         assert identity.policy(con, key)['primary'] == {'password'}
+    state_path = '/accounts/' + key + '/save'
+    assert post(client, state_path, {'state_present': '1'}).status_code == 303
+    with app.auth_store.db() as con:
+        assert con.execute('SELECT enabled FROM admins WHERE id=?', (row['admin_id'],)).fetchone()[0] == 0
+    assert post(client, state_path, {'state_present': '1', 'enabled': '1'}).status_code == 303
+    with app.auth_store.db() as con:
+        assert con.execute('SELECT enabled FROM admins WHERE id=?', (row['admin_id'],)).fetchone()[0] == 1
     post(client, '/admin/logout')
     assert post(client, '/login/password', {'username': 'password-user', 'password': 'temporary-password'}).headers['location'] == '/security'
     assert client.get('/cabinet').headers['location'] == '/security'
@@ -407,3 +414,34 @@ def test_login_form_ignores_disabled_modules_and_unassigned_roles(portal):
         con.execute("UPDATE providers SET enabled=1 WHERE id='zvonok'")
         con.execute('UPDATE accounts SET enabled=0 WHERE phone IS NOT NULL')
     assert 'телефон с кодом страны' not in client.get('/').text
+
+
+def test_user_card_role_assignment_scope_and_revoke(portal):
+    app, client = portal
+    owner, first, second = accounts(app)
+    admin_login(app, client)
+    path = '/accounts/' + first + '/roles'
+    assert 'class=account-roles' in client.get('/admin').text
+    assert '/admin/roles/assign' not in client.get('/admin/roles').text
+    assert client.get('/admin/administrators').headers['location'] == '/admin'
+    payload = {'role_id': 'observer', 'scope': 'selected', 'targets': [second]}
+    response = post(client, path, payload)
+    assert response.headers['location'] == '/admin#account-' + first
+    assert app.identities.allowed(first, 'accounts.view', second)
+    assert not app.identities.allowed(first, 'accounts.view', owner)
+    with app.auth_store.db() as con:
+        assigned = con.execute("SELECT id FROM grants WHERE account_id=? AND role_id='observer'", (first,)).fetchone()[0]
+    assert post(client, path, {'remove': assigned}).status_code == 303
+    assert not app.identities.allowed(first, 'accounts.view', second)
+    assert post(client, path, {'role_id': 'observer', 'scope': 'selected'}).status_code == 400
+    with app.auth_store.db() as con:
+        assert not con.execute("SELECT 1 FROM grants WHERE account_id=? AND role_id='observer'", (first,)).fetchone()
+        protected = con.execute("SELECT id FROM grants WHERE account_id=? AND role_id='owner'", (owner,)).fetchone()[0]
+    assert post(client, '/accounts/' + owner + '/roles', {'remove': protected}).status_code == 400
+    phone_login(app, client)
+    assert 'class=account-roles' not in client.get('/admin').text
+    assert post(client, path, payload).status_code == 403
+    admin_login(app, client)
+    with app.auth_store.db() as con:
+        con.execute('UPDATE identity_sessions SET confirmed=0')
+    assert post(client, path, payload).headers['location'] == '/security/confirm'

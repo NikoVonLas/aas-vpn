@@ -92,7 +92,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid var
 fieldset{min-width:0;border:1px solid var(--line);border-radius:var(--control-radius);padding:16px;display:grid;gap:var(--field-gap)}
 legend{font-size:13px;color:var(--muted);padding:0 6px}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.6}
-.card>form+form{margin-top:16px}
+.card>form+form,.card>form+details,.card>details+form,.card details>form+form{margin-top:16px}
 @media(max-width:720px){
  .form-actions,.settings-form .form-actions{display:grid;grid-template-columns:minmax(0,1fr)}
  .form-actions>button,.form-actions>.btn,.settings-form>button{width:100%}

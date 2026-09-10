@@ -13,7 +13,6 @@ for (const [name, path, active] of [
   ['users', '/admin', 'Пользователи'],
   ['exits', '/admin/ru-exits', 'RU-выходы'],
   ['routing', '/admin/routing', 'Маршрутизация'],
-  ['administrators', '/admin/administrators', 'Администраторы'],
   ['roles', '/admin/roles', 'Роли и доступ'],
   ['login-methods', '/admin/login-methods', 'Способы входа'],
   ['devices', '/admin/users/+79990000001/devices', 'Пользователи'],
@@ -40,7 +39,7 @@ for (const [name, path] of [['login', '/admin/login'], ['not-found', '/missing-p
 
 test('account saves name, limit and state together', async ({ page }) => {
   await login(page);
-  const form = page.locator('form[action^="/accounts/"]').last();
+  const form = page.locator('form[action^="/accounts/"][action$="/save"]').last();
   const response = page.waitForResponse(r => /\/accounts\/[^/]+\/save$/.test(r.url()) && r.request().method() === 'POST');
   await form.getByRole('button', { name: 'Сохранить', exact: true }).click();
   expect((await response).status()).toBe(303);
@@ -49,11 +48,11 @@ test('account saves name, limit and state together', async ({ page }) => {
 
 test('logout after AJAX save uses its own action', async ({ page }) => {
   await login(page);
-  const row = page.locator('form[action^="/accounts/"]').first();
+  const row = page.locator('form[action^="/accounts/"][action$="/save"]').first();
   const response = page.waitForResponse(r => /\/accounts\/[^/]+\/save$/.test(r.url()) && r.request().method() === 'POST');
   await row.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await response;
-  await expect(page.locator('form[action^="/accounts/"]').first().getByRole('button', { name: 'Сохранить', exact: true })).toBeEnabled();
+  await expect(page.locator('form[action^="/accounts/"][action$="/save"]').first().getByRole('button', { name: 'Сохранить', exact: true })).toBeEnabled();
   const logout = page.waitForRequest(r => r.url().endsWith('/admin/logout') && r.method() === 'POST');
   await page.getByRole('button', { name: 'Выйти', exact: true }).click();
   await logout;
@@ -64,7 +63,7 @@ test('logout after AJAX save uses its own action', async ({ page }) => {
 
 test('RU file import is editable and save is the last action', async ({ page }) => {
   await login(page);
-  await expect(page.locator('form[action^="/accounts/"]').first().getByRole('button').last()).toHaveText('Сохранить');
+  await expect(page.locator('form[action^="/accounts/"][action$="/save"]').first().getByRole('button').last()).toHaveText('Сохранить');
   await page.goto('/admin/ru-exits');
   const legacy = page.locator('form[action="/admin/ru-exits/1"]');
   await expect(legacy.locator('textarea')).toHaveValue(/\[Interface\]/);
@@ -150,17 +149,29 @@ for (const [phone, allowed] of [['+79990000001', true], ['+79990000002', false]]
   });
 }
 
-test('administrator forms share controls and hide unused password', async ({ page }) => {
+test('roles are assigned and revoked inside a user card', async ({ page }) => {
   await login(page);
   await page.goto('/admin/administrators');
-  const ownForm = page.locator('form.settings-form').first();
-  await expect(ownForm.getByRole('button', { name: 'Сохранить', exact: true })).toHaveCount(1);
-  await ownForm.locator('[data-admin-action]').selectOption('totp-start');
-  await expect(ownForm.locator('[data-admin-password]')).toBeHidden();
-  await ownForm.locator('[data-admin-action]').selectOption('password');
-  await expect(ownForm.locator('[data-admin-password]')).toBeVisible();
-  const widths = await page.locator('.admin-nav a').evaluateAll(links => links.map(link => link.scrollWidth <= link.clientWidth));
-  expect(widths.every(Boolean)).toBe(true);
+  await expect(page).toHaveURL(/\/admin$/);
+  await expect(page.getByRole('link', { name: 'Администраторы', exact: true })).toHaveCount(0);
+  const card = page.locator('section.card').filter({ has: page.getByRole('heading', { name: 'Александр Константинопольский', exact: true }) });
+  await card.locator('.account-roles > summary').click();
+  const form = card.locator('.account-roles > form.stack');
+  await form.getByRole('combobox', { name: 'Роль', exact: true }).selectOption('observer');
+  await form.getByRole('combobox', { name: 'Область', exact: true }).selectOption('selected');
+  await form.getByText('Выбранные аккаунты — только для этой области', { exact: true }).click();
+  await form.getByRole('checkbox', { name: /^Мария ·/ }).check();
+  await expect(card).toHaveScreenshot('user-role-assignment.png');
+  await form.getByRole('button', { name: 'Добавить роль', exact: true }).click();
+  await expect(page).toHaveURL(/\/admin#account-/);
+  await expect(card.locator('.account-roles > summary')).toContainText('Наблюдатель');
+  await card.locator('.account-roles > summary').click();
+  const grant = card.locator('form').filter({ hasText: 'Наблюдатель · Выбранные аккаунты Мария' });
+  await grant.getByRole('button', { name: 'Отозвать назначение', exact: true }).click();
+  await expect(card.locator('.account-roles > summary')).not.toContainText('Наблюдатель');
+  await page.goto('/admin/roles');
+  await expect(page.getByRole('button', { name: 'Добавить роль', exact: true })).toHaveCount(0);
+  await expect(page.locator('form[action="/admin/roles/assign"]')).toHaveCount(0);
 });
 
 

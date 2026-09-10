@@ -139,7 +139,7 @@ def test_admin_management_reauth_last_admin_and_revocation(portal):
     app, client = portal
     admin_login(app, client)
     route = '/admin/administrators'
-    assert client.get(route).status_code == 200
+    assert client.get(route).headers['location'] == '/admin'
     assert post(client, route+'/1', {'action':'toggle', 'password':'test-password'}).status_code == 400
     assert post(client, route, {'username':'new', 'new_password':'temporary-password', 'password':'wrong'}).status_code == 400
     assert post(client, route, {'username':'new', 'new_password':'temporary-password', 'password':'test-password'}).status_code == 303
