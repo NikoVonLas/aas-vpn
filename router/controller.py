@@ -42,11 +42,15 @@ def network_guard():
     prefix = 'delete table inet aas_guard\n' if check.returncode == 0 else ''
     rules = prefix + f'''table inet aas_guard {{
       chain forward {{ type filter hook forward priority -10; policy accept;
+        iifname "{bridge}" ip saddr {AWG_IP} udp sport 1234 ct direction reply ct status dnat counter accept comment "aas-awg-encrypted-replies"
         iifname "{bridge}" ip saddr {AWG_IP} ip daddr != {bridge_network} oifname != "sbtun0" drop
         iifname "{bridge}" ip saddr != {bridge_network} oifname != "sbtun0" ip daddr != {bridge_network} drop
         iifname "{bridge}" meta nfproto ipv6 drop
       }}
     }}\n'''
+    # Docker DNAT preserves public client addresses. Its encrypted tunnel replies
+    # must reach WAN before the guard rejects direct forwarding of inner traffic.
+    # Reply direction plus DNAT status excludes client-initiated outbound flows.
     run('nft', '-f', '-', input=rules.encode())
     # Loose reverse-path validation is required for intercepted traffic.
     # Docker mounts /proc/sys read-only in a host-network container. Deploy sets
