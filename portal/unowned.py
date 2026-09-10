@@ -7,6 +7,12 @@ from fastapi import Form, HTTPException, Request
 PATH = '/admin/unowned'
 
 
+def can_assign(portal, actor, user):
+    account_id = portal.account_for_phone(user['phone'])
+    return all(portal.identities.allowed(actor['account_id'], action, account_id)
+               for action in ('accounts.view', 'devices.create'))
+
+
 def register(portal):
     async def clients(request):
         portal.require_admin(request, 'devices.assign')
@@ -31,7 +37,7 @@ def register(portal):
         with portal.db() as con:
             users = con.execute('SELECT phone,name FROM users ORDER BY name').fetchall()
         actor = portal.current_account(request)
-        users = [user for user in users if portal.identities.allowed(actor['account_id'], 'accounts.view', portal.account_for_phone(user['phone'])) and portal.identities.allowed(actor['account_id'], 'devices.create', portal.account_for_phone(user['phone']))]
+        users = [user for user in users if can_assign(portal, actor, user)]
         options = ''.join(f'<option value="{html.escape(user["phone"], quote=True)}">{html.escape(user["name"])}</option>' for user in users)
         body = portal.admin_nav(PATH)
         if not rows:

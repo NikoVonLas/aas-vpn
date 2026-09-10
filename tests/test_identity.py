@@ -82,7 +82,8 @@ def test_operator_http_scope_filters_lists_status_and_secrets(portal):
     assert post(client, '/device/2/update', {'name': 'Denied'}).status_code == 404
     assert post(client, '/device/2/delete').status_code == 404
     page = client.get('/admin').text
-    assert 'Первый' in page and 'Второй' in page
+    assert 'Первый' in page
+    assert 'Второй' in page
     assert 'admin</h2>' not in page
     assert set(client.get('/routing/status').json()['devices']) == {'1', '2'}
     for path in ['/admin/roles', '/admin/login-methods', '/admin/administrators', '/admin/unowned', '/admin/ru-exits', '/admin/routing']:
@@ -193,7 +194,8 @@ def test_email_scanner_other_browser_and_purpose_binding(portal):
     with app.auth_store.db() as con:
         key = service.start(con, first, 'login', 'email', 'original', code='123456', link='link-secret')
     page = client.get('/login/link')
-    assert page.status_code == 200 and 'link-secret' not in page.text
+    assert page.status_code == 200
+    assert 'link-secret' not in page.text
     with app.auth_store.db() as con:
         assert con.execute('SELECT 1 FROM challenges WHERE id=?', (key,)).fetchone()
     result = post(client, '/login/link', {'proof': key + '.link-secret'})
@@ -225,10 +227,13 @@ def test_attempt_limits_expiry_and_provider_disable_guard(portal):
     with pytest.raises(ValueError):
         service.attempt(key, 'browser')
     owner, _, second = accounts(app)
-    with pytest.raises(ValueError, match='способа входа'):
+    def disable_phone_provider():
         with app.auth_store.db() as con:
             con.execute("UPDATE providers SET enabled=0 WHERE id='zvonok'")
             identity.ensure_login_paths(con)
+
+    with pytest.raises(ValueError, match='способа входа'):
+        disable_phone_provider()
     with app.auth_store.db() as con:
         assert con.execute("SELECT enabled FROM providers WHERE id='zvonok'").fetchone()[0] == 1
         assert identity.policy(con, second)['primary'] == {'phone'}
@@ -281,7 +286,8 @@ def test_exit_permission_does_not_require_rename_or_route_edit(portal):
         con.execute("INSERT INTO scoped_routing_rules VALUES('account',?,'ru','suffix','example.test')", (first,))
     phone_login(app, client)
     page = client.get('/cabinet').text
-    assert 'name=name' in page and 'readonly' in page
+    assert 'name=name' in page
+    assert 'readonly' in page
     assert post(client, '/device/1/update', {'name': name, 'ru_exit_id': 1}).status_code == 303
     assert post(client, '/device/1/update', {'name': 'Forbidden', 'ru_exit_id': 0}).status_code == 404
     route = '/accounts/' + first + '/routing'

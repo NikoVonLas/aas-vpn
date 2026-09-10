@@ -103,7 +103,7 @@ class Confirmations:
 
     def start(self, con, account_id, purpose, method, browser, payload=None, code=None, link=None):
         rules = identity.policy(con, account_id)
-        allowed = rules['secondary'] if purpose == 'second' else rules['primary'] | rules['secondary'] if purpose.startswith('enroll-') else rules['primary']
+        allowed = confirmation_methods(rules, purpose)
         if method not in allowed:
             raise PermissionError('Способ подтверждения запрещён политикой роли')
         if method in {'phone', 'email'}:
@@ -138,17 +138,8 @@ class Confirmations:
                 raise ValueError('Подтверждение уже использовано')
             if credential_id is not None and not con.execute('SELECT 1 FROM passkeys WHERE id=? AND account_id=?', (credential_id, row['account_id'])).fetchone():
                 raise ValueError('Ключ удалён')
-            # Revalidate role and provider on every completion, including in-flight changes.
-            rules = identity.policy(con, row['account_id'])
-            methods = rules['secondary'] if row['purpose'] == 'second' else rules['primary'] | rules['secondary'] if row['purpose'].startswith('enroll-') else rules['primary']
-            if row['method'] not in methods:
-                raise PermissionError('Способ подтверждения больше не разрешён')
-            if row['method'] in {'phone', 'email'}:
-                provider = 'zvonok' if row['method'] == 'phone' else 'email'
-                if not con.execute('SELECT 1 FROM providers WHERE id=? AND enabled=1', (provider,)).fetchone():
-                    raise PermissionError('Способ подтверждения отключён')
-            valid = external or bool(code and current['secret_hash'] and secrets.compare_digest(self.auth.digest(code), current['secret_hash'])) or bool(link and current['link_hash'] and secrets.compare_digest(self.auth.digest(link), current['link_hash']))
-            if not valid:
+            self.validate_policy(con, row)
+            if not (external or self.matches(code, current['secret_hash']) or self.matches(link, current['link_hash'])):
                 raise ValueError('Неверное подтверждение')
             con.execute('DELETE FROM challenges WHERE id=?', (row['id'],))
             payload = json.loads(current['payload'])
@@ -164,17 +155,35 @@ class Confirmations:
                 con.execute(f'UPDATE accounts SET {field}=? WHERE id=?', (payload['address'], row['account_id']))
                 identity.audit(con, row['account_id'], row['purpose'], row['account_id'])
                 return None
-            methods = [row['method']]
-            if row['purpose'] == 'second':
-                previous = con.execute('SELECT * FROM identity_sessions WHERE token_hash=? AND account_id=? AND expires>?', (payload.get('session'), row['account_id'], int(time.time()))).fetchone()
-                if not previous:
-                    raise ValueError('Начните вход заново')
-                methods = json.loads(previous['methods'])
-                if row['method'] in methods:
-                    raise ValueError('Нужен другой способ подтверждения')
-                methods.append(row['method'])
-                con.execute('DELETE FROM identity_sessions WHERE token_hash=?', (previous['token_hash'],))
+            methods = self.session_methods(con, row, payload)
             return self.identities.new_session(con, row['account_id'], methods, verified)
+
+    def validate_policy(self, con, row):
+        # Revalidate role and provider on every completion, including in-flight changes.
+        rules = identity.policy(con, row['account_id'])
+        methods = confirmation_methods(rules, row['purpose'])
+        if row['method'] not in methods:
+            raise PermissionError('Способ подтверждения больше не разрешён')
+        if row['method'] in {'phone', 'email'}:
+            provider = 'zvonok' if row['method'] == 'phone' else 'email'
+            if not con.execute('SELECT 1 FROM providers WHERE id=? AND enabled=1', (provider,)).fetchone():
+                raise PermissionError('Способ подтверждения отключён')
+
+    def session_methods(self, con, row, payload):
+        methods = [row['method']]
+        if row['purpose'] == 'second':
+            previous = con.execute('SELECT * FROM identity_sessions WHERE token_hash=? AND account_id=? AND expires>?', (payload.get('session'), row['account_id'], int(time.time()))).fetchone()
+            if not previous:
+                raise ValueError('Начните вход заново')
+            methods = json.loads(previous['methods'])
+            if row['method'] in methods:
+                raise ValueError('Нужен другой способ подтверждения')
+            methods.append(row['method'])
+            con.execute('DELETE FROM identity_sessions WHERE token_hash=?', (previous['token_hash'],))
+        return methods
+
+    def matches(self, proof, digest):
+        return bool(proof and digest and secrets.compare_digest(self.auth.digest(proof), digest))
 
     def backup(self, session, code):
         if not session['methods'] or not json.loads(session['methods']):
@@ -188,6 +197,14 @@ class Confirmations:
                 raise ValueError('Начните вход заново')
             con.execute('DELETE FROM identity_sessions WHERE token_hash=?', (session['token_hash'],))
             return self.identities.new_session(con, session['account_id'], [json.loads(previous['methods'])[0], 'backup'])
+
+
+def confirmation_methods(rules, purpose):
+    if purpose == 'second':
+        return rules['secondary']
+    if purpose.startswith('enroll-'):
+        return rules['primary'] | rules['secondary']
+    return rules['primary']
 
 
 def totp_check(con, credential, code):

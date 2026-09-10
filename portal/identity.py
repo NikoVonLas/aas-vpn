@@ -5,6 +5,7 @@ permission is copied into its database. Attached databases use rollback journals
 so SQLite's super-journal commits account and device changes together.
 """
 from contextlib import contextmanager
+from enum import Enum
 import json
 import os
 import secrets
@@ -32,8 +33,16 @@ GLOBAL_ACTIONS = {
     'settings.edit': 'Общие настройки', 'devices.assign': 'Назначение устройств без владельца',
 }
 ACTIONS = {**ACCOUNT_ACTIONS, **GLOBAL_ACTIONS}
-PRIMARY = {'password', 'phone', 'email', 'webauthn'}
-SECONDARY = PRIMARY | {'totp'}
+class LoginMethod(Enum):
+    PASSWORD = 'password'
+    PHONE = 'phone'
+    EMAIL = 'email'
+    WEBAUTHN = 'webauthn'
+    TOTP = 'totp'
+
+
+PRIMARY = {method.value for method in LoginMethod if method != LoginMethod.TOTP}
+SECONDARY = {method.value for method in LoginMethod}
 USER_ACTIONS = {'accounts.view', 'devices.view', 'devices.create', 'devices.rename',
                 'devices.delete', 'devices.config', 'account.routing.view', 'device.routing.view'}
 SCOPES = {'self', 'selected', 'global'}

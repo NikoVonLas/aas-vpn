@@ -13,6 +13,11 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 import pyotp
 
+ADDRESS_BUCKET = 'address:'
+USER_BUCKET = 'user:'
+ACCOUNT_BY_CREDENTIAL = 'SELECT id FROM accounts WHERE admin_id=?'
+
+
 COOKIE = '__Host-aas_admin'
 HASHER = PasswordHasher()
 INVALID = 'Неверный логин, пароль или код 2FA'
@@ -69,7 +74,7 @@ class Auth:
         limited = False
         with self.db() as con:
             con.execute('DELETE FROM attempts WHERE started<?', (now - 900,))
-            for bucket, limit in [('user:' + username, 10), ('address:' + address, 40)]:
+            for bucket, limit in [(USER_BUCKET + username, 10), (ADDRESS_BUCKET + address, 40)]:
                 key = self.digest(bucket)
                 con.execute('INSERT INTO attempts VALUES(?,?,1) ON CONFLICT(bucket) DO UPDATE SET count=count+1', (key, now))
                 limited |= con.execute('SELECT count FROM attempts WHERE bucket=?', (key,)).fetchone()[0] > limit
@@ -117,14 +122,14 @@ class Auth:
                         raise ValueError(INVALID)
                     methods.append('totp')
                 token = self.identity.new_session(con, account['id'], methods)
-                con.executemany('DELETE FROM attempts WHERE bucket=?', [(self.digest('user:' + username),), (self.digest('address:' + address),)])
+                con.executemany('DELETE FROM attempts WHERE bucket=?', [(self.digest(USER_BUCKET + username),), (self.digest(ADDRESS_BUCKET + address),)])
                 return token, 28800
             self.verify(con, row, password, code)
             token = secrets.token_urlsafe(32)
             ttl = int(con.execute("SELECT value FROM settings WHERE key='remember_seconds'").fetchone()[0]) if remember else 28800
             con.execute('DELETE FROM sessions WHERE expires<=?', (int(time.time()),))
             con.execute('INSERT INTO sessions VALUES(?,?,?)', (self.digest(token), row['id'], int(time.time()) + ttl))
-            con.executemany('DELETE FROM attempts WHERE bucket=?', [(self.digest('user:' + username),), (self.digest('address:' + address),)])
+            con.executemany('DELETE FROM attempts WHERE bucket=?', [(self.digest(USER_BUCKET + username),), (self.digest(ADDRESS_BUCKET + address),)])
             return token, ttl
 
     def session(self, token):
@@ -185,10 +190,10 @@ class Auth:
                 import identity
                 identity.ensure_owner(con)
                 identity.ensure_login_paths(con)
-                account_id = con.execute('SELECT id FROM accounts WHERE admin_id=?', (target_id,)).fetchone()[0]
+                account_id = con.execute(ACCOUNT_BY_CREDENTIAL, (target_id,)).fetchone()[0]
                 if action != 'totp-start':
                     con.execute('DELETE FROM identity_sessions WHERE account_id=?', (account_id,))
-                actor_account = con.execute('SELECT id FROM accounts WHERE admin_id=?', (actor_id,)).fetchone()[0]
+                actor_account = con.execute(ACCOUNT_BY_CREDENTIAL, (actor_id,)).fetchone()[0]
                 identity.audit(con, actor_account, 'credentials.' + action, account_id)
 
     @staticmethod
@@ -254,7 +259,7 @@ def main():
             con.execute(REVOKE_SESSIONS, (row['id'],))
             if hasattr(store, 'identity'):
                 from identity import audit, grant
-                account = con.execute('SELECT id FROM accounts WHERE admin_id=?', (row['id'],)).fetchone()[0]
+                account = con.execute(ACCOUNT_BY_CREDENTIAL, (row['id'],)).fetchone()[0]
                 con.execute('UPDATE accounts SET enabled=1,voluntary_2fa=0 WHERE id=?', (account,))
                 for table in ('identity_sessions', 'passkeys', 'backup_codes', 'recovery_codes', 'challenges'):
                     con.execute(f'DELETE FROM {table} WHERE account_id=?', (account,))

@@ -22,6 +22,14 @@ from routing import migrate, changed, parse_wireguard, normalize_rule, atomic_js
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+SECURITY_PATH = '/security'
+EDIT_EXITS = 'exits.edit'
+DEFAULT_EXIT_ACTION = 'exits.default'
+GLOBAL_ROUTING = 'routing.global'
+RENAME_DEVICE = 'devices.rename'
+DEVICE_EXIT = 'device.exit'
+DEVICE_CONFIG = 'devices.config'
+
 ADMIN_LOGIN_PATH = '/admin/login'
 ADMINISTRATORS_PATH = '/admin/administrators'
 ADMIN_PATH = '/admin'
@@ -302,9 +310,9 @@ def current_account(request, limited=False):
     row = identities.session(request.cookies.get(auth.COOKIE, ''), limited=limited)
     if not row:
         partial = identities.session(request.cookies.get(auth.COOKIE, ''), limited=True)
-        raise HTTPException(303, headers={"Location": '/security' if partial else '/'})
+        raise HTTPException(303, headers={"Location": SECURITY_PATH if partial else '/'})
     if row['must_change'] and not limited:
-        raise HTTPException(303, headers={"Location": '/security'})
+        raise HTTPException(303, headers={"Location": SECURITY_PATH})
     return row
 
 
@@ -363,7 +371,7 @@ def admin_ok(request):
 def require_admin(request, action=None):
     if action:
         actor = require_permission(request, action)
-        if request.method == 'POST' and action in {'settings.edit', 'exits.edit', 'exits.default', 'routing.global'}:
+        if request.method == 'POST' and action in {'settings.edit', EDIT_EXITS, DEFAULT_EXIT_ACTION, GLOBAL_ROUTING}:
             require_fresh(actor)
         return actor
     current_account(request)
@@ -605,7 +613,7 @@ def device_redirect(request, phone):
 
 @app.post("/device/{device_id}/rename", responses=HTTP_RESPONSES)
 def rename_device(request: Request, device_id: int, name: str = Form(...)):
-    row = owned_device(request, device_id, 'devices.rename')
+    row = owned_device(request, device_id, RENAME_DEVICE)
     name = name.strip()[:40]
     if not name:
         raise HTTPException(400, NAME_REQUIRED)
@@ -634,17 +642,17 @@ def save_exit_assignment(con, device_id, exit_id, administrator):
 
 @app.post("/device/{device_id}/update", responses=HTTP_RESPONSES)
 def update_device(request: Request, device_id: int, name: str = Form(...), ru_exit_id: int | None = Form(None)):
-    row = owned_device(request, device_id, 'devices.rename' if ru_exit_id is None else 'device.exit')
+    row = owned_device(request, device_id, RENAME_DEVICE if ru_exit_id is None else DEVICE_EXIT)
     name = name.strip()[:40]
     if not name:
         raise HTTPException(400, NAME_REQUIRED)
     if name != row['name']:
-        require_permission(request, 'devices.rename', row['account_id'])
+        require_permission(request, RENAME_DEVICE, row['account_id'])
     administrator = admin_ok(request)
     with db() as con:
         con.execute(BEGIN_WRITE)
         if ru_exit_id is not None:
-            require_permission(request, 'device.exit', row['account_id'])
+            require_permission(request, DEVICE_EXIT, row['account_id'])
             validate_exit_assignment(con, row['phone'], True, ru_exit_id)
             current = con.execute('SELECT ru_exit_id FROM devices WHERE id=?', (device_id,)).fetchone()
             # Saving a name must not claim an unchanged administrator assignment.
@@ -656,7 +664,7 @@ def update_device(request: Request, device_id: int, name: str = Form(...), ru_ex
 
 @app.post("/device/{device_id}/ru-exit", responses=HTTP_RESPONSES)
 def assign_exit(request: Request, device_id: int, ru_exit_id: int = Form(0)):
-    row = owned_device(request, device_id, 'device.exit')
+    row = owned_device(request, device_id, DEVICE_EXIT)
     administrator = admin_ok(request)
     with db() as con:
         con.execute(BEGIN_WRITE)
@@ -676,7 +684,7 @@ async def delete_device(request: Request, device_id: int):
 
 @app.get("/device/{device_id}/config", responses=HTTP_RESPONSES)
 async def config(request: Request, device_id: int):
-    row = owned_device(request, device_id, 'devices.config')
+    row = owned_device(request, device_id, DEVICE_CONFIG)
     if row['operation'] != 'applied':
         raise HTTPException(409, 'Изменения устройства ещё применяются')
     async with wg_session() as client:
@@ -690,7 +698,7 @@ async def config(request: Request, device_id: int):
 
 @app.get("/device/{device_id}/qr", responses=HTTP_RESPONSES)
 async def qr(request: Request, device_id: int):
-    row = owned_device(request, device_id, 'devices.config')
+    row = owned_device(request, device_id, DEVICE_CONFIG)
     if row['operation'] != 'applied':
         raise HTTPException(409, 'Изменения устройства ещё применяются')
     async with wg_session() as client:
@@ -752,7 +760,7 @@ def upstream_error(request: Request, exc):
 
 
 def admin_nav(active=ADMIN_PATH):
-    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), ('/admin/roles', 'Роли и доступ'), ('/admin/login-methods', 'Способы входа'), ('/security', 'Безопасность профиля'), (ADMINISTRATORS_PATH, 'Администраторы'), ('/admin/unowned', 'Без владельца')]
+    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), ('/admin/roles', 'Роли и доступ'), ('/admin/login-methods', 'Способы входа'), (SECURITY_PATH, 'Безопасность профиля'), (ADMINISTRATORS_PATH, 'Администраторы'), ('/admin/unowned', 'Без владельца')]
     return '<nav class="app-links admin-nav" aria-label="Администрирование">' + ''.join(
         f'<a href="{path}"' + (' aria-current="page"' if path == active else '') + f'>{label}</a>'
         for path, label in links) + '</nav>'
@@ -782,20 +790,19 @@ def device_actions(device, request=None):
     if device['operation'] != 'applied':
         return '<p class=muted>Создание или удаление ожидает применения</p>'
     name = html.escape(device['name'], quote=True)
-    result = f"""<div class=device-actions>
-      <button type=button class='secondary qr-button' data-qr-url='/device/{device_id}/qr'>QR</button>
+    actor = current_account(request) if request else None
+    def allowed(action):
+        return actor is None or identities.allowed(actor['account_id'], action, device['account_id'])
+    result = '<div class=device-actions>'
+    if allowed(DEVICE_CONFIG):
+        result += f"""<button type=button class='secondary qr-button' data-qr-url='/device/{device_id}/qr'>QR</button>
       <a class='btn secondary' href='/device/{device_id}/config'>Файл</a>
-      <button type=button class='secondary share-button' data-device-id='{device_id}' data-device-name='{name}'>Поделиться QR</button>
-      <button type=button class='danger-soft delete-device' data-delete-url='/device/{device_id}/delete' data-device-name='{name}'>Удалить</button>
-    </div>"""
-    if request:
-        actor = current_account(request)
-        if not identities.allowed(actor['account_id'], 'devices.config', device['account_id']):
-            result = re.sub(r"<button[^>]*class='secondary (?:qr-button|share-button)'[^>]*>.*?</button>|<a[^>]*href='/device/[^']*/config'[^>]*>.*?</a>", '', result)
-        if not identities.allowed(actor['account_id'], 'devices.delete', device['account_id']):
-            result = re.sub(r"<button[^>]*class='danger-soft delete-device'[^>]*>.*?</button>", '', result)
-        if identities.allowed(actor['account_id'], 'device.routing.view', device['account_id']):
-            result += f"<a class='btn secondary' href='/device/{device_id}/routing'>Маршрутизация</a>"
+      <button type=button class='secondary share-button' data-device-id='{device_id}' data-device-name='{name}'>Поделиться QR</button>"""
+    if allowed('devices.delete'):
+        result += f"<button type=button class='danger-soft delete-device' data-delete-url='/device/{device_id}/delete' data-device-name='{name}'>Удалить</button>"
+    result += '</div>'
+    if request and allowed('device.routing.view'):
+        result += f"<a class='btn secondary' href='/device/{device_id}/routing'>Маршрутизация</a>"
     return result
 
 
@@ -807,23 +814,33 @@ def device_routing_forms(devices, user, administrator, request=None):
     status = routing_status()
     result = f'<p class=muted data-routing-state>{html.escape(status_text(status))}</p>' if devices else ''
     for device in devices:
-        selected = device['ru_exit_id']
-        actual = status.get('devices', {}).get(str(device['id']), {})
-        effective = names.get(actual.get('effective'), UNAVAILABLE_LABEL) if status.get('state') not in {'stale', 'pending'} else 'Неизвестно'
-        assigned = names.get(selected, 'По умолчанию: ' + names.get(default, '—'))
-        fallback = ' · резервный режим' if actual.get('fallback') else ''
-        result += f"<section class='card device-card'><div class=device-head><h2>{html.escape(device['name'])}</h2>{device_actions(device, request)}</div><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
-        if not device['vpn_ip']:
-            result += '<p class=muted>Ожидает сопоставления VPN-IP</p>'
-        if not device['native_enabled']:
-            result += '<p class=muted>Устройство отключено или срок действия истёк</p>'
-        actor = current_account(request) if request else None
-        can_rename = identities.allowed(actor['account_id'], 'devices.rename', device['account_id']) if actor else True
-        can_exit = identities.allowed(actor['account_id'], 'device.exit', device['account_id']) if actor else administrator or user['can_change_ru_exit']
-        if can_rename or can_exit:
-            result += device_edit_form(device, exits, can_exit, can_rename)
+        result += device_card(device, names, default, status, request)
+        result += permitted_device_form(device, exits, user, administrator, request)
         result += '</section>'
     return result
+
+
+def device_card(device, names, default, status, request):
+    actual = status.get('devices', {}).get(str(device['id']), {})
+    effective = names.get(actual.get('effective'), UNAVAILABLE_LABEL) if status.get('state') not in {'stale', 'pending'} else 'Неизвестно'
+    assigned = names.get(device['ru_exit_id'], 'По умолчанию: ' + names.get(default, '—'))
+    fallback = ' · резервный режим' if actual.get('fallback') else ''
+    result = f"<section class='card device-card'><div class=device-head><h2>{html.escape(device['name'])}</h2>{device_actions(device, request)}</div><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
+    if not device['vpn_ip']:
+        result += '<p class=muted>Ожидает сопоставления VPN-IP</p>'
+    if not device['native_enabled']:
+        result += '<p class=muted>Устройство отключено или срок действия истёк</p>'
+    return result
+
+
+def permitted_device_form(device, exits, user, administrator, request):
+    can_rename = True
+    can_exit = administrator or user['can_change_ru_exit']
+    if request:
+        actor = current_account(request)
+        can_rename = identities.allowed(actor['account_id'], RENAME_DEVICE, device['account_id'])
+        can_exit = identities.allowed(actor['account_id'], DEVICE_EXIT, device['account_id'])
+    return device_edit_form(device, exits, can_exit, can_rename) if can_rename or can_exit else ''
 
 
 def device_edit_form(device, exits, can_change_exit, can_rename=True):
@@ -903,7 +920,7 @@ def updated_exit_config(old, endpoint, text):
 @app.post(RU_EXITS_PATH, responses=HTTP_RESPONSES)
 @app.post('/admin/ru-exits/{exit_id}', responses=HTTP_RESPONSES)
 async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...), config_text: str = Form(''), config_upload: UploadFile = File(None)):
-    require_admin(request, 'exits.edit')
+    require_admin(request, EDIT_EXITS)
     name = name.strip()[:80]
     if not name:
         raise HTTPException(400, NAME_REQUIRED)
@@ -929,20 +946,20 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
 
 @app.post('/admin/ru-exits/{exit_id}/default', responses=HTTP_RESPONSES)
 def default_ru_exit(request: Request, exit_id: int):
-    require_admin(request, 'exits.default')
+    require_admin(request, DEFAULT_EXIT_ACTION)
     with db() as con:
         con.execute(BEGIN_WRITE)
         if not con.execute('SELECT 1 FROM ru_exits WHERE id=?', (exit_id,)).fetchone():
             raise HTTPException(404, 'RU-выход не найден')
         con.execute("UPDATE settings SET value=? WHERE key='ru_default'", (str(exit_id),))
         changed(con)
-    audit_change(request, 'exits.default', exit_id)
+    audit_change(request, DEFAULT_EXIT_ACTION, exit_id)
     return RedirectResponse(RU_EXITS_PATH, 303)
 
 
 @app.post('/admin/ru-exits/{exit_id}/delete', responses=HTTP_RESPONSES)
 def delete_ru_exit(request: Request, exit_id: int):
-    require_admin(request, 'exits.edit')
+    require_admin(request, EDIT_EXITS)
     with db() as con:
         con.execute(BEGIN_WRITE)
         if con.execute("SELECT 1 FROM settings WHERE key='ru_default' AND value=?", (str(exit_id),)).fetchone() or con.execute('SELECT 1 FROM devices WHERE ru_exit_id=?', (exit_id,)).fetchone() or con.execute('SELECT 1 FROM users WHERE ru_exit_id=?', (exit_id,)).fetchone():
@@ -955,7 +972,7 @@ def delete_ru_exit(request: Request, exit_id: int):
 
 @app.get(ROUTING_PATH, responses=HTTP_RESPONSES)
 def routing_page(request: Request):
-    require_admin(request, 'routing.global')
+    require_admin(request, GLOBAL_ROUTING)
     with db() as con:
         rules = con.execute('SELECT * FROM routing_rules ORDER BY value').fetchall()
     body = admin_nav(ROUTING_PATH) + f'<p data-routing-state>{html.escape(status_text(routing_status()))}</p><form class="stack routing-form" method=post action=/admin/routing>'
@@ -968,7 +985,7 @@ def routing_page(request: Request):
 
 @app.post(ROUTING_PATH, responses=HTTP_RESPONSES)
 def save_routing(request: Request, ru: str = Form(''), direct: str = Form('')):
-    require_admin(request, 'routing.global')
+    require_admin(request, GLOBAL_ROUTING)
     rules = set()
     try:
         for target, value in [('ru', ru), ('direct', direct)]:
@@ -984,7 +1001,7 @@ def save_routing(request: Request, ru: str = Form(''), direct: str = Form('')):
         con.execute('DELETE FROM routing_rules')
         con.executemany('INSERT INTO routing_rules(target,kind,value) VALUES(?,?,?)', sorted(rules))
         changed(con)
-    audit_change(request, 'routing.global')
+    audit_change(request, GLOBAL_ROUTING)
     return RedirectResponse(ROUTING_PATH, 303)
 
 
@@ -1022,5 +1039,7 @@ def account_for_device(device_id):
 
 import access_pages
 import security_pages
+
+
 access_pages.register(sys.modules[__name__])
 security_pages.register(sys.modules[__name__])

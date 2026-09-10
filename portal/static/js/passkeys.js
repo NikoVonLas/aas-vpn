@@ -1,6 +1,6 @@
 'use strict';
-const decode = value => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-const encode = value => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const decode = value => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/')), c => c.codePointAt(0));
+const encode = value => btoa(String.fromCodePoint(...new Uint8Array(value))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 document.querySelectorAll('form[data-passkey]').forEach(form => {
   form.addEventListener('submit', async event => {
     event.preventDefault();

@@ -330,12 +330,12 @@ def emit_rule(generated, rule, devices, default, health, fallback, global_scope)
         if global_scope or ips:
             generated.append({**match, **({} if global_scope else {'source_ip_cidr': ips}),
                               'action': 'route', 'outbound': 'eu-direct'})
-    else:
-        for chosen, ips in choices.items():
-            if not global_scope or chosen != fallback:
-                generated.append({**match, 'source_ip_cidr': sorted(ips), **exit_action(chosen)})
-        if global_scope:
-            generated.append({**match, **exit_action(fallback)})
+        return
+    for chosen, ips in choices.items():
+        if not global_scope or chosen != fallback:
+            generated.append({**match, 'source_ip_cidr': sorted(ips), **exit_action(chosen)})
+    if global_scope:
+        generated.append({**match, **exit_action(fallback)})
 
 
 def exit_action(chosen):

@@ -66,7 +66,8 @@ def test_smtp_verified_tls_one_email_contains_code_and_link(tmp_path, monkeypatc
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_context.load_cert_chain(certificate, private_key)
     client_context = ssl.create_default_context(cafile=str(certificate))
-    assert client_context.check_hostname and client_context.verify_mode == ssl.CERT_REQUIRED
+    assert client_context.check_hostname
+    assert client_context.verify_mode == ssl.CERT_REQUIRED
     monkeypatch.setattr(ssl, 'create_default_context', lambda: client_context)
     with socketserver.ThreadingTCPServer(('127.0.0.1', 0), SMTPHandler) as server:
         server.tls, server.implicit, server.messages = server_context, mode == 'implicit', queue.Queue()
@@ -78,7 +79,8 @@ def test_smtp_verified_tls_one_email_contains_code_and_link(tmp_path, monkeypatc
             message = BytesParser(policy=policy.default).parsebytes(server.messages.get(timeout=2))
             assert message['To'] == 'person@example.test'
             body = message.get_content()
-            assert '123456' in body and 'https://portal.example.test/login/link#fixture' in body
+            assert '123456' in body
+            assert 'https://portal.example.test/login/link#fixture' in body
             assert server.messages.empty()
         finally:
             server.shutdown(); worker.join(timeout=2)
