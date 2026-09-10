@@ -1,5 +1,6 @@
 """Local-only UI fixture: disposable data, real portal routes and authentication."""
 import base64
+import json
 import os
 from pathlib import Path
 import secrets
@@ -57,6 +58,26 @@ def fixture_phone_login(phone: str):
         token = portal.identities.new_session(connection, account_id, ['phone'])
     response.set_cookie(portal.auth.COOKIE, token, secure=True, httponly=True, samesite='lax')
     return response
+
+
+with portal.auth_store.db() as connection:
+    login_roles = [(row['primary_methods'], row['require_2fa'], row['id']) for row in connection.execute('SELECT * FROM roles')]
+    login_providers = [(row['enabled'], row['id']) for row in connection.execute('SELECT * FROM providers')]
+
+
+@portal.app.get('/fixture/login-options/{methods}')
+def fixture_login_options(methods: str):
+    with portal.auth_store.db() as connection:
+        if methods == 'restore':
+            connection.executemany('UPDATE roles SET primary_methods=?,require_2fa=? WHERE id=?', login_roles)
+            connection.executemany('UPDATE providers SET enabled=? WHERE id=?', login_providers)
+        else:
+            selected = set(methods.split(','))
+            if not selected <= {'password', 'phone', 'email', 'webauthn'}:
+                raise portal.HTTPException(400)
+            connection.execute('UPDATE roles SET primary_methods=?', (json.dumps(sorted(selected)),))
+            connection.execute('UPDATE providers SET enabled=1')
+    return {'ok': True}
 
 
 if __name__ == '__main__':

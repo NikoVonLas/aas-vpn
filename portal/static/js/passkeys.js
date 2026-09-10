@@ -3,8 +3,8 @@ const decode = value => Uint8Array.from(atob(value.replaceAll('-', '+').replaceA
 const encode = value => btoa(String.fromCodePoint(...new Uint8Array(value))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 document.querySelectorAll('form[data-passkey]').forEach(form => {
   const keyButton = form.querySelector('[data-passkey-submit]');
-  const trigger = keyButton || form;
-  trigger.addEventListener(keyButton ? 'click' : 'submit', async event => {
+  const trigger = keyButton?.type === 'button' ? keyButton : form;
+  trigger.addEventListener(trigger === form ? 'submit' : 'click', async event => {
     event.preventDefault();
     if (!form.reportValidity()) return;
     const button = keyButton || event.submitter || form.querySelector('button');

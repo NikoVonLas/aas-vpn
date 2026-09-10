@@ -258,11 +258,16 @@ test('virtual FIDO2 registration, authentication, replay and deletion', async ({
   await expect(page).toHaveURL(/\/admin$/);
   expect((await keyRequest).postData()).not.toContain('unused-password');
   // A UV-verified key satisfies mandatory MFA as the primary method.
-  await page.goto('/admin/roles');
-  await owner.locator('..').locator('summary').first().click();
-  await owner.locator('[name=primary][value=webauthn]').uncheck();
-  await owner.locator('[name=required]').uncheck();
-  await owner.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  try {
+    await page.request.get('/fixture/login-options/webauthn');
+    await page.goto('/');
+    await expect(page.locator('[name=password]')).toHaveCount(0);
+    await page.getByLabel('Аккаунт', { exact: true }).fill('admin');
+    await page.getByLabel('Аккаунт', { exact: true }).press('Enter');
+    await expect(page).toHaveURL(/\/admin$/);
+  } finally {
+    await page.request.get('/fixture/login-options/restore');
+  }
   await login(page);
   await page.goto('/security');
   await page.getByRole('button', { name: 'Удалить ключ', exact: true }).click();
@@ -277,17 +282,41 @@ test('one login form serves every entry URL', async ({ page }) => {
     const form = page.locator('form[action="/login"]');
     await expect(form).toHaveCount(1);
     await expect(page.getByRole('navigation', { name: 'Способ входа' })).toHaveCount(0);
-    await expect(form.getByLabel('Логин, телефон или почта')).toBeVisible();
+    await expect(form.getByLabel('Логин или телефон')).toBeVisible();
     await expect(form.getByLabel('Пароль', { exact: true })).not.toHaveAttribute('required');
-    await expect(form.getByRole('button')).toHaveText(['Войти с ключом / passkey', 'Войти']);
+    await expect(form.getByRole('button')).toHaveText(['Войти']);
   }
 });
 
 test('Enter in the common form signs in with the password', async ({ page }) => {
   await page.request.get('/fixture/reset-sessions');
   await page.goto('/');
-  await page.getByLabel('Логин, телефон или почта').fill('admin');
+  await page.getByLabel('Логин или телефон').fill('admin');
   await page.getByLabel('Пароль', { exact: true }).fill('visual-test-password');
   await page.getByLabel('Пароль', { exact: true }).press('Enter');
   await expect(page).toHaveURL(/\/admin$/);
+});
+
+
+test('login fields and actions follow all method combinations', async ({ page }) => {
+  const catalog = ['password', 'phone', 'email', 'webauthn'];
+  try {
+    for (let mask = 1; mask < 16; mask++) {
+      const methods = catalog.filter((_, index) => mask & (1 << index));
+      await page.request.get('/fixture/login-options/' + methods.join(','));
+      await page.goto('/');
+      const form = page.locator('form[action="/login"]');
+      await expect(form).toHaveCount(1);
+      await expect(form.locator('[name=password]')).toHaveCount(methods.includes('password') ? 1 : 0);
+      await expect(form.locator('[data-passkey-submit]')).toHaveCount(methods.includes('webauthn') ? 1 : 0);
+      let primaryAction = 'Продолжить';
+      if (methods.includes('password')) primaryAction = 'Войти';
+      else if (methods.length === 1 && methods[0] === 'webauthn') primaryAction = 'Войти с ключом / passkey';
+      await expect(form.getByRole('button').last()).toHaveText(primaryAction);
+      await expect(page).toHaveScreenshot('login-options-' + methods.join('-') + '.png', { fullPage: true });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    }
+  } finally {
+    await page.request.get('/fixture/login-options/restore');
+  }
 });

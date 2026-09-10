@@ -376,3 +376,34 @@ def test_common_login_dispatch_and_policy(portal, monkeypatch):
         con.execute("DELETE FROM grants WHERE account_id=? AND role_id='email-role'", (first,))
     assert post(client, '/login', {'identifier': 'person@example.test'}).status_code == 403
     assert sent == ['+79990000001', 'person@example.test']
+
+
+@pytest.mark.parametrize('mask', range(16))
+def test_login_form_follows_every_method_combination(portal, mask):
+    app, client = portal
+    methods = {method for index, method in enumerate(['password', 'phone', 'email', 'webauthn']) if mask & (1 << index)}
+    with app.auth_store.db() as con:
+        con.execute('UPDATE roles SET primary_methods=?', (json.dumps(sorted(methods)),))
+        con.execute('UPDATE providers SET enabled=1')
+    body = client.get('/').text
+    assert ('name=password ' in body) == ('password' in methods)
+    assert ('data-passkey-submit' in body) == ('webauthn' in methods)
+    assert ('action=/login ' in body) == bool(methods)
+    for method, text in [('phone', 'телефон с кодом страны'), ('email', 'почту'), ('password', 'Введите логин и пароль.')]:
+        assert (text in body) == (method in methods)
+
+
+def test_login_form_ignores_disabled_modules_and_unassigned_roles(portal):
+    app, client = portal
+    with app.auth_store.db() as con:
+        con.execute("UPDATE roles SET primary_methods=? WHERE id='operator'", (json.dumps(['email', 'webauthn']),))
+        con.execute("UPDATE providers SET enabled=0 WHERE id='zvonok'")
+    body = client.get('/').text
+    assert '<label>Логин<input' in body
+    assert 'телефон с кодом страны' not in body
+    assert 'почту' not in body
+    assert 'data-passkey-submit' not in body
+    with app.auth_store.db() as con:
+        con.execute("UPDATE providers SET enabled=1 WHERE id='zvonok'")
+        con.execute('UPDATE accounts SET enabled=0 WHERE phone IS NOT NULL')
+    assert 'телефон с кодом страны' not in client.get('/').text

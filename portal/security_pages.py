@@ -27,6 +27,51 @@ REVOKE_ACCOUNT_SESSIONS = 'DELETE FROM identity_sessions WHERE account_id=?'
 MODULES_PATH = '/admin/login-methods'
 
 
+def join_choices(choices):
+    return choices[0] if len(choices) == 1 else ', '.join(choices[:-1]) + ' или ' + choices[-1]
+
+
+def login_hint(methods):
+    hints = ['Введите логин и пароль.'] if 'password' in methods else []
+    contacts = [label for method, label in [('phone', 'телефон с кодом страны, например +7'), ('email', 'почту')] if method in methods]
+    if contacts:
+        hint = 'Для подтверждения укажите ' + join_choices(contacts)
+        hints.append(hint + (' и оставьте пароль пустым.' if 'password' in methods else '.'))
+    if methods == {'webauthn'}:
+        hints.append('Укажите реквизит аккаунта и подтвердите вход ключом / passkey.')
+    return ' '.join(hints)
+
+
+def login_actions(methods):
+    body = ''
+    if 'webauthn' in methods:
+        attributes = 'type=submit' if methods == {'webauthn'} else 'type=button class=secondary'
+        body += f'<button {attributes} data-passkey-submit>Войти с ключом / passkey</button>'
+    if methods - {'webauthn'}:
+        body += '<button>' + ('Войти' if 'password' in methods else 'Продолжить') + '</button>'
+    return body
+
+
+def login_form(methods):
+    labels = [label for method, label in [('password', 'логин'), ('phone', 'телефон'), ('email', 'почта')] if method in methods]
+    label = join_choices(labels).capitalize() if labels else 'Аккаунт'
+    attributes = 'autocomplete=username'
+    if methods == {'phone'}:
+        attributes = 'type=tel autocomplete=tel placeholder="+7 999 123-45-67"'
+    elif methods == {'email'}:
+        attributes = 'type=email autocomplete=email'
+    body = f'''<form class=stack method=post action=/login data-passkey=login>
+<label>{label}<input name=identifier {attributes} autocapitalize=none spellcheck=false maxlength=254 aria-describedby=login-hint required></label>'''
+    if 'password' in methods:
+        required = 'required' if methods == {'password'} else ''
+        body += f'<label>Пароль<input name=password type=password autocomplete=current-password aria-describedby=login-hint {required}></label>'
+    body += f'<p class=muted id=login-hint>{login_hint(methods)}</p>'
+    body += login_actions(methods) + '</form>'
+    if 'webauthn' in methods:
+        body += '<script src=/assets/js/passkeys.js defer></script>'
+    return body
+
+
 class SecurityPages:
 
     def __init__(self, portal):
@@ -64,23 +109,23 @@ class SecurityPages:
             raise HTTPException(303, headers={'Location': '/security/confirm'})
         return actor
 
-    def login_page(self):
+    def available_login_methods(self):
         with self.p.auth_store.db() as con:
+            rows = con.execute('''SELECT DISTINCT r.primary_methods FROM roles r
+JOIN grants g ON g.role_id=r.id JOIN accounts a ON a.id=g.account_id
+LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.enabled=1)''').fetchall()
             enabled = {r['id'] for r in con.execute('SELECT id FROM providers WHERE enabled=1')}
-        contacts = []
-        if 'zvonok' in enabled:
-            contacts.append('телефон с кодом страны, например +7')
-        if 'email' in enabled:
-            contacts.append('почту')
-        hint = 'Введите логин и пароль.'
-        if contacts:
-            hint += ' Для подтверждения без пароля укажите ' + ' или '.join(contacts) + ' и оставьте пароль пустым.'
-        form = f'''<form class=stack method=post action=/login data-passkey=login>
-<label>Логин, телефон или почта<input name=identifier autocomplete=username autocapitalize=none spellcheck=false maxlength=254 required></label>
-<label>Пароль<input name=password type=password autocomplete=current-password aria-describedby=login-hint></label>
-<p class=muted id=login-hint>{hint}</p>
-<button type=button class=secondary data-passkey-submit>Войти с ключом / passkey</button>
-<button>Войти</button></form><script src=/assets/js/passkeys.js defer></script>'''
+        methods = {method for row in rows for method in json.loads(row['primary_methods'])} & identity.PRIMARY
+        for method, provider in (('phone', 'zvonok'), ('email', 'email')):
+            if provider not in enabled:
+                methods.discard(method)
+        return methods
+
+    def login_page(self):
+        methods = self.available_login_methods()
+        if not methods:
+            return self.p.page('Вход', '<section class=card><p>Способы входа пока не настроены. Обратитесь к владельцу сервиса.</p></section>')
+        form = login_form(methods)
         return self.p.page('Вход', '<section class=card>' + form + SECTION_END)
 
     async def login(self, request: Request, identifier: str=Form(...), password: str=Form('')):
