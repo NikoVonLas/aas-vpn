@@ -37,8 +37,13 @@ def login_hint(methods):
 
 def login_form(methods, identifier='', error=''):
     labels = [label for key, label in [('password', 'логин'), ('phone', 'телефон'), ('email', 'почта')] if key in methods]
+    input_type = 'text'
+    if methods == {'phone'}:
+        input_type = 'tel'
+    elif methods == {'email'}:
+        input_type = 'email'
     return render('login.html', methods=sorted(methods), label=join_choices(labels).capitalize() if labels else 'Аккаунт',
-                  input_type='tel' if methods == {'phone'} else 'email' if methods == {'email'} else 'text',
+                  input_type=input_type,
                   identifier=identifier, error=error, hint=login_hint(methods))
 
 
@@ -496,7 +501,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         items = []
         for key, caption in fields[provider['id']]:
             secret = key in {'password', 'public_key'}
-            items.append(dict(key=key, caption=caption, secret=secret, value='' if secret else config.get(key, ''), saved=secret and bool(config.get(key))))
+            items.append({'key': key, 'caption': caption, 'secret': secret, 'value': '' if secret else config.get(key, ''), 'saved': secret and bool(config.get(key))})
         required = ('host', 'port', 'sender') if provider['id'] == 'email' else ('campaign_id', 'public_key')
         return render('provider.html', provider=provider, fields=items, configured=all(config.get(key) for key in required), tls=config.get('tls', 'starttls'))
 

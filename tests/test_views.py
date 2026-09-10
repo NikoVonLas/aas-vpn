@@ -59,7 +59,8 @@ def test_account_filter_pagination_and_invalid_save_are_atomic(portal):
     second = client.get('/admin?q=Find&page=2').text
     assert first.count('class="list-group-item list-group-item-action account-row"') == 25
     assert second.count('class="list-group-item list-group-item-action account-row"') == 5
-    assert 'Find 25' not in first and 'Find 25' in second
+    assert 'Find 25' not in first
+    assert 'Find 25' in second
     assert 'Find 00' not in client.get('/admin?q=Find&state=disabled').text
     assert post(client, '/accounts/' + key + '/save', {'name': 'Not saved', 'device_limit': '0'}).status_code == 400
     with app.db() as con:

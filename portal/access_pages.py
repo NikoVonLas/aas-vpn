@@ -16,6 +16,9 @@ EDIT_ACCOUNT = 'accounts.edit'
 ACCOUNT_LIMITS = 'accounts.limits'
 ACCOUNT_STATE = 'accounts.state'
 ACCOUNTS_PATH = '/admin'
+ROUTING_LABEL = 'Маршрутизация'
+DEVICES_LABEL = 'Устройства'
+ACCOUNT_EXIT = 'account.exit'
 
 
 METHODS = {method.value: label for method, label in (
@@ -70,22 +73,22 @@ class AccessPages:
     def edit_role(self, request: Request, role_id: str=''):
         self.p.require_owner(request)
         self.p.admin_nav(ROLES_PATH)
-        role = dict(id='', name='', permissions=[], primary_methods=['password'], secondary_methods=['totp', 'webauthn'], require_2fa=0, protected=0)
+        role = {'id': '', 'name': '', 'permissions': [], 'primary_methods': ['password'], 'secondary_methods': ['totp', 'webauthn'], 'require_2fa': 0, 'protected': 0}
         if role_id:
             with self.p.auth_store.db() as con:
                 row = con.execute('SELECT * FROM roles WHERE id=?', (role_id,)).fetchone()
             if not row:
                 raise HTTPException(404)
             role = self.role_model(row)
-        groups = {name: {} for name in ('Аккаунты', 'Устройства', 'Маршрутизация', 'Инфраструктура')}
+        groups = {name: {} for name in ('Аккаунты', DEVICES_LABEL, ROUTING_LABEL, 'Инфраструктура')}
         for key, label in identity.ACTIONS.items():
             group = 'Инфраструктура'
             if key.startswith('accounts.'):
                 group = 'Аккаунты'
             elif key.startswith('devices.'):
-                group = 'Устройства'
-            elif 'routing' in key or key in {'account.exit', 'device.exit'}:
-                group = 'Маршрутизация'
+                group = DEVICES_LABEL
+            elif 'routing' in key or key in {ACCOUNT_EXIT, 'device.exit'}:
+                group = ROUTING_LABEL
             groups[group][key] = label
         return self.p.page(role['name'] or 'Новая роль', render('role_edit.html', role=role, groups=groups,
                            primary={key: METHODS[key] for key in sorted(identity.PRIMARY)}, methods=METHODS), show_header=True)
@@ -136,8 +139,8 @@ class AccessPages:
             account_default = account['ru_exit_id']
         path = f'/device/{key}/routing' if scope == 'device' else f'/accounts/{key}/routing'
         editable = self.p.identities.allowed(actor['account_id'], f'{scope}.routing.edit', resource['account_id'])
-        self.p.admin_nav('/admin' if self.p.admin_ok(request) else '/cabinet')
-        can_exit = scope == 'account' and self.p.identities.allowed(actor['account_id'], 'account.exit', resource['account_id'])
+        self.p.admin_nav(ACCOUNTS_PATH if self.p.admin_ok(request) else '/cabinet')
+        can_exit = scope == 'account' and self.p.identities.allowed(actor['account_id'], ACCOUNT_EXIT, resource['account_id'])
         values = lambda source: {target: rules_text(source, target) for target in ('ru', 'direct')}
         editor = render('components/routing_editor.html', path=path, values=values(rows), editable=editable,
                         can_exit=can_exit, exits=exits, selected_exit=resource['ru_exit_id'])
@@ -147,11 +150,11 @@ class AccessPages:
         actual = self.p.device_state_labels(resource, {int(k): v for k, v in names.items()}, account_default or int(default), status) if scope == 'device' else ''
         inherited_sources = [('Аккаунт', values(inherited))] if scope == 'device' else []
         inherited_sources.append(('Глобальные правила', values(global_rules)))
-        crumbs = [('Пользователи', '/admin'), (account['name'], f"/accounts/{resource['account_id']}/edit")] if self.p.admin_ok(request) else [('Мои устройства', '/cabinet')]
+        crumbs = [('Пользователи', ACCOUNTS_PATH), (account['name'], f"/accounts/{resource['account_id']}/edit")] if self.p.admin_ok(request) else [('Мои устройства', '/cabinet')]
         if scope == 'device':
-            crumbs.append(('Устройства', f"/accounts/{resource['account_id']}"))
-        crumbs.append(('Маршрутизация', ''))
-        return self.p.page('Маршрутизация', render('routing.html', level='Устройство' if scope == 'device' else 'Аккаунт',
+            crumbs.append((DEVICES_LABEL, f"/accounts/{resource['account_id']}"))
+        crumbs.append((ROUTING_LABEL, ''))
+        return self.p.page(ROUTING_LABEL, render('routing.html', level='Устройство' if scope == 'device' else 'Аккаунт',
                            owner=resource['name'], status=self.p.status_text(status), editor=editor,
                            crumbs=crumbs, chain=chain, actual=actual, inheritance=inherited_sources), show_header=True)
 
@@ -165,7 +168,7 @@ class AccessPages:
         resource = self.routing_model(request, scope, key)
         rules = parse_rules(ru, direct)
         if exit_id is not None:
-            self.p.require_permission(request, 'account.exit', resource['account_id'])
+            self.p.require_permission(request, ACCOUNT_EXIT, resource['account_id'])
         with self.p.db() as con:
             con.execute('BEGIN IMMEDIATE')
             existing = sorted(tuple(row) for row in con.execute('SELECT target,kind,value FROM scoped_routing_rules WHERE scope=? AND owner_id=?', (scope, str(key))))
@@ -212,9 +215,9 @@ class AccessPages:
         total = len(rows)
         pages = max(1, (total + 24) // 25)
         current = min(max(1, page), pages)
-        links = [(number, '/admin?' + urlencode(dict(q=query, state=state, role=role, page=number))) for number in range(1, pages + 1)]
+        links = [(number, '/admin?' + urlencode({'q': query, 'state': state, 'role': role, 'page': number})) for number in range(1, pages + 1)]
         return self.p.page('Пользователи', render('accounts.html', rows=rows[(current-1)*25:current*25], total=total,
-                           device_count=sum(row['device_count'] for row in rows), query=query, state=state, role=role,
+                           device_count=sum(row['device_count'] for row in rows), query=query, state=state, selected_role=role,
                            role_options=role_options, current_page=current, pages=pages, page_links=links,
                            can_create=self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT)), show_header=True, wide=True)
 

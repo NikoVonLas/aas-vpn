@@ -24,6 +24,8 @@ from fastapi.staticfiles import StaticFiles
 
 SECURITY_PATH = '/security'
 EDIT_EXITS = 'exits.edit'
+VIEW_EXITS = 'exits.view'
+ACCOUNT_PREFIX = '/accounts/'
 DEFAULT_EXIT_ACTION = 'exits.default'
 GLOBAL_ROUTING = 'routing.global'
 RENAME_DEVICE = 'devices.rename'
@@ -289,8 +291,8 @@ def return_path(request):
     referer = urlsplit(request.headers.get('referer', ''))
     if referer.netloc == request.url.netloc and referer.scheme == request.url.scheme:
         return local_path(referer.path + ('?' + referer.query if referer.query else ''))
-    if request.url.path.startswith('/accounts/'):
-        return '/accounts/' + request.url.path.split('/')[2] + '/edit'
+    if request.url.path.startswith(ACCOUNT_PREFIX):
+        return ACCOUNT_PREFIX + request.url.path.split('/')[2] + '/edit'
     return CABINET_PATH
 
 
@@ -307,7 +309,7 @@ def failed_form(request, detail):
     try:
         if path == '/admin/accounts':
             return access.new_account(request)
-        if path.startswith('/accounts/') and path.endswith('/save'):
+        if path.startswith(ACCOUNT_PREFIX) and path.endswith('/save'):
             return access.edit_account(request, path.split('/')[2])
         if path == '/admin/roles/save':
             draft = getattr(request.state, 'form_draft', {})
@@ -316,16 +318,22 @@ def failed_form(request, detail):
             device = owned_device(request, int(path.split('/')[2]))
             return cabinet(request, device['phone'])
         if path.endswith('/routing'):
-            if path == ROUTING_PATH:
-                return routing_page(request)
-            if path.startswith('/device/'):
-                return access.device_routes(request, int(path.split('/')[2]))
-            if path.startswith('/accounts/'):
-                return access.account_routes(request, path.split('/')[2])
+            return failed_routing_form(request, access)
         if path.startswith('/login/verify/') and not path.endswith('/retry'):
             return SecurityPages(__import__(__name__)).verify_page(request, path.split('/')[-1])
     except (HTTPException, ValueError, PermissionError):
         pass
+    return None
+
+
+def failed_routing_form(request, access):
+    path = request.url.path
+    if path == ROUTING_PATH:
+        return routing_page(request)
+    if path.startswith('/device/'):
+        return access.device_routes(request, int(path.split('/')[2]))
+    if path.startswith(ACCOUNT_PREFIX):
+        return access.account_routes(request, path.split('/')[2])
     return None
 
 
@@ -717,7 +725,7 @@ def navigation_model(actor):
     links = [(CABINET_PATH, 'Мои устройства')]
     if accounts_visible:
         links.append((ADMIN_PATH, 'Пользователи'))
-    for path, label, permission in [(RU_EXITS_PATH, 'RU-выходы', 'exits.view'), (ROUTING_PATH, 'Маршрутизация', GLOBAL_ROUTING)]:
+    for path, label, permission in [(RU_EXITS_PATH, 'RU-выходы', VIEW_EXITS), (ROUTING_PATH, 'Маршрутизация', GLOBAL_ROUTING)]:
         if identities.allowed(key, permission):
             links.append((path, label))
     if identities.owner(key):
@@ -765,9 +773,7 @@ def device_routing_forms(devices, user, administrator, request=None):
         default = user['ru_exit_id'] or int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
     names = {x['id']: x['name'] for x in exits}
     status = routing_status()
-    cards = [dict(device=device, state=device_state_labels(device, names, default, status),
-                  actions=device_actions(device, request),
-                  form=permitted_device_form(device, exits, user, administrator, request)) for device in devices]
+    cards = [{'device': device, 'state': device_state_labels(device, names, default, status), 'actions': device_actions(device, request), 'form': permitted_device_form(device, exits, user, administrator, request)} for device in devices]
     return render('components/devices.html', cards=cards, status=status_text(status))
 
 
@@ -804,7 +810,7 @@ def device_state_labels(device, names, default, status):
 
 @app.get(RU_EXITS_PATH, responses=HTTP_RESPONSES)
 def ru_exits_page(request: Request):
-    require_admin(request, 'exits.view')
+    require_admin(request, VIEW_EXITS)
     with db() as con:
         exits = con.execute('SELECT id,name,legacy,config_file FROM ru_exits ORDER BY id').fetchall()
         default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
@@ -961,7 +967,7 @@ def live_routing_status(request: Request, admin_view: bool = False):
     actor = current_account(request)
     devices = [device for device in devices if identities.allowed(actor['account_id'], 'devices.view', device['account_id'])]
     device_states = {str(device['id']): device_state_labels(device, names, device['account_default'] or default, status) for device in devices}
-    exits = {str(node_id): exit_health_label(status, node_id) for node_id in names} if identities.allowed(actor['account_id'], 'exits.view') else {}
+    exits = {str(node_id): exit_health_label(status, node_id) for node_id in names} if identities.allowed(actor['account_id'], VIEW_EXITS) else {}
     return JSONResponse({'message': status_text(status), 'devices': device_states, 'exits': exits})
 
 

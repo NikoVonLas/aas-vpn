@@ -32,14 +32,14 @@ for (const form of document.querySelectorAll('[data-role-assignment]')) {
 }
 const loginForm = document.querySelector('[data-login-methods]');
 if (loginForm) {
-  const methods = loginForm.dataset.loginMethods.split(',');
+  const methods = new Set(loginForm.dataset.loginMethods.split(','));
   const hint = document.getElementById('login-hint');
   const initial = hint.textContent;
   const update = () => {
     const identifier = loginForm.elements.identifier.value.trim();
     if (loginForm.elements.password?.value) hint.textContent = 'Вход с паролем.';
-    else if (identifier.startsWith('+') && methods.includes('phone')) hint.textContent = 'Следующий шаг — подтверждение звонком.';
-    else if (identifier.includes('@') && methods.includes('email')) hint.textContent = 'Отправим код и ссылку на почту.';
+    else if (identifier.startsWith('+') && methods.has('phone')) hint.textContent = 'Следующий шаг — подтверждение звонком.';
+    else if (identifier.includes('@') && methods.has('email')) hint.textContent = 'Отправим код и ссылку на почту.';
     else hint.textContent = initial;
   };
   loginForm.addEventListener('input', update);
@@ -80,7 +80,7 @@ for (const form of draftForms) {
 }
 const identifier = document.querySelector('form[action="/login"] [name=identifier]');
 if (identifier) {
-  identifier.autocomplete = identifier.type === 'tel' ? 'tel' : identifier.type === 'email' ? 'email' : 'username';
+  identifier.autocomplete = ['tel', 'email'].includes(identifier.type) ? identifier.type : 'username';
   identifier.setAttribute('aria-describedby', identifier.hasAttribute('aria-invalid') ? 'identifier-help login-hint' : 'login-hint');
   identifier.autocapitalize = 'none';
   identifier.spellcheck = false;

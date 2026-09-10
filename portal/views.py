@@ -39,6 +39,6 @@ def render(template, **values):
 
 def component_catalog(portal):
     """Registered by the local preview fixture, never exposed on production."""
-    editor = render('components/device_form.html', device=dict(id=1, name='Рабочий ноутбук', ru_exit_id=None),
-                    exits=[dict(id=1, name='Домашний Keenetic')], can_change_exit=True, can_rename=True)
+    editor = render('components/device_form.html', device={'id': 1, 'name': 'Рабочий ноутбук', 'ru_exit_id': None},
+                    exits=[{'id': 1, 'name': 'Домашний Keenetic'}], can_change_exit=True, can_rename=True)
     return portal.page('Компоненты', render('catalog.html', editor=editor), show_header=True)
