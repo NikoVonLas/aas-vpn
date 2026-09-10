@@ -81,7 +81,7 @@ test('RU file import is editable and save is the last action', async ({ page }) 
   const imported = `[Interface]\nPrivateKey = ${key}\nAddress = 10.55.0.2/32\n[Peer]\nPublicKey = ${key}\nAllowedIPs = 0.0.0.0/0\nEndpoint = 192.0.2.10:51820\n`;
   await form.locator('[name=config_upload]').setInputFiles({ name: 'test.conf', mimeType: 'text/plain', buffer: Buffer.from(imported) });
   await expect(form.locator('textarea')).toHaveValue(imported);
-  await expect(form.locator('[role=status]')).toContainText('Текст можно изменить');
+  await expect(form.getByRole('status')).toContainText('Текст можно изменить');
   const edited = imported.replace('10.55.0.2', '10.55.0.3');
   await form.locator('textarea').fill(edited);
   await form.locator('[name=name]').fill('Проверка импорта');
