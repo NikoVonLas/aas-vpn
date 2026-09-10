@@ -17,12 +17,7 @@ class AdministratorPages:
         self.store = portal.auth_store
 
     def current(self, request):
-        portal = self.portal
-        store = self.store
-        row = store.session(request.cookies.get(portal.auth.COOKIE, ''))
-        if not row:
-            raise HTTPException(303, headers={'Location': portal.ADMIN_LOGIN_PATH})
-        return row
+        return self.portal.require_owner(request)
 
     @staticmethod
     def reauth_fields():
@@ -51,7 +46,7 @@ class AdministratorPages:
             introduction = '<p role=status>Задайте свой пароль перед продолжением работы.</p>'
         else:
             with store.db() as con:
-                rows = con.execute('SELECT * FROM admins ORDER BY id').fetchall()
+                rows = con.execute("SELECT c.* FROM admins c WHERE EXISTS (SELECT 1 FROM accounts a JOIN grants g ON g.account_id=a.id WHERE a.admin_id=c.id AND g.scope!='self') ORDER BY c.id").fetchall()
             introduction = ''
         body = portal.admin_nav(PATH) + introduction
         for row in rows:
@@ -81,6 +76,7 @@ class AdministratorPages:
         portal.require_admin(request)
         actor = self.current(request)
         try:
+            portal.require_owner(request, fresh=True)
             store.throttle(actor['username'], request.client.host)
             with store.db() as con:
                 store.verify(con, con.execute(portal.auth.ADMIN_QUERY, (actor['id'],)).fetchone(), password, totp)
@@ -91,6 +87,7 @@ class AdministratorPages:
 
     def totp_qr(self, request: Request):
         actor = self.current(request)
+        portal.require_owner(request, fresh=True)
         if actor['must_change'] or not actor['pending_totp'] or time.time() - (actor['pending_at'] or 0) > 600:
             raise HTTPException(404)
         uri = pyotp.TOTP(actor['pending_totp']).provisioning_uri(actor['username'], issuer_name='AAS VPN')

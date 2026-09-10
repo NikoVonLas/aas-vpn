@@ -90,8 +90,10 @@ def snapshot():
         con.execute('BEGIN')
         settings = {r['key']: r['value'] for r in con.execute("SELECT key,value FROM settings WHERE key IN ('ru_default','routing_revision')")}
         return {'exits': [dict(r) for r in con.execute('SELECT * FROM ru_exits')],
-                'devices': [dict(r) for r in con.execute('SELECT id,vpn_ip,ru_exit_id FROM devices')],
-                'rules': [dict(r) for r in con.execute('SELECT * FROM routing_rules')],
+                'devices': [dict(r) for r in con.execute('''SELECT d.id,d.vpn_ip,d.ru_exit_id,d.account_id,
+                    u.ru_exit_id account_ru_exit_id FROM devices d LEFT JOIN users u ON u.account_id=d.account_id''')],
+                'rules': [dict(r) for r in con.execute('SELECT * FROM routing_rules')] +
+                         [dict(r) for r in con.execute('SELECT * FROM scoped_routing_rules')],
                 'default': int(settings['ru_default']), 'revision': int(settings['routing_revision'])}
     finally:
         con.close()
@@ -194,6 +196,8 @@ class Supervisor:
         self.fingerprints = {}
         self.applied = 0
         self.signature = None
+        self.compiled_key = None
+        self.compiled = None
         self.active = None
         self.active_base = None
         self.installed_health = {}
@@ -232,7 +236,11 @@ class Supervisor:
 
     def install(self, base, model, health):
         healthy = {key: value.get('healthy', False) for key, value in health.items()}
-        config = compile_config(base, model['exits'], model['devices'], model['rules'], model['default'], healthy, self.bridge, CONFIGS)
+        key = (model['revision'], json.dumps(base, sort_keys=True), tuple(sorted(healthy.items())), self.bridge)
+        if key != self.compiled_key:
+            self.compiled = compile_config(base, model['exits'], model['devices'], model['rules'], model['default'], healthy, self.bridge, CONFIGS)
+            self.compiled_key = key
+        config = json.loads(json.dumps(self.compiled))
         bind_endpoint_interfaces(config)
         digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
         if digest != self.signature or not process or process.poll() is not None:
@@ -271,10 +279,10 @@ class Supervisor:
         if not self.active:
             return devices
         for device in self.active['devices']:
-            assigned = device['ru_exit_id'] or self.active['default']
+            assigned = device['ru_exit_id'] or device.get('account_ru_exit_id') or self.active['default']
             effective = None
             if device['vpn_ip'] and running:
-                effective = effective_exit(device['ru_exit_id'], self.active['default'], self.installed_health)
+                effective = effective_exit(device['ru_exit_id'], self.active['default'], self.installed_health, device.get('account_ru_exit_id'))
             devices[str(device['id'])] = {'effective': effective, 'fallback': effective is not None and effective != assigned}
         return devices
 

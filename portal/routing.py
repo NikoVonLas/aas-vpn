@@ -15,6 +15,9 @@ DEFAULT_RULES = {
 def migrate(con, base=None):
     for table, column, definition in [
         ('users', 'can_change_ru_exit', 'INTEGER NOT NULL DEFAULT 0'),
+        ('users', 'account_id', 'TEXT'),
+        ('users', 'ru_exit_id', 'INTEGER REFERENCES ru_exits(id)'),
+        ('devices', 'account_id', 'TEXT'),
         ('devices', 'ru_exit_id', 'INTEGER REFERENCES ru_exits(id)'),
         ('devices', 'assigned_by', "TEXT CHECK(assigned_by IN ('user','admin'))"),
         ('devices', 'vpn_ip', 'TEXT'),
@@ -29,6 +32,14 @@ def migrate(con, base=None):
         id INTEGER PRIMARY KEY, target TEXT NOT NULL CHECK(target IN ('ru','direct')),
         kind TEXT NOT NULL CHECK(kind IN ('domain','suffix','ip')), value TEXT NOT NULL,
         UNIQUE(target,kind,value));
+      CREATE TABLE IF NOT EXISTS scoped_routing_rules(
+        scope TEXT NOT NULL CHECK(scope IN ('account','device')),
+        owner_id TEXT NOT NULL,
+        target TEXT NOT NULL CHECK(target IN ('ru','direct')),
+        kind TEXT NOT NULL CHECK(kind IN ('domain','suffix','ip')), value TEXT NOT NULL,
+        PRIMARY KEY(scope,owner_id,target,kind,value));
+      CREATE UNIQUE INDEX IF NOT EXISTS users_account_id ON users(account_id);
+      CREATE INDEX IF NOT EXISTS devices_account_id ON devices(account_id);
     ''')
     if not con.execute("SELECT 1 FROM settings WHERE key='routing_revision'").fetchone():
         cur = con.execute("INSERT INTO ru_exits(name,legacy) VALUES('wg-ru',1)")
@@ -249,11 +260,9 @@ def store_config(directory, filename, endpoint, text):
     atomic_json(path.with_suffix('.source.json'), text)
 
 
-def effective_exit(assigned, default, health):
-    chosen = assigned or default
-    if health.get(str(chosen), False):
-        return chosen
-    return default if health.get(str(default), False) else None
+def effective_exit(assigned, default, health, account_default=None):
+    return next((node for node in dict.fromkeys((assigned, account_default, default))
+                 if node is not None and health.get(str(node), False)), None)
 
 
 def device_choices(devices, default, health):
@@ -261,7 +270,7 @@ def device_choices(devices, default, health):
     for device in devices:
         if device['vpn_ip']:
             ip = str(ipaddress.IPv4Address(device['vpn_ip'])) + '/32'
-            chosen = effective_exit(device['ru_exit_id'], default, health)
+            chosen = effective_exit(device['ru_exit_id'], default, health, device.get('account_ru_exit_id'))
             choices.setdefault(chosen, []).append(ip)
     return choices
 
@@ -282,7 +291,7 @@ def add_exit_endpoints(config, base, exits, generated, config_dir):
 
 
 def compile_config(base, exits, devices, rules, default, health, bridge, config_dir):
-    """First matching domain rule wins, then longest IP prefix, then VPS."""
+    """Device, account, global; specificity only compares rules within a level."""
     config = json.loads(json.dumps(base))
     config['endpoints'] = []
     config['outbounds'] = [x for x in config['outbounds'] if x['tag'] != 'ru-direct']
@@ -292,20 +301,41 @@ def compile_config(base, exits, devices, rules, default, health, bridge, config_
             inbound['include_interface'] = [bridge]
     generated = [r for r in base['route']['rules'] if r.get('action') in {'sniff', 'hijack-dns'}]
     add_exit_endpoints(config, base, exits, generated, config_dir)
-    choices = device_choices(devices, default, health)
+    devices = [dict(device) for device in devices]
     fallback = effective_exit(None, default, health)
-    for rule in sorted(rules, key=rule_order):
-        field = {'domain': 'domain', 'suffix': 'domain_suffix', 'ip': 'ip_cidr'}[rule['kind']]
-        match = {'inbound': 'vpn-clients', field: [rule['value']]}
-        if rule['target'] == 'direct':
-            generated.append({**match, 'action': 'route', 'outbound': 'eu-direct'})
-        else:
-            for chosen, ips in choices.items():
-                generated.append({**match, 'source_ip_cidr': ips, **exit_action(chosen)})
-            generated.append({**match, **exit_action(fallback)})
+    for scope in ('device', 'account', 'global'):
+        level = [dict(rule) for rule in rules if rule.get('scope', 'global') == scope]
+        # Equal rules across owners share one source-IP list. Global rules are
+        # emitted once per effective exit, independently of the device count.
+        grouped = {}
+        for rule in sorted(level, key=rule_order):
+            key = (rule['target'], rule['kind'], rule['value'])
+            grouped.setdefault(key, set()).add(str(rule.get('owner_id', '')))
+        for (target, kind, value), owners in grouped.items():
+            selected = devices if scope == 'global' else [device for device in devices
+                if str(device.get('id' if scope == 'device' else 'account_id')) in owners]
+            emit_rule(generated, {'target': target, 'kind': kind, 'value': value},
+                      selected, default, health, fallback, scope == 'global')
     config['route']['rules'] = generated
     config['route']['final'] = 'eu-direct'
     return config
+
+
+def emit_rule(generated, rule, devices, default, health, fallback, global_scope):
+    field = {'domain': 'domain', 'suffix': 'domain_suffix', 'ip': 'ip_cidr'}[rule['kind']]
+    match = {'inbound': 'vpn-clients', field: [rule['value']]}
+    choices = device_choices(devices, default, health)
+    if rule['target'] == 'direct':
+        ips = sorted({ip for group in choices.values() for ip in group})
+        if global_scope or ips:
+            generated.append({**match, **({} if global_scope else {'source_ip_cidr': ips}),
+                              'action': 'route', 'outbound': 'eu-direct'})
+    else:
+        for chosen, ips in choices.items():
+            if not global_scope or chosen != fallback:
+                generated.append({**match, 'source_ip_cidr': sorted(ips), **exit_action(chosen)})
+        if global_scope:
+            generated.append({**match, **exit_action(fallback)})
 
 
 def exit_action(chosen):

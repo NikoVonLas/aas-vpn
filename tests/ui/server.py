@@ -14,7 +14,8 @@ temporary = tempfile.TemporaryDirectory(prefix='aas-ui-')
 data = Path(temporary.name)
 os.environ.update(COOKIE_DOMAIN='localhost', PORTAL_DB=str(data / 'portal.db'),
                   AUTH_DB=str(data / 'auth.db'), RU_CONFIG_DIR=str(data / 'configs'),
-                  ROUTER_STATUS=str(data / 'missing-status.json'), AWG_API_URL='http://127.0.0.1:1')
+                  ROUTER_STATUS=str(data / 'missing-status.json'), AWG_API_URL='http://127.0.0.1:1', AUTH_ORIGIN='http://localhost:8765',
+                  ZVONOK_PUBLIC_KEY='fixture-key', ZVONOK_CAMPAIGN_ID='fixture')
 os.chdir(ROOT / 'portal')
 sys.path.insert(0, str(ROOT / 'portal'))
 import app as portal  # noqa: E402
@@ -36,12 +37,25 @@ with portal.db() as connection:
     connection.execute("INSERT INTO ru_exits(name,legacy,config_file) VALUES('Домашний Keenetic с длинным названием выхода',0,'fixture.json')")
     connection.execute("INSERT INTO settings(key,value) VALUES('dial_numbers',?)", ('+79990000003',))
 
+portal.identities.migrate()
+
+@portal.app.get('/fixture/reset-sessions')
+def reset_sessions():
+    with portal.auth_store.db() as connection:
+        connection.execute('DELETE FROM identity_sessions')
+        connection.execute('DELETE FROM attempts')
+    return {'ok': True}
+
 @portal.app.get('/fixture/phone-login/{phone}')
 def fixture_phone_login(phone: str):
     if phone not in {'+79990000001', '+79990000002'}:
         raise portal.HTTPException(404)
+    reset_sessions()
     response = portal.RedirectResponse('/cabinet', 303)
-    response.set_cookie('aas_session', portal.phone_signer().dumps({'phone': phone}), httponly=True, samesite='lax')
+    with portal.auth_store.db() as connection:
+        account_id = connection.execute('SELECT id FROM accounts WHERE phone=?', (phone,)).fetchone()[0]
+        token = portal.identities.new_session(connection, account_id, ['phone'])
+    response.set_cookie(portal.auth.COOKIE, token, secure=True, httponly=True, samesite='lax')
     return response
 
 

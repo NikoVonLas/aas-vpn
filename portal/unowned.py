@@ -9,7 +9,7 @@ PATH = '/admin/unowned'
 
 def register(portal):
     async def clients(request):
-        portal.require_admin(request)
+        portal.require_admin(request, 'devices.assign')
         async with portal.wg_session() as api:
             response = await api.get('/clients')
             response.raise_for_status()
@@ -30,6 +30,8 @@ def register(portal):
         rows = await clients(request)
         with portal.db() as con:
             users = con.execute('SELECT phone,name FROM users ORDER BY name').fetchall()
+        actor = portal.current_account(request)
+        users = [user for user in users if portal.identities.allowed(actor['account_id'], 'accounts.view', portal.account_for_phone(user['phone'])) and portal.identities.allowed(actor['account_id'], 'devices.create', portal.account_for_phone(user['phone']))]
         options = ''.join(f'<option value="{html.escape(user["phone"], quote=True)}">{html.escape(user["name"])}</option>' for user in users)
         body = portal.admin_nav(PATH)
         if not rows:
@@ -45,6 +47,7 @@ def register(portal):
     @portal.app.post(PATH + '/{client_id}/assign')
     async def assign(request: Request, client_id: str, phone: str = Form(...)):
         row = await find(request, client_id)
+        portal.require_permission(request, 'devices.create', portal.account_for_phone(phone))
         with portal.db() as con:
             con.execute('BEGIN IMMEDIATE')
             user = con.execute(portal.USER_BY_PHONE, (phone,)).fetchone()
@@ -53,7 +56,7 @@ def register(portal):
                 raise HTTPException(403, 'Лимит устройств исчерпан')
             if con.execute('SELECT 1 FROM devices WHERE client_id=?', (client_id,)).fetchone():
                 raise HTTPException(409, 'Устройство уже назначено')
-            con.execute('INSERT INTO devices(phone,name,client_id,created_at,vpn_ip,operation) VALUES(?,?,?,?,?,?)',
-                        (phone, row['name'], client_id, int(portal.time.time()), row['ipv4Address'], 'applied' if row['applied'] else 'create'))
+            con.execute('INSERT INTO devices(phone,account_id,name,client_id,created_at,vpn_ip,operation) VALUES(?,?,?,?,?,?,?)',
+                        (phone, user['account_id'], row['name'], client_id, int(portal.time.time()), row['ipv4Address'], 'applied' if row['applied'] else 'create'))
             portal.changed(con)
         return portal.RedirectResponse(f'/admin/users/{phone}/devices', 303)

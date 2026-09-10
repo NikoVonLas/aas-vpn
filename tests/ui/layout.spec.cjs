@@ -1,6 +1,7 @@
 const { test, expect } = require('@playwright/test');
 
 async function login(page) {
+  await page.request.get('/fixture/reset-sessions');
   await page.goto('/admin/login');
   await page.locator('[name=username]').fill('admin');
   await page.locator('[name=password]').fill('visual-test-password');
@@ -14,6 +15,8 @@ for (const [name, path, active] of [
   ['routing', '/admin/routing', 'Маршрутизация'],
   ['administrators', '/admin/administrators', 'Администраторы'],
   ['unowned', '/admin/unowned', 'Без владельца'],
+  ['roles', '/admin/roles', 'Роли и доступ'],
+  ['login-methods', '/admin/login-methods', 'Способы входа'],
   ['devices', '/admin/users/+79990000001/devices', 'Пользователи'],
 ]) {
   test(`${name} layout`, async ({ page }) => {
@@ -35,35 +38,33 @@ for (const [name, path] of [['login', '/admin/login'], ['not-found', '/missing-p
   });
 }
 
-test('button with formaction keeps its own endpoint', async ({ page }) => {
+test('account saves name, limit and state together', async ({ page }) => {
   await login(page);
-  const row = page.locator('form.user').last();
-  const request = page.waitForRequest(r => r.url().includes('/admin/toggle/') && r.method() === 'POST');
-  await row.getByRole('button', { name: 'Запретить выдачу', exact: true }).click();
-  await request;
-  await expect(page.locator('form.user').last().getByRole('button', { name: 'Разрешить выдачу', exact: true })).toBeVisible();
-  await page.locator('form.user').last().getByRole('button', { name: 'Разрешить выдачу', exact: true }).click();
-  await expect(page.locator('form.user').last().getByRole('button', { name: 'Запретить выдачу', exact: true })).toBeVisible();
+  const form = page.locator('form[action^="/accounts/"]').last();
+  const response = page.waitForResponse(r => /\/accounts\/[^/]+\/save$/.test(r.url()) && r.request().method() === 'POST');
+  await form.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  expect((await response).status()).toBe(303);
+  await expect(page).toHaveURL(/\/admin$/);
 });
 
 test('logout after AJAX save uses its own action', async ({ page }) => {
   await login(page);
-  const row = page.locator('form.user').first();
-  const response = page.waitForResponse(r => r.url().endsWith('/admin/user') && r.request().method() === 'POST');
+  const row = page.locator('form[action^="/accounts/"]').first();
+  const response = page.waitForResponse(r => /\/accounts\/[^/]+\/save$/.test(r.url()) && r.request().method() === 'POST');
   await row.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await response;
-  await expect(page.locator('form.user').first().getByRole('button', { name: 'Сохранить', exact: true })).toBeEnabled();
+  await expect(page.locator('form[action^="/accounts/"]').first().getByRole('button', { name: 'Сохранить', exact: true })).toBeEnabled();
   const logout = page.waitForRequest(r => r.url().endsWith('/admin/logout') && r.method() === 'POST');
   await page.getByRole('button', { name: 'Выйти', exact: true }).click();
   await logout;
   await expect(page).toHaveURL(/\/admin\/login$/);
   await page.goto('/admin');
-  await expect(page).toHaveURL(/\/admin\/login$/);
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test('RU file import is editable and save is the last action', async ({ page }) => {
   await login(page);
-  await expect(page.locator('form.user').first().getByRole('button').last()).toHaveText('Сохранить');
+  await expect(page.locator('form[action^="/accounts/"]').first().getByRole('button').last()).toHaveText('Сохранить');
   await page.goto('/admin/ru-exits');
   const legacy = page.locator('form[action="/admin/ru-exits/1"]');
   await expect(legacy.locator('textarea')).toHaveValue(/\[Interface\]/);
@@ -97,7 +98,7 @@ test('RU file import is editable and save is the last action', async ({ page }) 
 });
 
 test('country hover stays inside the phone field and dropdown opens', async ({ page }) => {
-  await login(page);
+  await page.goto('/?method=phone');
   const phone = page.locator('.iti').first();
   const country = phone.locator('.iti__selected-country');
   await country.hover();
@@ -177,4 +178,108 @@ test('administrator forms share controls and hide unused password', async ({ pag
   await expect(ownForm.locator('[data-admin-password]')).toBeVisible();
   const widths = await page.locator('.admin-nav a').evaluateAll(links => links.map(link => link.scrollWidth <= link.clientWidth));
   expect(widths.every(Boolean)).toBe(true);
+});
+
+
+test('profile layout', async ({ page }) => {
+  await login(page);
+  await page.goto('/security');
+  await page.locator('section').filter({ has: page.getByRole('heading', { name: 'Сессии', exact: true }) }).locator('p').evaluateAll(nodes => nodes.forEach(node => { node.textContent = 'Текущая сессия'; }));
+  await expect(page).toHaveScreenshot('security.png', { fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect(page.locator('nav [aria-current=page]')).toHaveText('Безопасность профиля');
+});
+
+test('scoped routing layout and transactional save', async ({ page }) => {
+  await login(page);
+  await page.goto('/device/1/routing');
+  await expect(page).toHaveScreenshot('device-routing.png', { fullPage: true });
+  await page.locator('[name=ru]').fill('.example.test');
+  await page.locator('[name=direct]').fill('192.0.2.0/24');
+  await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await page.reload();
+  await expect(page.locator('[name=ru]')).toHaveValue('.example.test');
+  await page.locator('[name=ru]').fill('');
+  await page.locator('[name=direct]').fill('');
+  await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+});
+
+test('virtual FIDO2 registration, authentication, replay and deletion', async ({ page, context }) => {
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('WebAuthn.enable');
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: { protocol: 'ctap2', transport: 'usb', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true }
+  });
+  await login(page);
+  await page.goto('/security');
+  const enroll = page.locator('form[data-passkey=enroll]');
+  await enroll.locator('[name=name]').fill('Тестовый ключ FIDO2');
+  const registration = page.waitForResponse(r => r.url().endsWith('/security/passkeys/finish'));
+  await enroll.getByRole('button').click();
+  expect((await registration).status()).toBe(200);
+  await expect(page.getByText('Тестовый ключ FIDO2 · ещё не использовался', { exact: true })).toBeVisible();
+  const { credentials } = await cdp.send('WebAuthn.getCredentials', { authenticatorId });
+  expect(credentials).toHaveLength(1);
+  // Use the key as a second method after a password; primary policy remains password.
+  const start = await page.locator('[name=csrf_token]').first().inputValue();
+  const begun = await page.request.post('/security/passkeys/start', { form: { csrf_token: start, purpose: 'second' } });
+  expect(begun.status()).toBe(200);
+  const challenge = await begun.json();
+  const proof = await page.evaluate(async options => {
+    const decode = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+    const encode = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    options.challenge = decode(options.challenge);
+    options.allowCredentials.forEach(c => { c.id = decode(c.id); });
+    const key = await navigator.credentials.get({ publicKey: options });
+    return { id: key.id, rawId: encode(key.rawId), type: key.type, response: { clientDataJSON: encode(key.response.clientDataJSON), authenticatorData: encode(key.response.authenticatorData), signature: encode(key.response.signature), userHandle: encode(key.response.userHandle) } };
+  }, challenge.options);
+  const payload = { csrf_token: start, key: challenge.key, credential: JSON.stringify(proof) };
+  const invalidProofs = [];
+  for (const [field, value] of [['challenge', 'wrong-challenge'], ['origin', 'https://other.example.test']]) {
+    const invalid = structuredClone(proof);
+    const clientData = JSON.parse(Buffer.from(invalid.response.clientDataJSON, 'base64url'));
+    clientData[field] = value;
+    invalid.response.clientDataJSON = Buffer.from(JSON.stringify(clientData)).toString('base64url');
+    invalidProofs.push(invalid);
+  }
+  for (const field of ['rp', 'uv']) {
+    const invalid = structuredClone(proof);
+    const data = Buffer.from(invalid.response.authenticatorData, 'base64url');
+    if (field === 'rp') data[0] ^= 1;
+    else data[32] &= ~4;
+    invalid.response.authenticatorData = data.toString('base64url');
+    invalidProofs.push(invalid);
+  }
+  const wrongAccount = structuredClone(proof);
+  wrongAccount.response.userHandle = Buffer.from('another-account').toString('base64url');
+  invalidProofs.push(wrongAccount);
+  for (const invalid of invalidProofs) {
+    const rejected = await page.request.post('/security/passkeys/finish', { form: { ...payload, credential: JSON.stringify(invalid) } });
+    expect(rejected.status()).toBe(400);
+  }
+  const accepted = await page.request.post('/security/passkeys/finish', { form: payload });
+  expect(accepted.status()).toBe(200);
+  const replay = await page.request.post('/security/passkeys/finish', { form: payload });
+  expect(replay.status()).toBe(400);
+  await page.goto('/admin/roles');
+  const owner = page.locator('form[action="/admin/roles/save"]').filter({ has: page.locator('[name=role_id][value=owner]') });
+  await owner.locator('..').locator('summary').first().click();
+  await owner.locator('[name=primary][value=webauthn]').check();
+  await owner.locator('[name=required]').check();
+  await owner.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await page.goto('/?method=webauthn');
+  await page.locator('[name=identifier]').fill('admin');
+  await page.getByRole('button', { name: 'Войти с ключом / passkey', exact: true }).click();
+  await expect(page).toHaveURL(/\/admin$/);
+  // A UV-verified key satisfies mandatory MFA as the primary method.
+  await page.goto('/admin/roles');
+  await owner.locator('..').locator('summary').first().click();
+  await owner.locator('[name=primary][value=webauthn]').uncheck();
+  await owner.locator('[name=required]').uncheck();
+  await owner.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await login(page);
+  await page.goto('/security');
+  await page.getByRole('button', { name: 'Удалить ключ', exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId });
 });

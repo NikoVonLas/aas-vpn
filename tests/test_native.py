@@ -144,19 +144,18 @@ def test_admin_management_reauth_last_admin_and_revocation(portal):
     assert post(client, route, {'username':'new', 'new_password':'temporary-password', 'password':'wrong'}).status_code == 400
     assert post(client, route, {'username':'new', 'new_password':'temporary-password', 'password':'test-password'}).status_code == 303
     assert post(client, '/admin/logout').status_code == 303
-    assert post(client, '/admin/login', {'username':'new','password':'temporary-password'}).headers['location'] == route
-    assert client.get('/admin').headers['location'] == route
-    assert post(client, '/admin/user', {'name':'No', 'phone':'+79990000001', 'device_limit':'5'}).headers['location'] == route
-    assert post(client, route+'/2', {'action':'password','password':'temporary-password','new_password':'permanent-password'}).status_code == 303
-    assert client.get('/admin').headers['location'] == '/admin/login'
+    assert post(client, '/admin/login', {'username':'new','password':'temporary-password'}).headers['location'] == '/security'
+    assert client.get('/admin').headers['location'] == '/security'
+    assert post(client, '/security/password', {'username':'new', 'password':'permanent-password'}).status_code == 303
+    assert client.get('/admin').headers['location'] == '/'
     assert post(client, '/admin/login', {'username':'new','password':'permanent-password'}).status_code == 303
     token = client.cookies.get(app.auth.COOKIE)
-    assert post(client, route+'/1', {'action':'toggle','password':'permanent-password'}).status_code == 303
+    # Administrative permissions do not include management of administrators.
+    assert post(client, route+'/1', {'action':'toggle','password':'permanent-password'}).status_code == 403
     assert app.auth_store.session(token)['id'] == 2
-    assert post(client, route+'/2', {'action':'toggle','password':'permanent-password'}).status_code == 400
     phone_login(app, client)
-    assert client.get(route).status_code == 303
-    assert post(client, route, {'username':'denied','new_password':'temporary-password','password':'test-password'}).status_code == 303
+    assert client.get(route).status_code == 403
+    assert post(client, route, {'username':'denied','new_password':'temporary-password','password':'test-password'}).status_code == 403
 
 
 def test_totp_replay_and_throttling(portal):
@@ -204,15 +203,17 @@ def test_portal_pending_creation_recovers_without_new_identity(portal, monkeypat
 def test_totp_enrollment_and_unowned_permissions(portal, monkeypatch):
     app, client = portal
     admin_login(app, client)
-    path = '/admin/administrators'
-    assert post(client, path+'/1', {'action':'totp-start','password':'test-password'}).status_code == 303
+    path = '/security'
+    assert post(client, path+'/totp/start').status_code == 303
     with app.auth_store.db() as con:
         secret = con.execute('SELECT pending_totp FROM admins WHERE id=1').fetchone()[0]
     assert secret not in client.get(path).text
     assert client.get(path+'/totp/qr').headers['content-type'] == 'image/png'
-    assert post(client, path+'/totp/confirm', {'totp':'wrong'}).status_code == 400
-    assert post(client, path+'/totp/confirm', {'totp':pyotp.TOTP(secret).now()}).status_code == 303
-    assert client.get('/admin').headers['location'] == '/admin/login'
+    assert post(client, path+'/totp/confirm', {'code':'wrong'}).status_code == 400
+    assert post(client, path+'/totp/confirm', {'code':pyotp.TOTP(secret).now()}).status_code == 303
+    assert client.get('/admin').headers['location'] == '/'
+    with app.auth_store.db() as con:
+        con.execute('UPDATE accounts SET voluntary_2fa=0 WHERE admin_id=1')
     admin_login(app, client)
     rows = [{'id':'999','name':'Imported','ipv4Address':'10.8.0.9','applied':True}]
     monkeypatch.setattr(app, 'wg_session', lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=rows)), base_url='http://controller'))
@@ -220,8 +221,8 @@ def test_totp_enrollment_and_unowned_permissions(portal, monkeypatch):
     assert post(client, '/admin/unowned/999/assign', {'phone':'+79990000001'}).status_code == 303
     assert 'Imported' not in client.get('/admin/unowned').text
     phone_login(app, client)
-    assert client.get('/admin/unowned').status_code == 303
-    assert post(client, '/admin/unowned/999/assign', {'phone':'+79990000002'}).status_code == 303
+    assert client.get('/admin/unowned').status_code == 403
+    assert post(client, '/admin/unowned/999/assign', {'phone':'+79990000002'}).status_code == 403
 
 
 def test_native_disable_and_expiration_configuration(tmp_path, portal):

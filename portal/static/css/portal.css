@@ -85,3 +85,18 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid var
 .settings-form .form-actions{grid-column:1/-1;display:flex;justify-content:flex-end}
 .settings-form [hidden]{display:none}
 @media(max-width:720px){.settings-form{grid-template-columns:minmax(0,1fr)}.settings-form .form-actions>button{width:100%}}
+
+/* Shared account, role and security forms. */
+.form-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:var(--field-gap)}
+.settings-form>button{grid-column:1/-1;justify-self:end}
+fieldset{min-width:0;border:1px solid var(--line);border-radius:var(--control-radius);padding:16px;display:grid;gap:var(--field-gap)}
+legend{font-size:13px;color:var(--muted);padding:0 6px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.6}
+.card>form+form{margin-top:16px}
+@media(max-width:720px){
+ .form-actions,.settings-form .form-actions{display:grid;grid-template-columns:minmax(0,1fr)}
+ .form-actions>button,.form-actions>.btn,.settings-form>button{width:100%}
+}
+.card>details>summary{font-size:17px;font-weight:600;cursor:pointer;overflow-wrap:anywhere}
+.card>details[open]>summary{margin-bottom:16px}
+main>p>a{color:var(--text)}

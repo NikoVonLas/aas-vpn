@@ -97,3 +97,25 @@ def test_endpoint_mtu_uses_link_and_preserves_explicit_value(monkeypatch):
     assert config['endpoints'][0]['mtu'] == 1408
     assert config['endpoints'][1]['mtu'] == 1100
     controller.endpoint_transport.cache_clear()
+
+
+def test_supervisor_only_recompiles_changed_model_or_health(tmp_path, monkeypatch):
+    monkeypatch.setattr(controller, 'WORK', tmp_path)
+    monkeypatch.setattr(controller, 'process', SimpleNamespace(poll=lambda: None))
+    monkeypatch.setattr(controller, 'bind_endpoint_interfaces', lambda config: None)
+    monkeypatch.setattr(controller, 'apply', lambda config: None)
+    builds = []
+    def compile(*args):
+        builds.append(args)
+        return {'route': {'rules': []}}
+    monkeypatch.setattr(controller, 'compile_config', compile)
+    supervisor = controller.Supervisor('br-test')
+    model = {'revision': 1, 'exits': [], 'devices': [], 'rules': [], 'default': 1}
+    for _ in range(5):
+        supervisor.install({}, model, {'1': {'healthy': True}})
+    assert len(builds) == 1
+    supervisor.install({}, model, {'1': {'healthy': False}})
+    assert len(builds) == 2
+    model['revision'] = 2
+    supervisor.install({}, model, {'1': {'healthy': False}})
+    assert len(builds) == 3

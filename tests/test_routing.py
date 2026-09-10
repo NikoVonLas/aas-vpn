@@ -149,3 +149,44 @@ def test_old_import_text_roundtrip(tmp_path):
         assert parse_wireguard(wireguard_text(endpoint)) == endpoint
         atomic_json(tmp_path / 'old.json', endpoint)
         assert parse_wireguard(stored_config_text(tmp_path, 'old.json')) == endpoint
+
+
+def test_level_priority_over_specificity_and_account_fallback(tmp_path):
+    base = json.loads((ROOT / 'config/sing-box.json').read_text())
+    exits = [{'id': n, 'legacy': True} for n in [1, 2, 3]]
+    devices = [
+        {'id': 1, 'account_id': 'one', 'vpn_ip': '10.8.0.2', 'ru_exit_id': 3, 'account_ru_exit_id': 2},
+        {'id': 2, 'account_id': 'one', 'vpn_ip': '10.8.0.3', 'ru_exit_id': None, 'account_ru_exit_id': 2},
+        {'id': 3, 'account_id': 'two', 'vpn_ip': '10.8.0.4', 'ru_exit_id': None},
+    ]
+    rules = []
+    for scope, owner, target, text in [('global', '', 'ru', 'exact.example.ru'),
+                                      ('global', '', 'direct', '10.1.2.3/32'),
+                                      ('account', 'one', 'direct', '.ru'),
+                                      ('account', 'one', 'ru', '10.0.0.0/8'),
+                                      ('device', '1', 'ru', '.ru'),
+                                      ('device', '1', 'direct', '10.0.0.0/8')]:
+        kind, value = normalize_rule(text)
+        rules.append({'scope': scope, 'owner_id': owner, 'target': target, 'kind': kind, 'value': value})
+    def compile(health):
+        return compile_config(base, exits, devices, rules, 1, health, 'br-test', tmp_path)
+    compiled = compile({'1': True, '2': True, '3': True})
+    assert route(compiled, '10.8.0.2', 'exact.example.ru') == 'ru-3'
+    assert route(compiled, '10.8.0.3', 'exact.example.ru') == 'eu-direct'
+    assert route(compiled, '10.8.0.4', 'exact.example.ru') == 'ru-1'
+    assert route(compiled, '10.8.0.2', ip='10.1.2.3') == 'eu-direct'
+    assert route(compiled, '10.8.0.3', ip='10.1.2.3') == 'ru-2'
+    assert route(compile({'1': True, '2': True, '3': False}), '10.8.0.2', 'exact.example.ru') == 'ru-2'
+    assert route(compile({'1': True, '2': False, '3': False}), '10.8.0.2', 'exact.example.ru') == 'ru-1'
+    assert route(compile({'1': False, '2': False, '3': False}), '10.8.0.2', 'exact.example.ru') == 'reject'
+    assert route(compile({'1': True, '2': True, '3': True}), '10.8.0.2', 'exact.example.ru') == 'ru-3'
+
+
+def test_global_rules_do_not_scale_with_device_count(tmp_path):
+    base = json.loads((ROOT / 'config/sing-box.json').read_text())
+    exits = [{'id': 1, 'legacy': True}, {'id': 2, 'legacy': True}]
+    rules = [{'target': 'ru', 'kind': 'suffix', 'value': f'example{n}.test'} for n in range(100)]
+    def compile(size):
+        devices = [{'id': n, 'vpn_ip': str(ipaddress.IPv4Address('10.0.0.1') + n), 'ru_exit_id': 2} for n in range(size)]
+        return compile_config(base, exits, devices, rules, 1, {'1': True, '2': True}, 'br-test', tmp_path)
+    assert len(compile(1)['route']['rules']) == len(compile(1000)['route']['rules'])

@@ -10,10 +10,10 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
 
 import httpx
 import auth
+import identity
 import qrcode
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.exceptions import RequestValidationError
@@ -21,7 +21,6 @@ from pathlib import Path
 from routing import migrate, changed, parse_wireguard, normalize_rule, atomic_json, stored_config_text, store_config
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 ADMIN_LOGIN_PATH = '/admin/login'
 ADMINISTRATORS_PATH = '/admin/administrators'
@@ -29,7 +28,6 @@ ADMIN_PATH = '/admin'
 CABINET_PATH = '/cabinet'
 WG_CLIENT_PATH = '/clients'
 USER_BY_PHONE = 'SELECT * FROM users WHERE phone=?'
-ACTIVE_USER_BY_PHONE = 'SELECT * FROM users WHERE phone=? AND enabled=1'
 
 BEGIN_WRITE = 'BEGIN IMMEDIATE'
 DEFAULT_EXIT_QUERY = "SELECT value FROM settings WHERE key='ru_default'"
@@ -56,9 +54,9 @@ HTTP_RESPONSES = {
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, responses=HTTP_RESPONSES)
 app.mount("/assets", StaticFiles(directory="static"), name="assets")
 DB = os.getenv("PORTAL_DB", "/data/portal.db")
-ZVONOK = "https://zvonok.com/manager/cabapi_external/api/v1/phones"
 COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", "")
 auth_store = auth.Auth(os.getenv("AUTH_DB", str(Path(DB).with_name("auth.db"))))
+identities = identity.Identity(auth_store, DB)
 password_hasher = auth.HASHER
 RU_CONFIG_DIR = Path(os.getenv("RU_CONFIG_DIR", "/ru-configs"))
 ROUTER_STATUS = Path(os.getenv("ROUTER_STATUS", "/routing-status/status.json"))
@@ -156,6 +154,8 @@ def startup():
         con.execute('PRAGMA secure_delete=ON')
         con.execute("DELETE FROM settings WHERE key='session_secret'")
         con.execute('DROP TABLE IF EXISTS auth_cache')
+    identities.initialize()
+    auth_store.identity = identities
     Path(DB).with_name('wg-auth.json').unlink(missing_ok=True)
     RU_CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
@@ -273,8 +273,6 @@ document.addEventListener('click',event=>{
 <main>{heading}{body}</main><dialog id=qr-dialog class=qr-dialog><img id=qr-image alt='QR-код подключения'><button type=button onclick="this.closest('dialog').close()">Закрыть</button></dialog><dialog id=delete-dialog class=confirm-dialog><form id=delete-form method=post><h2>Удалить устройство?</h2><p>Настройки <b id=delete-device-name></b> сразу перестанут работать.</p><div class=confirm-actions><button type=button class=secondary onclick="this.closest('dialog').close()">Отмена</button><button class=danger-soft>Удалить</button></div></form></dialog>{phone_script}{share_script}</html>""")
 
 
-def phone_signer():
-    return URLSafeTimedSerializer(auth_store.setting('phone_secret'), salt='aas-portal')
 
 
 def phone_normalize(value):
@@ -299,30 +297,77 @@ def latin_slug(value, fallback):
     return re.sub(r"[^a-z0-9]+", "-", value).strip("-")[:30] or fallback
 
 
+def current_account(request, limited=False):
+    row = identities.session(request.cookies.get(auth.COOKIE, ''), limited=limited)
+    if not row:
+        partial = identities.session(request.cookies.get(auth.COOKIE, ''), limited=True)
+        raise HTTPException(303, headers={"Location": '/security' if partial else '/'})
+    if row['must_change'] and not limited:
+        raise HTTPException(303, headers={"Location": '/security'})
+    return row
+
+
 def session_phone(request):
-    raw = request.cookies.get("aas_session", "")
-    try:
-        phone = phone_signer().loads(raw, max_age=30 * 24 * 3600)["phone"]
-    except BadSignature:
-        raise HTTPException(303, headers={"Location": "/"})
+    row = current_account(request)
     with db() as con:
-        active = con.execute("SELECT 1 FROM users WHERE phone=? AND enabled=1", (phone,)).fetchone()
-    if not active:
-        raise HTTPException(303, headers={"Location": "/"})
-    return phone
+        user = con.execute('SELECT phone FROM users WHERE account_id=?', (row['account_id'],)).fetchone()
+    if not user:
+        raise HTTPException(404, 'Аккаунт не найден')
+    return user['phone']
+
+
+def require_permission(request, action, target=None):
+    actor = current_account(request)
+    if not identities.allowed(actor['account_id'], action, target):
+        raise HTTPException(404 if target else 403, 'Объект не найден' if target else 'Недостаточно прав')
+    return actor
+
+
+def require_owner(request, fresh=False):
+    actor = current_account(request)
+    if not identities.owner(actor['account_id']):
+        raise HTTPException(403, 'Действие доступно только владельцу')
+    if fresh:
+        require_fresh(actor)
+    return actor
+
+
+def require_fresh(actor):
+    if time.time() - actor['confirmed'] > 300:
+        raise HTTPException(303, headers={'Location': '/security/confirm'})
+
+
+def audit_change(request, action, target=''):
+    actor = current_account(request)
+    with auth_store.db() as con:
+        identity.audit(con, actor['account_id'], action, str(target))
+
+
+def account_for_phone(phone):
+    with db() as con:
+        row = con.execute('SELECT account_id FROM users WHERE phone=?', (phone,)).fetchone()
+    if not row:
+        raise HTTPException(404, 'Аккаунт не найден')
+    return row['account_id']
 
 
 def admin_ok(request):
-    row = auth_store.session(request.cookies.get(auth.COOKIE, ''))
-    return bool(row and not row['must_change'])
+    row = identities.session(request.cookies.get(auth.COOKIE, ''))
+    if not row or row['must_change']:
+        return False
+    with auth_store.db() as con:
+        return bool(con.execute("SELECT 1 FROM grants WHERE account_id=? AND scope!='self'", (row['account_id'],)).fetchone())
 
 
-def require_admin(request):
-    row = auth_store.session(request.cookies.get(auth.COOKIE, ''))
-    if not row:
-        raise HTTPException(303, headers={"Location": ADMIN_LOGIN_PATH})
-    if row['must_change']:
-        raise HTTPException(303, headers={"Location": ADMINISTRATORS_PATH})
+def require_admin(request, action=None):
+    if action:
+        actor = require_permission(request, action)
+        if request.method == 'POST' and action in {'settings.edit', 'exits.edit', 'exits.default', 'routing.global'}:
+            require_fresh(actor)
+        return actor
+    current_account(request)
+    if not admin_ok(request):
+        raise HTTPException(403, 'Недостаточно прав')
 
 
 @app.exception_handler(HTTPException)
@@ -372,22 +417,8 @@ def dial_numbers():
     return [phone_normalize(value) for value in re.split(r"[,\n]+", source) if value.strip()]
 
 
-@app.get(ADMIN_LOGIN_PATH, responses=HTTP_RESPONSES)
-def admin_login_form():
-    return page("Вход", "<section class=card><p class=muted>Используйте учётную запись администратора.</p><form class=stack method=post><label>Логин<input name=username autocomplete=username placeholder=admin required></label><label>Пароль<input name=password type=password autocomplete=current-password placeholder='••••••••' required></label><label>Код 2FA<input name=totp inputmode=numeric pattern='[0-9]{6}' maxlength=6 autocomplete=one-time-code placeholder=123456></label><label class=check-label><input type=checkbox name=remember value=1> Запомнить меня</label><button>Войти</button></form></section>")
 
 
-@app.post(ADMIN_LOGIN_PATH, responses=HTTP_RESPONSES)
-def admin_login(request: Request, username: str = Form(...), password: str = Form(...), totp: str = Form(""), remember: str = Form("")):
-    try:
-        token, ttl = auth_store.login(username, password, totp, request.client.host, bool(remember))
-    except ValueError as exc:
-        raise HTTPException(401, str(exc)) from None
-    session = auth_store.session(token)
-    response = RedirectResponse(ADMINISTRATORS_PATH if session['must_change'] else ADMIN_PATH, 303)
-    response.set_cookie(auth.COOKIE, token, path="/", httponly=True, secure=True, samesite="lax", max_age=ttl if remember else None)
-    clear_legacy_cookies(response)
-    return response
 
 
 def clear_legacy_cookies(response):
@@ -410,153 +441,22 @@ def health():
     return {"ok": True}
 
 
-@app.get("/", response_class=HTMLResponse, responses=HTTP_RESPONSES)
-def index():
-    return page("", "<section class=card><form class=stack method=post action=/start><input class=phone-input data-target=phone-value type=tel autocomplete=tel inputmode=tel aria-label='Номер телефона' placeholder='999 123-45-67' required><input id=phone-value name=phone type=hidden><button>Продолжить</button></form></section>", phone_widget=True)
 
 
-@app.post("/start", responses=HTTP_RESPONSES)
-async def start(phone: str = Form(...)):
-    phone = phone_normalize(phone)
-    with db() as con:
-        user = con.execute(ACTIVE_USER_BY_PHONE, (phone,)).fetchone()
-        recent = con.execute("SELECT count(*) FROM verifications WHERE phone=? AND created_at>?", (phone, int(time.time()) - 600)).fetchone()[0]
-    if not user:
-        raise HTTPException(403, "Этот номер не добавлен владельцем")
-    if recent >= 3:
-        raise HTTPException(429, "Слишком много попыток. Подождите 10 минут")
-    public_key = os.getenv("ZVONOK_PUBLIC_KEY", "").strip()
-    if not public_key:
-        raise HTTPException(503, "Сервис подтверждения временно недоступен")
-    token = secrets.token_urlsafe(24)
-    data = {"public_key": public_key, "campaign_id": os.environ["ZVONOK_CAMPAIGN_ID"], "phone": phone}
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(f"{ZVONOK}/confirm/", data=data)
-            response.raise_for_status()
-            result = response.json()
-    except (httpx.HTTPStatusError, httpx.RequestError, ValueError):
-        raise HTTPException(503, "Сервис подтверждения временно недоступен") from None
-    call_id = str(result.get("call_id") or result.get("id") or "")
-    dial = next_dial_number() or str(result.get("confirm_phone") or result.get("phone_to_call") or result.get("verification_phone") or result.get("call_phone") or "")
-    with db() as con:
-        con.execute("INSERT INTO verifications(token,phone,call_id,dial_phone,created_at) VALUES(?,?,?,?,?)", (token, phone, call_id, dial, int(time.time())))
-    return RedirectResponse(f"/verify/{token}", 303)
 
 
-def call_records(result):
-    if isinstance(result, list):
-        return result
-    if isinstance(result, dict):
-        return next((result[key] for key in ("results", "calls", "data")
-                     if isinstance(result.get(key), list)), [result])
-    return []
 
 
-def call_activity(call):
-    timestamps = []
-    for field in ("created", "updated"):
-        try:
-            timestamps.append(datetime.fromisoformat(str(call.get(field, "")).replace("Z", "+00:00")).timestamp())
-        except ValueError:
-            pass
-    return max(timestamps) if timestamps else None
 
 
-def matching_call(result, row):
-    candidates = []
-    for call in call_records(result):
-        if not isinstance(call, dict):
-            continue
-        activity = call_activity(call)
-        if activity is not None and row["created_at"] - 5 <= activity <= row["created_at"] + 600:
-            candidates.append((activity, call))
-    if not candidates:
-        return None
-    _, result = min(candidates, key=lambda item: item[0])
-    call_id = str(result.get("call_id") or result.get("id") or "")
-    if call_id:
-        with db() as con:
-            con.execute("UPDATE verifications SET call_id=? WHERE token=? AND (call_id IS NULL OR call_id='')", (call_id, row["token"]))
-    return result
 
 
-def call_status_values(value):
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if key in ("call_status", "status", "status_name"):
-                yield str(item).lower()
-            yield from call_status_values(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from call_status_values(item)
 
 
-async def zvonok_status(row):
-    params = {"public_key": os.environ["ZVONOK_PUBLIC_KEY"], "campaign_id": os.environ["ZVONOK_CAMPAIGN_ID"], "phone": row["phone"], "expand": 1}
-    endpoint = "calls_by_phone/"
-    if row["call_id"]:
-        params.pop("campaign_id")
-        params.pop("phone")
-        params["call_id"] = row["call_id"]
-        endpoint = "call_by_id/"
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(f"{ZVONOK}/{endpoint}", params=params)
-        response.raise_for_status()
-        result = response.json()
-    if not row["call_id"]:
-        result = matching_call(result, row)
-    success = {x.strip().lower() for x in os.getenv("ZVONOK_SUCCESS_STATUSES", "processed,success,confirmed,pincode_ok").split(",")}
-    return any(value in success for value in call_status_values(result))
 
 
-@app.get("/verify/{token}", responses=HTTP_RESPONSES)
-def verify(token: str):
-    with db() as con:
-        row = con.execute("SELECT * FROM verifications WHERE token=?", (token,)).fetchone()
-    if not row or time.time() - row["created_at"] > 600:
-        raise HTTPException(410, "Попытка устарела")
-    dial_raw = row["dial_phone"] or ""
-    if dial_raw:
-        dial = html.escape(dial_raw)
-        dial_href = html.escape(re.sub(r"[^+\d]", "", dial_raw), quote=True)
-        dial_control = f"<p>Нажмите на номер, чтобы позвонить:</p><a class=btn href='tel:{dial_href}'>{dial}</a>"
-    else:
-        dial_control = "<p>Позвоните на номер, указанный в кампании Zvonok.</p>"
-    return page("Подтверждение", f"""<section class=card>{dial_control}<p class=muted>Робот ответит на звонок. После ответа звонок можно завершить — страница продолжит автоматически.</p><div id=call-status class=muted>Ожидаем подтверждение звонка…</div></section><script>
-const statusNode=document.getElementById('call-status');
-async function pollCall(){{
-  try{{
-    const response=await fetch(location.pathname + '/status',{{cache:'no-store'}});
-    const result=await response.json();
-    if(result.verified){{statusNode.textContent='Звонок подтверждён';location.replace('/cabinet');return}}
-    statusNode.textContent='Ожидаем подтверждение звонка…';
-  }}catch{{statusNode.textContent='Проверяем звонок…'}}
-  setTimeout(pollCall,4000);
-}}
-setTimeout(pollCall,1500);
-</script>""")
 
 
-@app.get("/verify/{token}/status", responses=HTTP_RESPONSES)
-async def verify_status(token: str):
-    with db() as con:
-        row = con.execute("SELECT * FROM verifications WHERE token=?", (token,)).fetchone()
-    if not row or time.time() - row["created_at"] > 600:
-        raise HTTPException(410, "Попытка устарела")
-    confirmed = bool(row["verified_at"])
-    if not confirmed:
-        try:
-            confirmed = await zvonok_status(row)
-        except (httpx.HTTPError, ValueError):
-            confirmed = False
-    if confirmed and not row["verified_at"]:
-        with db() as con:
-            con.execute("UPDATE verifications SET verified_at=? WHERE token=?", (int(time.time()), token))
-    response = JSONResponse({"verified": confirmed}, headers={"Cache-Control": "no-store"})
-    if confirmed:
-        response.set_cookie("aas_session", phone_signer().dumps({"phone": row["phone"]}), httponly=True, secure=True, samesite="lax", max_age=2592000)
-    return response
 
 
 def wg_session():
@@ -567,23 +467,24 @@ def wg_session():
 @app.get(CABINET_PATH, responses=HTTP_RESPONSES)
 def cabinet(request: Request, phone: str = ""):
     is_admin = admin_ok(request)
-    if phone:
-        require_admin(request)
-    else:
+    if not phone:
         phone = session_phone(request)
+    require_permission(request, "devices.view", account_for_phone(phone))
     with db() as con:
         user = con.execute(USER_BY_PHONE, (phone,)).fetchone()
         devices = con.execute("SELECT * FROM devices WHERE phone=? ORDER BY id", (phone,)).fetchall()
     if not user:
         raise HTTPException(403)
-    rows = device_routing_forms(devices, user, is_admin)
+    rows = device_routing_forms(devices, user, is_admin, request)
     create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Телефон' required></label><button>Добавить устройство</button></form>"
+    if not identities.allowed(current_account(request)["account_id"], "devices.create", user["account_id"]):
+        create = ""
     if is_admin:
         create = create.replace("action=/device>", f"action=/device><input type=hidden name=phone value=\"{html.escape(phone)}\">")
     guide = """<details class='card guide'><summary>Как подключиться</summary><h3>Скачать AmneziaWG</h3><div class=app-links><a href='https://play.google.com/store/apps/details?id=org.amnezia.awg' target=_blank rel=noopener>Android</a><a href='https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>iPhone / iPad</a><a href='https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>macOS</a><a href='https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest' target=_blank rel=noopener>Windows</a></div><h3>На сайте</h3><ul><li>Под этой инструкцией найдите поле <b>«Название устройства»</b>.</li><li>Напишите любое понятное название, например <b>Телефон</b>, и нажмите <b>«Добавить устройство»</b>.</li><li>Ниже появится карточка устройства с кнопками.</li></ul><h3>Если сайт открыт на телефоне или компьютере, на который нужно установить VPN</h3><ul><li>Установите <b>AmneziaWG</b> по подходящей ссылке выше.</li><li>В карточке устройства на этом сайте нажмите <b>«Файл»</b>.</li><li>Откройте AmneziaWG и нажмите кнопку добавления подключения.</li><li>Выберите импорт из файла, найдите скачанный файл настроек и откройте его.</li><li>Либо нажмите <b>«Поделиться QR»</b>, отправьте картинку на другое устройство и следуйте инструкции ниже.</li></ul><h3>Если сайт или отправленный QR открыт на другом устройстве</h3><ul><li>Установите и откройте <b>AmneziaWG</b> на подключаемом устройстве.</li><li>Нажмите в приложении кнопку добавления подключения и выберите сканирование QR-кода.</li><li>На другом устройстве откройте полученную картинку. Если там открыт сайт, нажмите <b>«QR»</b> в карточке устройства.</li><li>Отсканируйте появившийся код.</li></ul></details>"""
     guide = guide.replace("https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>macOS", "macappstore://apps.apple.com/app/id6478942365'>macOS")
     guide = guide.replace("https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest' target=_blank rel=noopener>Windows", "/download/amneziawg/windows'>Windows")
-    return page(f"Устройства: {user['name']}" if is_admin else f"Привет, {user['name']}", f"{admin_nav() if is_admin else ''}{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
+    return page(f"Устройства: {user['name']}" if is_admin else f"Привет, {user['name']}", f"{admin_nav() if is_admin else '<p class=app-links><a href=/security>Безопасность профиля</a></p>'}<p class=app-links><a href='/accounts/{user['account_id']}/routing'>Маршрутизация аккаунта</a></p>{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
 
 
 @app.get("/admin/users/{phone}/devices", responses=HTTP_RESPONSES)
@@ -595,9 +496,10 @@ def admin_devices(request: Request, phone: str):
 @app.post("/device", responses=HTTP_RESPONSES)
 async def create_device(request: Request, name: str = Form(...), phone: str = Form("")):
     if admin_ok(request) and phone:
-        phone = phone_normalize(phone)
+        account_for_phone(phone)
     else:
         phone = session_phone(request)
+    require_permission(request, "devices.create", account_for_phone(phone))
     name = name.strip()[:40]
     if not name:
         raise HTTPException(400, "Укажите название устройства")
@@ -608,8 +510,8 @@ async def create_device(request: Request, name: str = Form(...), phone: str = Fo
         if not user or (not user['enabled'] and not admin_ok(request)) or count >= user['device_limit']:
             raise HTTPException(403, 'Лимит устройств исчерпан или выдача запрещена')
         client_id = str(uuid.uuid4())
-        con.execute("INSERT INTO devices(phone,name,client_id,created_at,operation) VALUES(?,?,?,?,'create')",
-                    (phone, name, client_id, int(time.time())))
+        con.execute("INSERT INTO devices(phone,name,client_id,created_at,account_id,operation) VALUES(?,?,?,?,?,'create')",
+                    (phone, name, client_id, int(time.time()), user["account_id"]))
     await process_device_operations()
     return device_redirect(request, phone)
 
@@ -687,23 +589,22 @@ async def stop_device_worker():
     await asyncio.gather(app.state.device_worker, return_exceptions=True)
 
 
-def owned_device(request, device_id):
-    administrator = admin_ok(request)
-    phone = None if administrator else session_phone(request)
+def owned_device(request, device_id, action='devices.view'):
     with db() as con:
         row = con.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
-    if not row or (not administrator and row["phone"] != phone):
+    if not row:
         raise HTTPException(404, "Устройство не найдено")
+    require_permission(request, action, row['account_id'])
     return row
 
 
 def device_redirect(request, phone):
-    return RedirectResponse(f"/admin/users/{phone}/devices" if admin_ok(request) else CABINET_PATH, 303)
+    return RedirectResponse(f"/accounts/{account_for_phone(phone)}" if admin_ok(request) else CABINET_PATH, 303)
 
 
 @app.post("/device/{device_id}/rename", responses=HTTP_RESPONSES)
 def rename_device(request: Request, device_id: int, name: str = Form(...)):
-    row = owned_device(request, device_id)
+    row = owned_device(request, device_id, 'devices.rename')
     name = name.strip()[:40]
     if not name:
         raise HTTPException(400, NAME_REQUIRED)
@@ -732,15 +633,18 @@ def save_exit_assignment(con, device_id, exit_id, administrator):
 
 @app.post("/device/{device_id}/update", responses=HTTP_RESPONSES)
 def update_device(request: Request, device_id: int, name: str = Form(...), ru_exit_id: int | None = Form(None)):
-    row = owned_device(request, device_id)
+    row = owned_device(request, device_id, 'devices.rename' if ru_exit_id is None else 'device.exit')
     name = name.strip()[:40]
     if not name:
         raise HTTPException(400, NAME_REQUIRED)
+    if name != row['name']:
+        require_permission(request, 'devices.rename', row['account_id'])
     administrator = admin_ok(request)
     with db() as con:
         con.execute(BEGIN_WRITE)
         if ru_exit_id is not None:
-            validate_exit_assignment(con, row['phone'], administrator, ru_exit_id)
+            require_permission(request, 'device.exit', row['account_id'])
+            validate_exit_assignment(con, row['phone'], True, ru_exit_id)
             current = con.execute('SELECT ru_exit_id FROM devices WHERE id=?', (device_id,)).fetchone()
             # Saving a name must not claim an unchanged administrator assignment.
             if current[0] != (ru_exit_id or None):
@@ -751,18 +655,18 @@ def update_device(request: Request, device_id: int, name: str = Form(...), ru_ex
 
 @app.post("/device/{device_id}/ru-exit", responses=HTTP_RESPONSES)
 def assign_exit(request: Request, device_id: int, ru_exit_id: int = Form(0)):
-    row = owned_device(request, device_id)
+    row = owned_device(request, device_id, 'device.exit')
     administrator = admin_ok(request)
     with db() as con:
         con.execute(BEGIN_WRITE)
-        validate_exit_assignment(con, row['phone'], administrator, ru_exit_id)
+        validate_exit_assignment(con, row['phone'], True, ru_exit_id)
         save_exit_assignment(con, device_id, ru_exit_id, administrator)
     return device_redirect(request, row["phone"])
 
 
 @app.post("/device/{device_id}/delete", responses=HTTP_RESPONSES)
 async def delete_device(request: Request, device_id: int):
-    row = owned_device(request, device_id)
+    row = owned_device(request, device_id, 'devices.delete')
     with db() as con:
         con.execute("UPDATE devices SET operation='delete' WHERE id=?", (device_id,))
     await process_device_operations()
@@ -771,7 +675,7 @@ async def delete_device(request: Request, device_id: int):
 
 @app.get("/device/{device_id}/config", responses=HTTP_RESPONSES)
 async def config(request: Request, device_id: int):
-    row = owned_device(request, device_id)
+    row = owned_device(request, device_id, 'devices.config')
     if row['operation'] != 'applied':
         raise HTTPException(409, 'Изменения устройства ещё применяются')
     async with wg_session() as client:
@@ -785,7 +689,7 @@ async def config(request: Request, device_id: int):
 
 @app.get("/device/{device_id}/qr", responses=HTTP_RESPONSES)
 async def qr(request: Request, device_id: int):
-    row = owned_device(request, device_id)
+    row = owned_device(request, device_id, 'devices.config')
     if row['operation'] != 'applied':
         raise HTTPException(409, 'Изменения устройства ещё применяются')
     async with wg_session() as client:
@@ -812,75 +716,23 @@ async def download_amneziawg_windows(request: Request):
         return RedirectResponse(releases_url, 302, headers={"Cache-Control": "no-store"})
 
 
-@app.get(ADMIN_PATH, responses=HTTP_RESPONSES)
-def admin(request: Request):
-    require_admin(request)
-    with db() as con:
-        users = con.execute("SELECT u.*,count(d.id) device_count FROM users u LEFT JOIN devices d ON d.phone=u.phone GROUP BY u.phone ORDER BY u.name").fetchall()
-    issued_total = sum(user["device_count"] for user in users)
-    allowed_total = sum(user["device_limit"] for user in users)
-    rows = "".join(f"""<form class=user method=post action=/admin/user>
-      <input type=hidden name=original_phone value='{html.escape(x['phone'])}'>
-      <label>Имя<input name=name maxlength=80 value='{html.escape(x['name'])}' required></label>
-      <label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel value='{html.escape(x['phone'])}' required></label>
-      <label><span class=label-row><span>Лимит</span><span class=device-count title='Выдано конфигураций'>{x['device_count']}/{x['device_limit']}</span></span><input name=device_limit type=number min=1 max=20 value='{x['device_limit']}' required></label>
-      <div class=user-footer><label class=check-label><input type=checkbox name=can_change_ru_exit value=1 {'checked' if x['can_change_ru_exit'] else ''}> Смена RU-выхода</label><div class=actions><a class='btn secondary' href='/admin/users/{html.escape(x['phone'])}/devices'>Устройства</a>
-      <button class='secondary{' danger-soft' if x['enabled'] else ''}' formaction='/admin/toggle/{html.escape(x['phone'])}'>{'Запретить выдачу' if x['enabled'] else 'Разрешить выдачу'}</button><button>Сохранить</button></div></div>
-    </form>""" for x in users)
-    number_fields = "".join(f"""<div class=dial-number-row><input class=phone-input name=numbers type=tel autocomplete=off inputmode=tel value='{html.escape(number)}' required><button type=button class='secondary remove-number'>Удалить</button></div>""" for number in dial_numbers())
-    body = f"""
-    <section class=card><div class=section-head><div><h2>Добавить человека</h2><div class=muted>Номер должен совпадать с номером входящего звонка.</div></div></div>
-      <form class=grid method=post action=/admin/user><label>Имя<input name=name placeholder='Вася Пупкин' required></label><label>Телефон<input class=phone-input name=phone type=tel autocomplete=off inputmode=tel placeholder='999 123-45-67' required></label><label>Устройств<input name=device_limit type=number min=1 max=20 value=2 required></label><button>Добавить</button></form>
-    </section>
-    <section class=card><div class=section-head><div><h2>Разрешённые пользователи</h2><div class=muted>{len(users)} пользователей · выдано {issued_total} из {allowed_total} конфигураций · изменения сохраняются отдельно для каждой строки</div></div></div><div class=users>{rows or '<div class=muted>Список пока пуст.</div>'}</div></section>
-    <section class=card><div class=section-head><div><h2>Номера подтверждения Zvonok</h2><div class=muted>Выдаются последовательно по кругу.</div></div><button id=add-dial-number type=button class=secondary>Добавить номер</button></div><form class=stack method=post action=/admin/settings/dial-numbers><div id=dial-numbers>{number_fields}</div><div class=dial-save><button>Сохранить номера</button></div></form></section>
-    <form method=post action=/admin/logout><button class='secondary'>Выйти</button></form>"""
-    return page("Управление доступом", admin_nav() + body, show_header=True, phone_widget=True)
 
 
-@app.post("/admin/user", responses=HTTP_RESPONSES)
-@app.post(ADMIN_PATH, responses=HTTP_RESPONSES)
-def admin_save(request: Request, name: str = Form(...), phone: str = Form(...), device_limit: int = Form(...), original_phone: str = Form(""), can_change_ru_exit: str = Form("")):
-    require_admin(request)
-    phone = phone_normalize(phone)
-    original_phone = phone_normalize(original_phone) if original_phone else ""
-    if not 1 <= device_limit <= 20:
-        raise HTTPException(400)
-    with db() as con:
-        con.execute(BEGIN_WRITE)
-        if original_phone and original_phone != phone:
-            if con.execute("SELECT 1 FROM users WHERE phone=?", (phone,)).fetchone():
-                raise HTTPException(409, "Новый номер уже используется")
-            con.execute("UPDATE users SET phone=? WHERE phone=?", (phone, original_phone))
-            con.execute("UPDATE devices SET phone=? WHERE phone=?", (phone, original_phone))
-            con.execute("UPDATE verifications SET phone=? WHERE phone=?", (phone, original_phone))
-        con.execute("INSERT INTO users(phone,name,device_limit,enabled,created_at) VALUES(?,?,?,1,?) ON CONFLICT(phone) DO UPDATE SET name=excluded.name,device_limit=excluded.device_limit", (phone, name.strip()[:80], device_limit, int(time.time())))
-        con.execute("UPDATE users SET can_change_ru_exit=? WHERE phone=?", (int(can_change_ru_exit == "1"), phone))
-        if can_change_ru_exit != "1":
-            con.execute("UPDATE devices SET ru_exit_id=NULL,assigned_by=NULL WHERE phone=? AND assigned_by='user'", (phone,))
-        changed(con)
-    return RedirectResponse(ADMIN_PATH, 303)
 
 
 @app.post("/admin/settings/dial-numbers", responses=HTTP_RESPONSES)
 def admin_dial_numbers(request: Request, numbers: list[str] = Form(...)):
-    require_admin(request)
+    require_admin(request, 'settings.edit')
     normalized = [phone_normalize(value) for value in numbers if value.strip()]
     if not 1 <= len(normalized) <= 20:
         raise HTTPException(400, "Укажите от 1 до 20 номеров")
     with db() as con:
         con.execute("INSERT INTO settings(key,value) VALUES('dial_numbers',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("\n".join(dict.fromkeys(normalized)),))
         con.execute("INSERT INTO settings(key,value) VALUES('dial_number_index','0') ON CONFLICT(key) DO UPDATE SET value='0'")
+    audit_change(request, 'settings.dial-numbers')
     return RedirectResponse(ADMIN_PATH, 303)
 
 
-@app.post("/admin/toggle/{phone}", responses=HTTP_RESPONSES)
-def admin_toggle(request: Request, phone: str):
-    require_admin(request)
-    phone = phone_normalize(phone)
-    with db() as con:
-        con.execute("UPDATE users SET enabled=1-enabled WHERE phone=?", (phone,))
-    return RedirectResponse(ADMIN_PATH, 303)
 
 
 @app.exception_handler(RequestValidationError)
@@ -899,7 +751,7 @@ def upstream_error(request: Request, exc):
 
 
 def admin_nav(active=ADMIN_PATH):
-    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), (ADMINISTRATORS_PATH, 'Администраторы'), ('/admin/unowned', 'Без владельца')]
+    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), ('/admin/roles', 'Роли и доступ'), ('/admin/login-methods', 'Способы входа'), ('/security', 'Безопасность профиля'), (ADMINISTRATORS_PATH, 'Администраторы'), ('/admin/unowned', 'Без владельца')]
     return '<nav class="app-links admin-nav" aria-label="Администрирование">' + ''.join(
         f'<a href="{path}"' + (' aria-current="page"' if path == active else '') + f'>{label}</a>'
         for path, label in links) + '</nav>'
@@ -924,23 +776,32 @@ def status_text(status):
             'pending': 'Ожидание контроллера', 'stale': 'Контроллер не отвечает'}.get(status.get('state'), 'Ожидает применения')
 
 
-def device_actions(device):
+def device_actions(device, request=None):
     device_id = device['id']
     if device['operation'] != 'applied':
         return '<p class=muted>Создание или удаление ожидает применения</p>'
     name = html.escape(device['name'], quote=True)
-    return f"""<div class=device-actions>
+    result = f"""<div class=device-actions>
       <button type=button class='secondary qr-button' data-qr-url='/device/{device_id}/qr'>QR</button>
       <a class='btn secondary' href='/device/{device_id}/config'>Файл</a>
       <button type=button class='secondary share-button' data-device-id='{device_id}' data-device-name='{name}'>Поделиться QR</button>
       <button type=button class='danger-soft delete-device' data-delete-url='/device/{device_id}/delete' data-device-name='{name}'>Удалить</button>
     </div>"""
+    if request:
+        actor = current_account(request)
+        if not identities.allowed(actor['account_id'], 'devices.config', device['account_id']):
+            result = re.sub(r"<button[^>]*class='secondary (?:qr-button|share-button)'[^>]*>.*?</button>|<a[^>]*href='/device/[^']*/config'[^>]*>.*?</a>", '', result)
+        if not identities.allowed(actor['account_id'], 'devices.delete', device['account_id']):
+            result = re.sub(r"<button[^>]*class='danger-soft delete-device'[^>]*>.*?</button>", '', result)
+        if identities.allowed(actor['account_id'], 'device.routing.view', device['account_id']):
+            result += f"<a class='btn secondary' href='/device/{device_id}/routing'>Маршрутизация</a>"
+    return result
 
 
-def device_routing_forms(devices, user, administrator):
+def device_routing_forms(devices, user, administrator, request=None):
     with db() as con:
         exits = con.execute('SELECT id,name FROM ru_exits ORDER BY id').fetchall()
-        default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
+        default = user['ru_exit_id'] or int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
     names = {x['id']: x['name'] for x in exits}
     status = routing_status()
     result = f'<p class=muted data-routing-state>{html.escape(status_text(status))}</p>' if devices else ''
@@ -950,18 +811,22 @@ def device_routing_forms(devices, user, administrator):
         effective = names.get(actual.get('effective'), UNAVAILABLE_LABEL) if status.get('state') not in {'stale', 'pending'} else 'Неизвестно'
         assigned = names.get(selected, 'По умолчанию: ' + names.get(default, '—'))
         fallback = ' · резервный режим' if actual.get('fallback') else ''
-        result += f"<section class='card device-card'><div class=device-head><h2>{html.escape(device['name'])}</h2>{device_actions(device)}</div><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
+        result += f"<section class='card device-card'><div class=device-head><h2>{html.escape(device['name'])}</h2>{device_actions(device, request)}</div><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
         if not device['vpn_ip']:
             result += '<p class=muted>Ожидает сопоставления VPN-IP</p>'
         if not device['native_enabled']:
             result += '<p class=muted>Устройство отключено или срок действия истёк</p>'
-        result += device_edit_form(device, exits, administrator or user['can_change_ru_exit'])
+        actor = current_account(request) if request else None
+        can_rename = identities.allowed(actor['account_id'], 'devices.rename', device['account_id']) if actor else True
+        can_exit = identities.allowed(actor['account_id'], 'device.exit', device['account_id']) if actor else administrator or user['can_change_ru_exit']
+        if can_rename or can_exit:
+            result += device_edit_form(device, exits, can_exit, can_rename)
         result += '</section>'
     return result
 
 
-def device_edit_form(device, exits, can_change_exit):
-    form = f"<form class='device-form {'device-edit' if can_change_exit else ''}' method=post action='/device/{device['id']}/update'><label>Название<input name=name maxlength=40 value='{html.escape(device['name'], quote=True)}' required></label>"
+def device_edit_form(device, exits, can_change_exit, can_rename=True):
+    form = f"<form class='device-form {'device-edit' if can_change_exit else ''}' method=post action='/device/{device['id']}/update'><label>Название<input name=name maxlength=40 value='{html.escape(device['name'], quote=True)}' {'readonly' if not can_rename else ''} required></label>"
     if can_change_exit:
         options = '<option value="0">По умолчанию</option>' + ''.join(f"<option value='{node['id']}' {'selected' if node['id'] == device['ru_exit_id'] else ''}>{html.escape(node['name'])}</option>" for node in exits)
         form += f'<label>RU-выход<select name=ru_exit_id>{options}</select></label>'
@@ -986,7 +851,7 @@ def device_state_labels(device, names, default, status):
 
 @app.get(RU_EXITS_PATH, responses=HTTP_RESPONSES)
 def ru_exits_page(request: Request):
-    require_admin(request)
+    require_admin(request, 'exits.view')
     with db() as con:
         exits = con.execute('SELECT id,name,legacy,config_file FROM ru_exits ORDER BY id').fetchall()
         default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
@@ -996,7 +861,8 @@ def ru_exits_page(request: Request):
         available = exit_health_label(status, node['id'])
         body += f"<section class=card><h2>{html.escape(node['name'])}{' · По умолчанию' if node['id'] == default else ''}</h2><p data-exit-state='{node['id']}'>{available}</p>"
         body += f"<form class=stack method=post enctype=multipart/form-data action='/admin/ru-exits/{node['id']}'><label>Название<input name=name maxlength=80 value='{html.escape(node['name'], quote=True)}' required></label>"
-        config = html.escape(stored_config_text(RU_CONFIG_DIR, node['config_file']))
+        actor = current_account(request)
+        config = html.escape(stored_config_text(RU_CONFIG_DIR, node['config_file'])) if identities.allowed(actor['account_id'], 'exits.private') else ''
         body += f'<label>Заменить конфиг<input type=file name=config_upload accept=.conf></label><label>Конфиг<textarea name=config_text rows=8 autocomplete=off spellcheck=false placeholder="Загрузите файл или вставьте новый конфиг">{config}</textarea></label><p class="muted config-file-status" role=status>Редактируйте текст и нажмите «Сохранить». Настройки DNS применяются централизованно.</p>'
         body += f"<div class=exit-actions><button class=danger-soft formaction='/admin/ru-exits/{node['id']}/delete' formnovalidate>Удалить</button>"
         body += f"<button class=secondary formaction='/admin/ru-exits/{node['id']}/default' formnovalidate {'disabled' if node['id'] == default else ''}>По умолчанию</button><button>Сохранить</button></div></form></section>"
@@ -1036,7 +902,7 @@ def updated_exit_config(old, endpoint, text):
 @app.post(RU_EXITS_PATH, responses=HTTP_RESPONSES)
 @app.post('/admin/ru-exits/{exit_id}', responses=HTTP_RESPONSES)
 async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...), config_text: str = Form(''), config_upload: UploadFile = File(None)):
-    require_admin(request)
+    require_admin(request, 'exits.edit')
     name = name.strip()[:80]
     if not name:
         raise HTTPException(400, NAME_REQUIRED)
@@ -1054,38 +920,41 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
         if old:
             con.execute('UPDATE ru_exits SET name=?,config_file=?,legacy=? WHERE id=?', (name, filename, legacy, exit_id))
         else:
-            con.execute('INSERT INTO ru_exits(name,config_file) VALUES(?,?)', (name, filename))
+            exit_id = con.execute('INSERT INTO ru_exits(name,config_file) VALUES(?,?)', (name, filename)).lastrowid
         changed(con)
+    audit_change(request, 'exits.save', exit_id)
     return RedirectResponse(RU_EXITS_PATH, 303)
 
 
 @app.post('/admin/ru-exits/{exit_id}/default', responses=HTTP_RESPONSES)
 def default_ru_exit(request: Request, exit_id: int):
-    require_admin(request)
+    require_admin(request, 'exits.default')
     with db() as con:
         con.execute(BEGIN_WRITE)
         if not con.execute('SELECT 1 FROM ru_exits WHERE id=?', (exit_id,)).fetchone():
             raise HTTPException(404, 'RU-выход не найден')
         con.execute("UPDATE settings SET value=? WHERE key='ru_default'", (str(exit_id),))
         changed(con)
+    audit_change(request, 'exits.default', exit_id)
     return RedirectResponse(RU_EXITS_PATH, 303)
 
 
 @app.post('/admin/ru-exits/{exit_id}/delete', responses=HTTP_RESPONSES)
 def delete_ru_exit(request: Request, exit_id: int):
-    require_admin(request)
+    require_admin(request, 'exits.edit')
     with db() as con:
         con.execute(BEGIN_WRITE)
-        if con.execute("SELECT 1 FROM settings WHERE key='ru_default' AND value=?", (str(exit_id),)).fetchone() or con.execute('SELECT 1 FROM devices WHERE ru_exit_id=?', (exit_id,)).fetchone():
+        if con.execute("SELECT 1 FROM settings WHERE key='ru_default' AND value=?", (str(exit_id),)).fetchone() or con.execute('SELECT 1 FROM devices WHERE ru_exit_id=?', (exit_id,)).fetchone() or con.execute('SELECT 1 FROM users WHERE ru_exit_id=?', (exit_id,)).fetchone():
             raise HTTPException(409, 'Сначала снимите назначения и выберите другой выход по умолчанию')
         con.execute('DELETE FROM ru_exits WHERE id=?', (exit_id,))
         changed(con)
+    audit_change(request, 'exits.delete', exit_id)
     return RedirectResponse(RU_EXITS_PATH, 303)
 
 
 @app.get(ROUTING_PATH, responses=HTTP_RESPONSES)
 def routing_page(request: Request):
-    require_admin(request)
+    require_admin(request, 'routing.global')
     with db() as con:
         rules = con.execute('SELECT * FROM routing_rules ORDER BY value').fetchall()
     body = admin_nav(ROUTING_PATH) + f'<p data-routing-state>{html.escape(status_text(routing_status()))}</p><form class="stack routing-form" method=post action=/admin/routing>'
@@ -1098,7 +967,7 @@ def routing_page(request: Request):
 
 @app.post(ROUTING_PATH, responses=HTTP_RESPONSES)
 def save_routing(request: Request, ru: str = Form(''), direct: str = Form('')):
-    require_admin(request)
+    require_admin(request, 'routing.global')
     rules = set()
     try:
         for target, value in [('ru', ru), ('direct', direct)]:
@@ -1114,6 +983,7 @@ def save_routing(request: Request, ru: str = Form(''), direct: str = Form('')):
         con.execute('DELETE FROM routing_rules')
         con.executemany('INSERT INTO routing_rules(target,kind,value) VALUES(?,?,?)', sorted(rules))
         changed(con)
+    audit_change(request, 'routing.global')
     return RedirectResponse(ROUTING_PATH, 303)
 
 
@@ -1128,9 +998,13 @@ def live_routing_status(request: Request, admin_view: bool = False):
     with db() as con:
         names = {r['id']: r['name'] for r in con.execute('SELECT id,name FROM ru_exits')}
         default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
-        devices = con.execute('SELECT id,ru_exit_id FROM devices' + ('' if administrator else ' WHERE phone=?'), () if administrator else (phone,)).fetchall()
-    device_states = {str(device['id']): device_state_labels(device, names, default, status) for device in devices}
-    exits = {str(node_id): exit_health_label(status, node_id) for node_id in names} if administrator else {}
+        devices = con.execute('''SELECT d.id,d.ru_exit_id,d.account_id,u.ru_exit_id account_default
+            FROM devices d LEFT JOIN users u ON u.account_id=d.account_id''' +
+            ('' if administrator else ' WHERE d.phone=?'), () if administrator else (phone,)).fetchall()
+    actor = current_account(request)
+    devices = [device for device in devices if identities.allowed(actor['account_id'], 'devices.view', device['account_id'])]
+    device_states = {str(device['id']): device_state_labels(device, names, device['account_default'] or default, status) for device in devices}
+    exits = {str(node_id): exit_health_label(status, node_id) for node_id in names} if identities.allowed(actor['account_id'], 'exits.view') else {}
     return JSONResponse({'message': status_text(status), 'devices': device_states, 'exits': exits})
 
 
@@ -1139,3 +1013,13 @@ import unowned
 import sys
 admin_auth.register(sys.modules[__name__])
 unowned.register(sys.modules[__name__])
+
+
+def account_for_device(device_id):
+    with db() as con:
+        return con.execute('SELECT account_id FROM devices WHERE id=?', (device_id,)).fetchone()[0]
+
+import access_pages
+import security_pages
+access_pages.register(sys.modules[__name__])
+security_pages.register(sys.modules[__name__])

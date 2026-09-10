@@ -127,6 +127,8 @@ services:
       ZVONOK_DIAL_NUMBERS: ${ZVONOK_DIAL_NUMBERS}
       ZVONOK_SUCCESS_STATUSES: ${ZVONOK_SUCCESS_STATUSES:-processed,success,confirmed,pincode_ok}
       AUTH_DB: /auth/auth.db
+      AUTH_ORIGIN: https://${PORTAL_DOMAIN}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
       AWG_SOCKET: /awg-control/control.sock
     volumes:
       - portal_data:/data

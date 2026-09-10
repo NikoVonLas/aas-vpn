@@ -28,6 +28,7 @@ class Auth:
     def db(self):
         con = sqlite3.connect(self.path, timeout=15)
         con.row_factory = sqlite3.Row
+        con.execute('PRAGMA foreign_keys=ON')
         try:
             con.execute('BEGIN IMMEDIATE')
             yield con
@@ -102,6 +103,22 @@ class Auth:
         self.throttle(username, address)
         with self.db() as con:
             row = con.execute('SELECT * FROM admins WHERE username=?', (username,)).fetchone()
+            if hasattr(self, 'identity'):
+                import identity
+                if not row or not row['enabled'] or not self.password_matches(row['password_hash'], password):
+                    raise ValueError(INVALID)
+                account = con.execute('SELECT * FROM accounts WHERE admin_id=?', (row['id'],)).fetchone()
+                if not account or not account['enabled'] or 'password' not in identity.policy(con, account['id'])['primary']:
+                    raise ValueError(INVALID)
+                methods = ['password']
+                if code:
+                    from login_methods import totp_check
+                    if 'totp' not in identity.policy(con, account['id'])['secondary'] or not totp_check(con, row, code):
+                        raise ValueError(INVALID)
+                    methods.append('totp')
+                token = self.identity.new_session(con, account['id'], methods)
+                con.executemany('DELETE FROM attempts WHERE bucket=?', [(self.digest('user:' + username),), (self.digest('address:' + address),)])
+                return token, 28800
             self.verify(con, row, password, code)
             token = secrets.token_urlsafe(32)
             ttl = int(con.execute("SELECT value FROM settings WHERE key='remember_seconds'").fetchone()[0]) if remember else 28800
@@ -111,6 +128,8 @@ class Auth:
             return token, ttl
 
     def session(self, token):
+        if hasattr(self, 'identity'):
+            return self.identity.session(token, limited=True)
         if not token or len(token) > 128:
             return None
         with self.db() as con:
@@ -122,6 +141,8 @@ class Auth:
     def logout(self, token):
         with self.db() as con:
             con.execute('DELETE FROM sessions WHERE token_hash=?', (self.digest(token),))
+            if hasattr(self, 'identity'):
+                con.execute('DELETE FROM identity_sessions WHERE token_hash=?', (self.digest(token),))
 
     @staticmethod
     def validate_password(password):
@@ -139,6 +160,14 @@ class Auth:
                             (username, HASHER.hash(password), int(must_change)))
             except sqlite3.IntegrityError:
                 raise ValueError('Такой логин уже существует') from None
+        if hasattr(self, 'identity'):
+            import identity
+            self.identity.migrate()
+            with self.db() as con:
+                account = con.execute('SELECT a.id FROM accounts a JOIN admins c ON c.id=a.admin_id WHERE c.username=?', (username,)).fetchone()[0]
+                has_owner = con.execute("SELECT 1 FROM grants WHERE role_id='owner'").fetchone()
+                con.execute('DELETE FROM grants WHERE account_id=?', (account,))
+                identity.grant(con, account, 'administrator' if has_owner else 'owner', 'global')
 
     def change(self, actor_id, target_id, action, password, code, new_password=''):
         if action in {'password', 'reset'}:
@@ -152,6 +181,15 @@ class Auth:
             if action in {'password', 'totp-start', 'totp-disable'} and actor_id != target_id:
                 raise ValueError('Это действие доступно только владельцу аккаунта')
             self.apply_change(con, target, action, new_password)
+            if hasattr(self, 'identity'):
+                import identity
+                identity.ensure_owner(con)
+                identity.ensure_login_paths(con)
+                account_id = con.execute('SELECT id FROM accounts WHERE admin_id=?', (target_id,)).fetchone()[0]
+                if action != 'totp-start':
+                    con.execute('DELETE FROM identity_sessions WHERE account_id=?', (account_id,))
+                actor_account = con.execute('SELECT id FROM accounts WHERE admin_id=?', (actor_id,)).fetchone()[0]
+                identity.audit(con, actor_account, 'credentials.' + action, account_id)
 
     @staticmethod
     def apply_change(con, target, action, password):
@@ -183,6 +221,9 @@ class Auth:
             con.execute('UPDATE admins SET totp_key=pending_totp,totp_verified=1,pending_totp=NULL,last_totp=? WHERE id=?',
                         (int(time.time()) // 30, admin_id))
             con.execute(REVOKE_SESSIONS, (admin_id,))
+            if hasattr(self, 'identity'):
+                con.execute('UPDATE accounts SET voluntary_2fa=1 WHERE admin_id=?', (admin_id,))
+                con.execute('DELETE FROM identity_sessions WHERE account_id=(SELECT id FROM accounts WHERE admin_id=?)', (admin_id,))
 
 
 def main():
@@ -192,6 +233,11 @@ def main():
     args = parser.parse_args()
     store = Auth(os.getenv('AUTH_DB', '/auth/auth.db'))
     store.initialize()
+    main_path = os.getenv('PORTAL_DB', '/data/portal.db')
+    if Path(main_path).is_file():
+        from identity import Identity
+        store.identity = Identity(store, main_path)
+        store.identity.initialize()
     password = getpass.getpass('New password: ')
     if password != getpass.getpass('Repeat password: '):
         raise SystemExit('Passwords differ')
@@ -206,6 +252,16 @@ def main():
             con.execute('UPDATE admins SET password_hash=?,enabled=1,must_change=0,totp_key=NULL,totp_verified=0,last_totp=-1,pending_totp=NULL WHERE id=?',
                         (HASHER.hash(password), row['id']))
             con.execute(REVOKE_SESSIONS, (row['id'],))
+            if hasattr(store, 'identity'):
+                from identity import audit, grant
+                account = con.execute('SELECT id FROM accounts WHERE admin_id=?', (row['id'],)).fetchone()[0]
+                con.execute('UPDATE accounts SET enabled=1,voluntary_2fa=0 WHERE id=?', (account,))
+                for table in ('identity_sessions', 'passkeys', 'backup_codes', 'recovery_codes', 'challenges'):
+                    con.execute(f'DELETE FROM {table} WHERE account_id=?', (account,))
+                con.execute('''INSERT OR IGNORE INTO roles VALUES('ssh-recovery','Восстановление через SSH',
+                    '[]','["password"]','["totp","webauthn"]',0,0)''')
+                grant(con, account, 'ssh-recovery')
+                audit(con, 'ssh', 'recovery.ssh', account)
     print('Administrator updated; existing sessions revoked on recovery')
 
 

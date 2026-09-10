@@ -22,6 +22,9 @@ sys.path.insert(0, str(ROOT / 'router'))
 def portal(tmp_path, monkeypatch):
     monkeypatch.chdir(ROOT / 'portal')
     monkeypatch.setenv('COOKIE_DOMAIN', '.example.test')
+    monkeypatch.setenv('AUTH_ORIGIN', 'https://portal.example.test')
+    monkeypatch.setenv('ZVONOK_PUBLIC_KEY', 'test-provider-key')
+    monkeypatch.setenv('ZVONOK_CAMPAIGN_ID', 'fixture')
     monkeypatch.setenv('PORTAL_DB', str(tmp_path / 'portal.db'))
     monkeypatch.setenv('AUTH_DB', str(tmp_path / 'auth.db'))
     monkeypatch.setenv('RU_CONFIG_DIR', str(tmp_path / 'configs'))
@@ -30,25 +33,28 @@ def portal(tmp_path, monkeypatch):
     app = importlib.import_module('app')
     app = importlib.reload(app)
     with TestClient(app.app, base_url='https://portal.example.test', follow_redirects=False) as client:
-        with app.auth_store.db() as con:
-            con.execute("INSERT INTO admins(id,username,password_hash) VALUES(1,'admin',?)", (app.password_hasher.hash('test-password'),))
+        app.auth_store.add('admin', 'test-password', must_change=False)
         with app.db() as con:
             con.executemany('INSERT INTO users(phone,name,device_limit,enabled,created_at) VALUES(?,?,3,1,0)', [('+79990000001', 'Первый'), ('+79990000002', 'Второй')])
             con.executemany('INSERT INTO devices(phone,name,client_id,created_at,vpn_ip) VALUES(?,?,?,0,?)', [('+79990000001', 'phone1', '41', '10.8.0.2'), ('+79990000002', 'phone2', '42', '10.8.0.3')])
+        app.identities.migrate()
         client.get('/admin/login')
         yield app, client
 
 
 def admin_login(app, client):
-    token = secrets.token_urlsafe(32)
     with app.auth_store.db() as con:
-        con.execute('INSERT INTO sessions VALUES(?,?,?)', (app.auth_store.digest(token), 1, int(time.time()) + 3600))
+        key = con.execute('SELECT id FROM accounts WHERE admin_id=1').fetchone()[0]
+        token = app.identities.new_session(con, key, ['password'])
     client.cookies.set(app.auth.COOKIE, token, domain='portal.example.test')
 
 
 def phone_login(app, client, phone='+79990000001'):
     client.cookies.clear()
-    client.cookies.set('aas_session', app.phone_signer().dumps({'phone': phone}))
+    with app.auth_store.db() as con:
+        key = con.execute('SELECT id FROM accounts WHERE phone=?', (phone,)).fetchone()[0]
+        token = app.identities.new_session(con, key, ['phone'])
+    client.cookies.set(app.auth.COOKIE, token, domain='portal.example.test')
     client.get('/cabinet')
 
 

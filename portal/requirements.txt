@@ -7,3 +7,4 @@ pillow==11.3.0
 python-multipart==0.0.20
 itsdangerous==2.2.0
 argon2-cffi==25.1.0
+webauthn==3.0.0
