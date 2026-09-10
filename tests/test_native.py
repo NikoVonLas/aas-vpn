@@ -200,7 +200,7 @@ def test_portal_pending_creation_recovers_without_new_identity(portal, monkeypat
     assert len(set(identities)) == 1
 
 
-def test_totp_enrollment_and_unowned_permissions(portal, monkeypatch):
+def test_totp_enrollment_and_import_assignment(portal, monkeypatch):
     app, client = portal
     admin_login(app, client)
     path = '/security'
@@ -217,11 +217,11 @@ def test_totp_enrollment_and_unowned_permissions(portal, monkeypatch):
     admin_login(app, client)
     rows = [{'id':'999','name':'Imported','ipv4Address':'10.8.0.9','applied':True}]
     monkeypatch.setattr(app, 'wg_session', lambda: httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=rows)), base_url='http://controller'))
-    assert 'Imported' in client.get('/admin/unowned').text
+    assert client.get('/admin/unowned').status_code == 404
     assert post(client, '/admin/unowned/999/assign', {'phone':'+79990000001'}).status_code == 303
-    assert 'Imported' not in client.get('/admin/unowned').text
+    assert 'Imported' in client.get('/admin/users/+79990000001/devices').text
     phone_login(app, client)
-    assert client.get('/admin/unowned').status_code == 403
+    assert client.get('/admin/unowned').status_code == 404
     assert post(client, '/admin/unowned/999/assign', {'phone':'+79990000002'}).status_code == 403
 
 

@@ -14,7 +14,6 @@ for (const [name, path, active] of [
   ['exits', '/admin/ru-exits', 'RU-выходы'],
   ['routing', '/admin/routing', 'Маршрутизация'],
   ['administrators', '/admin/administrators', 'Администраторы'],
-  ['unowned', '/admin/unowned', 'Без владельца'],
   ['roles', '/admin/roles', 'Роли и доступ'],
   ['login-methods', '/admin/login-methods', 'Способы входа'],
   ['devices', '/admin/users/+79990000001/devices', 'Пользователи'],
@@ -23,6 +22,7 @@ for (const [name, path, active] of [
     await login(page);
     await page.goto(path);
     await page.evaluate(() => document.fonts.ready);
+    await expect(page.getByRole('link', { name: 'Без владельца', exact: true })).toHaveCount(0);
     await expect(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const current = page.locator('nav [aria-current=page]');

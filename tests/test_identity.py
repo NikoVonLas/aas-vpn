@@ -86,7 +86,7 @@ def test_operator_http_scope_filters_lists_status_and_secrets(portal):
     assert 'Второй' in page
     assert 'admin</h2>' not in page
     assert set(client.get('/routing/status').json()['devices']) == {'1', '2'}
-    for path in ['/admin/roles', '/admin/login-methods', '/admin/administrators', '/admin/unowned', '/admin/ru-exits', '/admin/routing']:
+    for path in ['/admin/roles', '/admin/login-methods', '/admin/administrators', '/admin/ru-exits', '/admin/routing']:
         assert client.get(path).status_code == 403, path
     assert post(client, '/admin/accounts', {'name': 'No', 'username': 'no', 'password': 'never-allow-this', 'device_limit': 2}).status_code == 403
 

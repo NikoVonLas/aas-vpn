@@ -1,16 +1,9 @@
 """Administrator-only access to imported clients without a telephone owner."""
-import html
 import re
 
 from fastapi import Form, HTTPException, Request
 
 PATH = '/admin/unowned'
-
-
-def can_assign(portal, actor, user):
-    account_id = portal.account_for_phone(user['phone'])
-    return all(portal.identities.allowed(actor['account_id'], action, account_id)
-               for action in ('accounts.view', 'devices.create'))
 
 
 def register(portal):
@@ -30,25 +23,6 @@ def register(portal):
         if not row:
             raise HTTPException(404)
         return row
-
-    @portal.app.get(PATH)
-    async def listing(request: Request):
-        rows = await clients(request)
-        with portal.db() as con:
-            users = con.execute('SELECT phone,name FROM users ORDER BY name').fetchall()
-        actor = portal.current_account(request)
-        users = [user for user in users if can_assign(portal, actor, user)]
-        options = ''.join(f'<option value="{html.escape(user["phone"], quote=True)}">{html.escape(user["name"])}</option>' for user in users)
-        body = portal.admin_nav(PATH)
-        if not rows:
-            body += '<section class=card><p>Все устройства назначены пользователям.</p></section>'
-        for row in rows:
-            client_id = str(row['id'])
-            body += f'<section class=card><h2>{html.escape(row["name"])}</h2><p>{html.escape(row["ipv4Address"])}</p>'
-            body += f"""<form class=device-form method=post action='{PATH}/{client_id}/assign'>
-                <label>Пользователь<select name=phone required>{options}</select></label><button>Сохранить</button></form>
-                <p class=muted>Назначение учитывает лимит устройств пользователя.</p></section>"""
-        return portal.page('Без владельца', body, show_header=True)
 
     @portal.app.post(PATH + '/{client_id}/assign')
     async def assign(request: Request, client_id: str, phone: str = Form(...)):
