@@ -98,10 +98,13 @@ class SecurityPages:
             raise ValueError('Проверьте реквизиты и доступность способа входа')
         return dict(rows[0])
 
+    def normalize_address(self, method, identifier):
+        return self.p.phone_normalize(identifier) if method == 'phone' else identifier.strip().lower()
+
     def enrollment_address(self, method, identifier):
+        address = self.normalize_address(method, identifier)
         if method == 'phone':
-            return self.p.phone_normalize(identifier)
-        address = identifier.strip().lower()
+            return address
         if '@' not in address or len(address) > 254 or '\n' in address or '\r' in address:
             raise ValueError('Укажите корректный адрес почты')
         return address
@@ -111,7 +114,7 @@ class SecurityPages:
             raise ValueError('Неизвестный способ')
         payload = {}
         if purpose == 'login':
-            address = self.p.phone_normalize(identifier) if method == 'phone' else identifier.strip().lower()
+            address = self.normalize_address(method, identifier)
             account = self.lookup(address, method)
             if account[method] != address:
                 raise ValueError('Проверьте реквизиты')
