@@ -302,3 +302,36 @@ def test_security_page_preserves_mfa_and_module_tls_selection(portal):
         con.execute('UPDATE providers SET config=? WHERE id=\'email\'', (json.dumps({'tls': 'implicit'}),))
     assert 'value=implicit selected' in client.get('/admin/login-methods').text
     assert client.get('/admin/roles').status_code == 200
+
+
+def test_maintenance_allows_signin_checks_but_freezes_device_changes(portal, monkeypatch):
+    from pathlib import Path
+    import pyotp
+    from login_methods import ZvonokProvider
+    app, client = portal
+    secret = pyotp.random_base32()
+    with app.auth_store.db() as con:
+        con.execute('UPDATE admins SET totp_key=?,totp_verified=1 WHERE id=1', (secret,))
+        con.execute('UPDATE roles SET require_2fa=1 WHERE id=\'owner\'')
+    Path(app.DB).with_name('maintenance').touch()
+    response = post(client, '/login/password', {'username': 'admin', 'password': 'test-password'})
+    assert response.headers['location'] == '/security'
+    response = post(client, '/security/second', {'method': 'totp', 'code': pyotp.TOTP(secret).now()})
+    assert response.headers['location'] == '/admin'
+    assert client.get('/admin').status_code == 200
+    assert post(client, '/device/1/update', {'name': 'Blocked'}).status_code == 503
+
+    async def begin(config, address, code, link):
+        return {'phone': address, 'call_id': 'fixture', 'dial': '+79990000003'}
+
+    async def verify(config, payload):
+        return True
+
+    monkeypatch.setattr(ZvonokProvider, 'begin', staticmethod(begin))
+    monkeypatch.setattr(ZvonokProvider, 'verify', staticmethod(verify))
+    client.cookies.clear()
+    client.get('/')
+    response = post(client, '/login/start', {'method': 'phone', 'identifier': '+79990000001'})
+    assert response.status_code == 303
+    assert post(client, response.headers['location']).headers['location'] == '/cabinet'
+    assert client.get('/cabinet').status_code == 200
