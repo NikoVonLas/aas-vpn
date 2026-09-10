@@ -23,12 +23,15 @@ def local_path(value, fallback='/cabinet'):
     return parsed.path + ('?' + parsed.query if parsed.query else '')
 
 
-def render(template, **values):
+def render(template, *, form_action='', **values):
     request = request_context.get()
     token = getattr(request.state, 'csrf_token', '') if request else ''
     draft = getattr(request.state, 'form_draft', {}) if request else {}
     errors = getattr(request.state, 'field_errors', {}) if request else {}
     failed = getattr(request.state, 'form_failed', False) if request else False
+    if form_action and (request is None or request.url.path != form_action):
+        failed = False
+        errors = {}
     def form_value(name, default=''):
         return draft[name][0] if failed and name in draft and draft[name] else default
     def form_checked(name, value, default=False):

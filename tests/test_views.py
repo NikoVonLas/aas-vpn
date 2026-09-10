@@ -134,3 +134,18 @@ def test_field_validation_keeps_public_values_without_partial_save(portal):
     assert 'Введите целое число' in response.text
     with app.db() as con:
         assert con.execute('SELECT name FROM users WHERE account_id=?', (key,)).fetchone()[0] == 'Первый'
+
+
+def test_invalid_device_draft_only_changes_the_submitted_form(portal):
+    app, client = portal
+    admin_login(app, client)
+    with app.db() as con:
+        owner = con.execute('SELECT phone,account_id FROM devices WHERE id=1').fetchone()
+        con.execute('INSERT INTO devices(phone,account_id,name,client_id,created_at,vpn_ip) VALUES(?,?,?,?,0,?)',
+                    (owner['phone'], owner['account_id'], 'Соседняя карточка', '43', '10.8.0.4'))
+    response = post(client, '/device/1/update', {'name': 'Черновик устройства', 'ru_exit_id': 'invalid'})
+    assert response.status_code == 422
+    assert response.text.count('value="Черновик устройства"') == 1
+    assert 'value="Соседняя карточка"' in response.text
+    with app.db() as con:
+        assert con.execute('SELECT name FROM devices WHERE id=1').fetchone()[0] == 'phone1'

@@ -788,7 +788,7 @@ def permitted_device_form(device, exits, user, administrator, request):
 
 
 def device_edit_form(device, exits, can_change_exit, can_rename=True):
-    return render('components/device_form.html', device=device, exits=exits,
+    return render('components/device_form.html', form_action=f"/device/{device['id']}/update", device=device, exits=exits,
                   can_change_exit=can_change_exit, can_rename=can_rename)
 
 

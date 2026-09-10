@@ -101,4 +101,11 @@ test('screen login and account field errors', async ({ page }) => {
   await expect(page.locator('[name=name]')).toHaveValue('Новый пользователь');
   await expect(page.locator('[name=password]')).toHaveValue('');
   await expect(page).toHaveScreenshot('account-error.png', { fullPage: true });
+  await page.goto('/admin/users/+79990000001/devices');
+  const device = page.locator('form[action="/device/1/update"]');
+  await device.locator('[name=name]').fill('   ');
+  await device.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.locator('form[action="/device/2/update"] [name=name]')).toHaveValue('Телефон с длинным названием устройства');
+  await expect(page).toHaveScreenshot('device-error.png', { fullPage: true });
 });
