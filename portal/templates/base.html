@@ -9,10 +9,10 @@
 <script src="/assets/js/forms.js" defer></script>
 <script src="/assets/js/routing-status.js" defer></script><script src="/assets/js/config-editor.js" defer></script>
 <script src="/assets/js/dialogs.js" defer></script></head>
-<body class="{% if not show_header %}auth-page{% endif %}{% if wide %} wide-page{% endif %}">
+<body class="{% if not show_header %}auth-page{% endif %}">
 <a class="visually-hidden-focusable" href="#content">К содержимому</a>
 <header class="topbar"><a class="brand" href="{{ '/cabinet' if actor else '/' }}"><span class="logo">A+</span><span>AAS VPN</span></a>
-{% if actor %}<div class="header-actions"><a href="/security" {% if active == '/security' %}aria-current="page"{% endif %}>Профиль</a><form method="post" action="/admin/logout">{{ csrf() }}{{ button('Выйти', 'secondary') }}</form></div>{% endif %}</header>
+{% if actor %}<div class="header-actions"><a href="/security">Профиль</a><form method="post" action="/admin/logout">{{ csrf() }}{{ button('Выйти', 'secondary') }}</form></div>{% endif %}</header>
 {% if navigation %}<nav class="navbar navbar-expand-md" aria-label="Администрирование"><button class="btn secondary navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navigation" aria-controls="navigation" aria-expanded="false">Меню · {{ active_label }}</button><div class="collapse navbar-collapse" id="navigation"><div class="app-links admin-nav">{% for path, label in navigation %}<a class="nav-link" href="{{ path }}" {% if path == active %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</div></div></nav>{% endif %}
 <main id="content"><h1>{{ title }}</h1>{% if form_error %}<p class="alert alert-secondary" role="alert">{{ form_error }}</p>{% endif %}{{ body }}</main>
 <div class="modal fade" id="qr-dialog" tabindex="-1" aria-labelledby="qr-title" aria-hidden="true"><div class="modal-dialog modal-dialog-centered"><div class="modal-content"><div class="modal-header"><h2 class="modal-title" id="qr-title">QR-код подключения</h2></div><div class="modal-body"><img id="qr-image" alt="QR-код подключения"></div><div class="modal-footer"><button class="btn secondary" type="button" data-bs-dismiss="modal">Закрыть</button></div></div></div></div>

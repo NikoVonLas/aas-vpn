@@ -168,13 +168,13 @@ def startup():
     RU_CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
-def page(title, body, show_header=False, wide=False):
+def page(title, body, show_header=False):
     request = request_context.get()
     actor = identities.session(request.cookies.get(auth.COOKIE, ''), limited=True) if request else None
     navigation = navigation_model(actor) if show_header and actor and actor['ready'] and not actor['must_change'] else []
     active = getattr(request.state, 'active_section', '') if request else ''
     return HTMLResponse(render('base.html', title=title, body=body, show_header=show_header,
-                               wide=wide, actor=actor,
+                               actor=actor,
                                navigation=navigation, active=active,
                                active_label=dict(navigation).get(active, 'Разделы')))
 
@@ -446,9 +446,9 @@ def cabinet(request: Request, phone: str = ""):
     rows = device_routing_forms(devices, user, is_admin, request)
     actor = current_account(request)
     can_create = len(devices) < user['device_limit'] and identities.allowed(actor['account_id'], 'devices.create', user['account_id'])
-    admin_nav(ADMIN_PATH if is_admin else CABINET_PATH)
-    return page(f"Устройства: {user['name']}" if is_admin else f"Привет, {user['name']}",
-                render('cabinet.html', user=user, is_admin=is_admin, can_create=can_create,
+    managed = account_navigation(request, user['account_id'])
+    return page(f"Устройства: {user['name']}" if managed else "Мои устройства",
+                render('cabinet.html', user=user, is_admin=is_admin, managed=managed, can_create=can_create,
                        can_route=identities.allowed(actor['account_id'], 'account.routing.view', user['account_id']),
                        count=len(devices), cards=rows), show_header=True)
 
@@ -565,7 +565,9 @@ def owned_device(request, device_id, action='devices.view'):
 
 
 def device_redirect(request, phone):
-    return RedirectResponse(f"/accounts/{account_for_phone(phone)}" if admin_ok(request) else CABINET_PATH, 303)
+    account_id = account_for_phone(phone)
+    own_account = current_account(request)['account_id'] == account_id
+    return RedirectResponse(CABINET_PATH if own_account else f"/accounts/{account_id}", 303)
 
 
 @app.post("/device/{device_id}/rename", responses=HTTP_RESPONSES)
@@ -738,6 +740,13 @@ def admin_nav(active=ADMIN_PATH):
     request = request_context.get()
     if request:
         request.state.active_section = active
+
+
+def account_navigation(request, account_id):
+    """Resource ownership determines the section, independently of actor privileges."""
+    managed = current_account(request)['account_id'] != account_id
+    admin_nav(ADMIN_PATH if managed else CABINET_PATH)
+    return managed
 
 
 def routing_status():

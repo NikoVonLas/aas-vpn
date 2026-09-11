@@ -1,4 +1,5 @@
 const { defineConfig } = require('@playwright/test');
+const baseURL = `https://localhost:${process.env.AAS_UI_PORT || '8765'}`;
 
 module.exports = defineConfig({
   testDir: '.',
@@ -7,7 +8,7 @@ module.exports = defineConfig({
   workers: 1,
   retries: 0,
   reporter: [['list'], ['html', { open: 'never' }]],
-  use: { baseURL: 'https://localhost:8765', ignoreHTTPSErrors: true, locale: 'ru-RU', reducedMotion: 'reduce', trace: 'retain-on-failure' },
+  use: { baseURL, ignoreHTTPSErrors: true, locale: 'ru-RU', reducedMotion: 'reduce', trace: 'retain-on-failure' },
   expect: { toHaveScreenshot: { animations: 'disabled', maxDiffPixelRatio: 0.002 } },
   projects: [
     { name: 'firefox', testMatch: 'functional.spec.cjs', use: { browserName: 'firefox', viewport: { width: 390, height: 844 } } },
@@ -23,7 +24,7 @@ module.exports = defineConfig({
   ],
   webServer: {
     command: `${process.env.PYTHON || 'python3'} server.py`,
-    url: 'https://localhost:8765/healthz',
+    url: `${baseURL}/healthz`,
     ignoreHTTPSErrors: true,
     reuseExistingServer: false,
     timeout: 30000,

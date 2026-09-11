@@ -139,7 +139,7 @@ class AccessPages:
             account_default = account['ru_exit_id']
         path = f'/device/{key}/routing' if scope == 'device' else f'/accounts/{key}/routing'
         editable = self.p.identities.allowed(actor['account_id'], f'{scope}.routing.edit', resource['account_id'])
-        self.p.admin_nav(ACCOUNTS_PATH if self.p.admin_ok(request) else '/cabinet')
+        managed = self.p.account_navigation(request, resource['account_id'])
         can_exit = scope == 'account' and self.p.identities.allowed(actor['account_id'], ACCOUNT_EXIT, resource['account_id'])
         values = lambda source: {target: rules_text(source, target) for target in ('ru', 'direct')}
         editor = render('components/routing_editor.html', path=path, values=values(rows), editable=editable,
@@ -150,8 +150,8 @@ class AccessPages:
         actual = self.p.device_state_labels(resource, {int(k): v for k, v in names.items()}, account_default or int(default), status) if scope == 'device' else ''
         inherited_sources = [('Аккаунт', values(inherited))] if scope == 'device' else []
         inherited_sources.append(('Глобальные правила', values(global_rules)))
-        crumbs = [('Пользователи', ACCOUNTS_PATH), (account['name'], f"/accounts/{resource['account_id']}/edit")] if self.p.admin_ok(request) else [('Мои устройства', '/cabinet')]
-        if scope == 'device':
+        crumbs = [('Пользователи', ACCOUNTS_PATH), (account['name'], f"/accounts/{resource['account_id']}/edit")] if managed else [('Мои устройства', '/cabinet')]
+        if scope == 'device' and managed:
             crumbs.append((DEVICES_LABEL, f"/accounts/{resource['account_id']}"))
         crumbs.append((ROUTING_LABEL, ''))
         return self.p.page(ROUTING_LABEL, render('routing.html', level='Устройство' if scope == 'device' else 'Аккаунт',
@@ -219,7 +219,7 @@ class AccessPages:
         return self.p.page('Пользователи', render('accounts.html', rows=rows[(current-1)*25:current*25], total=total,
                            device_count=sum(row['device_count'] for row in rows), query=query, state=state, selected_role=role,
                            role_options=role_options, current_page=current, pages=pages, page_links=links,
-                           can_create=self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT)), show_header=True, wide=True)
+                           can_create=self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT)), show_header=True)
 
     def new_account(self, request: Request):
         self.p.require_permission(request, CREATE_ACCOUNT)

@@ -149,3 +149,19 @@ def test_invalid_device_draft_only_changes_the_submitted_form(portal):
     assert 'value="Соседняя карточка"' in response.text
     with app.db() as con:
         assert con.execute('SELECT name FROM devices WHERE id=1').fetchone()[0] == 'phone1'
+
+
+def test_privileges_do_not_change_personal_device_navigation(portal):
+    import re
+    app, client = portal
+    _, first, second = accounts(app)
+    give(app, first, 'observer', 'selected', [second])
+    phone_login(app, client)
+    personal = ['/cabinet', '/accounts/' + first, '/accounts/' + first + '/routing', '/device/1/routing']
+    managed = ['/accounts/' + second, '/accounts/' + second + '/routing', '/device/2/routing']
+    for path in personal + managed:
+        response = client.get(path)
+        assert response.status_code == 200
+        active = re.findall(r'<a[^>]*aria-current="page"[^>]*>([^<]+)</a>', response.text)
+        assert active == ['Мои устройства' if path in personal else 'Пользователи']
+    assert post(client, '/device/1/update', {'name': 'phone1'}).headers['location'] == '/cabinet'

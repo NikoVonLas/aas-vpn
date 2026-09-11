@@ -93,3 +93,43 @@ test('theme tokens meet text and focus contrast', async ({ page }) => {
   expect(contrast(colors['--focus'], colors['--card'])).toBeGreaterThanOrEqual(3);
   expect(contrast('#ffffff', colors['--red'])).toBeGreaterThanOrEqual(4.5);
 });
+
+async function openNavigation(page) {
+  const menu = page.getByRole('button', { name: /^Меню/ });
+  if (await menu.isVisible()) await menu.click();
+}
+
+test('navigation links select their destination and keep the same content width', async ({ page }) => {
+  await login(page);
+  const dimensions = [];
+  for (const [label, path, heading] of [
+    ['Мои устройства', '/cabinet', 'Мои устройства'],
+    ['Пользователи', '/admin', 'Пользователи'],
+    ['RU-выходы', '/admin/ru-exits', 'RU-выходы'],
+    ['Маршрутизация', '/admin/routing', 'Маршрутизация'],
+    ['Роли и доступ', '/admin/roles', 'Роли и доступ'],
+    ['Способы входа', '/admin/login-methods', 'Способы входа'],
+    ['Безопасность профиля', '/security', 'Безопасность профиля'],
+  ]) {
+    await openNavigation(page);
+    await page.locator('.admin-nav').getByRole('link', { name: label, exact: true }).click();
+    expect(new URL(page.url()).pathname).toBe(path);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(heading);
+    const active = page.locator('[aria-current=page]');
+    await expect(active).toHaveCount(1);
+    await expect(active).toHaveText(label);
+    await expect(active).toHaveCSS('background-color', 'rgb(185, 28, 28)');
+    dimensions.push(await page.locator('main').evaluate(node => ({ width: node.getBoundingClientRect().width, left: node.getBoundingClientRect().left })));
+  }
+  for (const dimension of dimensions) expect(dimension).toEqual(dimensions[0]);
+  await page.getByRole('link', { name: 'Профиль', exact: true }).click();
+  await expect(page.locator('[aria-current=page]')).toHaveText('Безопасность профиля');
+  await openNavigation(page);
+  await page.locator('.admin-nav').getByRole('link', { name: 'Пользователи', exact: true }).click();
+  await page.locator('.account-row').filter({ hasText: 'Александр Константинопольский' }).click();
+  const editor = await page.locator('main').evaluate(node => ({ width: node.getBoundingClientRect().width, left: node.getBoundingClientRect().left }));
+  expect(editor).toEqual(dimensions[0]);
+  await expect(page.locator('[aria-current=page]')).toHaveText('Пользователи');
+  await page.getByRole('link', { name: 'Устройства', exact: true }).click();
+  await expect(page.locator('[aria-current=page]')).toHaveText('Пользователи');
+});

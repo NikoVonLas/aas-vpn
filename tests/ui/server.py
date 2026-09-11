@@ -14,11 +14,12 @@ import uvicorn
 import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
+PORT = int(os.environ.get('AAS_UI_PORT', '8765'))
 temporary = tempfile.TemporaryDirectory(prefix='aas-ui-')
 data = Path(temporary.name)
 os.environ.update(COOKIE_DOMAIN='localhost', PORTAL_DB=str(data / 'portal.db'),
                   AUTH_DB=str(data / 'auth.db'), RU_CONFIG_DIR=str(data / 'configs'),
-                  ROUTER_STATUS=str(data / 'missing-status.json'), AWG_API_URL='http://127.0.0.1:1', AUTH_ORIGIN='https://localhost:8765',
+                  ROUTER_STATUS=str(data / 'missing-status.json'), AWG_API_URL='http://127.0.0.1:1', AUTH_ORIGIN=f'https://localhost:{PORT}',
                   ZVONOK_PUBLIC_KEY='fixture-key', ZVONOK_CAMPAIGN_ID='fixture')
 os.chdir(ROOT / 'portal')
 sys.path.insert(0, str(ROOT / 'portal'))
@@ -163,4 +164,4 @@ if __name__ == '__main__':
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                     '-keyout', str(private_key), '-out', str(certificate), '-subj', '/CN=localhost',
                     '-addext', 'subjectAltName=DNS:localhost'], check=True, capture_output=True)
-    uvicorn.run(portal.app, host='127.0.0.1', port=8765, log_level='warning', ssl_certfile=str(certificate), ssl_keyfile=str(private_key))
+    uvicorn.run(portal.app, host='127.0.0.1', port=PORT, log_level='warning', ssl_certfile=str(certificate), ssl_keyfile=str(private_key))

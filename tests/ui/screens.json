@@ -22,6 +22,10 @@
       ]
     },
     {
+      "name": "own-devices",
+      "path": "/cabinet"
+    },
+    {
       "name": "account-new",
       "path": "/accounts/new",
       "templates": [
