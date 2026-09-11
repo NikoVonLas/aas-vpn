@@ -59,7 +59,8 @@ def test_phone_account_creation_follows_user_policy(portal):
     assert response.status_code == 303
     with app.auth_store.db() as con:
         row = con.execute("SELECT * FROM accounts WHERE phone='+79990000005'").fetchone()
-        assert row and row['admin_id'] is None
+        assert row is not None
+        assert row['admin_id'] is None
         assert identity.policy(con, row['id'])['primary'] == {'phone'}
     assert 'Телефон для входа' in client.get('/accounts/new').text
 
@@ -111,9 +112,31 @@ def test_merge_conflict_rolls_back_both_databases(portal, conflict):
             con.execute("UPDATE providers SET enabled=0 WHERE id='zvonok'")
         before_accounts = [tuple(row) for row in con.execute('SELECT * FROM accounts')]
         before_devices = [tuple(row) for row in con.execute('SELECT * FROM portal.devices')]
-    with pytest.raises(ValueError):
+    def merge():
         with app.identities.transaction() as con:
             configure_server(con, '+79990000001')
+    with pytest.raises(ValueError):
+        merge()
     with app.identities.transaction() as con:
         assert before_accounts == [tuple(row) for row in con.execute('SELECT * FROM accounts')]
         assert before_devices == [tuple(row) for row in con.execute('SELECT * FROM portal.devices')]
+
+
+def test_merge_command_dry_run_then_apply(portal):
+    import subprocess
+    import sys
+    from conftest import ROOT
+    app, _ = portal
+    target, source, _ = accounts(app)
+    command = [sys.executable, str(ROOT / 'portal/account_merge.py'), '--auth-db', str(app.auth_store.path),
+               '--portal-db', str(app.DB), '--phone', '+79990000001']
+    preview = subprocess.run(command, capture_output=True, text=True, check=True)
+    assert json.loads(preview.stdout)['applied'] is False
+    with app.identities.transaction() as con:
+        assert con.execute('SELECT id FROM accounts WHERE phone=?', ('+79990000001',)).fetchone()[0] == source
+        assert con.execute('SELECT account_id FROM portal.devices WHERE id=1').fetchone()[0] == source
+    applied = subprocess.run([*command, '--apply'], capture_output=True, text=True, check=True)
+    assert json.loads(applied.stdout)['applied'] is True
+    with app.identities.transaction() as con:
+        assert con.execute('SELECT id FROM accounts WHERE phone=?', ('+79990000001',)).fetchone()[0] == target
+        assert con.execute('SELECT account_id FROM portal.devices WHERE id=1').fetchone()[0] == target

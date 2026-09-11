@@ -48,6 +48,7 @@ METHOD_PROVIDERS = {method: ('zvonok' if method == 'phone' else method) for meth
 USER_ACTIONS = {'accounts.view', 'devices.view', 'devices.create', 'devices.rename',
                 'devices.delete', 'devices.config', 'account.routing.view', 'device.routing.view'}
 SCOPES = {'self', 'selected', 'global'}
+ROLE_QUERY = 'SELECT * FROM roles WHERE id=?'
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS accounts(
@@ -114,10 +115,10 @@ def seed_roles(con):
 def migrate_builtin_roles(con):
     """Retire old defaults without discarding assigned custom access or login paths."""
     for old, new in [('owner', 'administrator'), ('phone', 'user')]:
-        previous = con.execute('SELECT * FROM roles WHERE id=?', (old,)).fetchone()
+        previous = con.execute(ROLE_QUERY, (old,)).fetchone()
         if not previous:
             continue
-        current = con.execute('SELECT * FROM roles WHERE id=?', (new,)).fetchone()
+        current = con.execute(ROLE_QUERY, (new,)).fetchone()
         if con.execute('SELECT 1 FROM grants WHERE role_id=?', (old,)).fetchone():
             primary = sorted(set(json.loads(previous['primary_methods'])) | set(json.loads(current['primary_methods'])))
             secondary = sorted(set(json.loads(previous['secondary_methods'])) | set(json.loads(current['secondary_methods'])))
@@ -295,7 +296,7 @@ class Identity:
         with self.auth.db() as con:
             if not owner(con, actor):
                 raise PermissionError('Только администратор управляет ролями')
-            row = con.execute('SELECT * FROM roles WHERE id=?', (role_id,)).fetchone()
+            row = con.execute(ROLE_QUERY, (role_id,)).fetchone()
             if row and row['protected'] and (set(permissions) != set(ACTIONS) or name != row['name']):
                 raise ValueError('Права и название защищённой роли нельзя изменять')
             if role_id == 'administrator' and not required:

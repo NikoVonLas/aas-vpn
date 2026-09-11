@@ -294,7 +294,11 @@ test('virtual FIDO2 registration, authentication, replay and deletion', async ({
   await login(page);
   await page.goto('/security');
   await page.getByRole('button', { name: 'Удалить ключ', exact: true }).click();
+  await expect(page.getByRole('alert')).toBeVisible();
+  await page.goto('/fixture/state/required');
+  await page.getByRole('button', { name: 'Удалить ключ', exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
+  await page.request.get('/fixture/state/reset');
   await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId });
 });
 
@@ -311,7 +315,8 @@ test('one login form serves every entry URL', async ({ page }) => {
   }
 });
 
-test('Enter in the common form signs in with the password', async ({ page }) => {
+test('Enter in the common form starts the mandatory administrator confirmation', async ({ page }) => {
+  await page.request.get('/fixture/state/reset');
   await page.request.get('/fixture/reset-sessions');
   await page.goto('/');
   await page.getByLabel('Логин или телефон').fill('admin');
