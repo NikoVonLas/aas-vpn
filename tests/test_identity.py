@@ -484,6 +484,8 @@ def test_global_password_disable_requires_another_path_and_blocks_old_sessions(p
         con.execute("UPDATE roles SET primary_methods='[\"password\",\"phone\"]' WHERE id='owner'")
     assert post(client, '/admin/login-methods/password').status_code == 303
     assert client.get('/admin').headers['location'] == '/security'
+    assert 'Войдите другим способом' in client.get('/security').text
+    assert post(client, '/security/totp/start').status_code == 403
     assert 'name="password"' not in client.get('/').text
     assert post(client, '/login', {'identifier': 'admin', 'password': 'test-password'}).status_code == 401
     login_account(app, client, owner, ['phone'])

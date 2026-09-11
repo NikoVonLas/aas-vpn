@@ -83,6 +83,8 @@ class SecurityPages:
 
     def profile_actor(self, request, enrollment=False):
         actor = self.p.current_account(request, limited=True)
+        if self.primary_revoked(actor):
+            raise PermissionError('Использованный способ входа отключён. Войдите другим разрешённым способом.')
         if not actor['ready']:
             with self.p.auth_store.db() as con:
                 row = con.execute(ACCOUNT_QUERY, (actor['account_id'],)).fetchone()
@@ -241,8 +243,16 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         token = self.confirmations.consume(row, link=secret)
         return self.finish(token) if token else RedirectResponse(SECURITY_PATH, 303)
 
+    @staticmethod
+    def primary_revoked(actor):
+        methods = json.loads(actor['methods'])
+        return bool(methods and methods[0] != 'recovery' and methods[0] not in actor['policy']['primary'])
+
     def security_page(self, request: Request):
         actor = self.p.current_account(request, limited=True)
+        if self.primary_revoked(actor):
+            return self.p.message('Войдите другим способом', 'Использованный способ входа отключён или больше не разрешён вашей ролью.',
+                                  back_url='/', back_label='Перейти ко входу')
         key = actor['account_id']
         with self.p.auth_store.db() as con:
             keys = [dict(row) for row in con.execute('SELECT id,name,last_used FROM passkeys WHERE account_id=?', (key,))]
@@ -525,17 +535,22 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
                     value = value.strip()
                 if value or key not in {'password', 'public_key'}:
                     config[key] = value
-            if provider_id == 'email' and form.get('enabled'):
-                if not config.get('host') or not config.get('sender') or config.get('tls') not in {'starttls', 'implicit'} or (not 1 <= int(config.get('port', 0)) <= 65535):
-                    raise ValueError('Укажите SMTP-сервер, порт, отправителя и TLS')
-            if provider_id == 'zvonok' and form.get('enabled') and (not config.get('public_key') or not config.get('campaign_id')):
-                raise ValueError('Укажите ключ API и кампанию Zvonok')
+            if form.get('enabled'):
+                self.validate_module_config(provider_id, config)
             con.execute('UPDATE providers SET config=?,enabled=? WHERE id=?', (json.dumps(config), int(bool(form.get('enabled'))), provider_id))
             identity.ensure_login_paths(con)
             if ready_before - identity.ready_accounts(con):
                 raise ValueError('Сначала настройте другой разрешённый способ подтверждения: изменение отключит обязательный второй фактор')
             identity.audit(con, actor['account_id'], 'providers.save', provider_id)
         return RedirectResponse(MODULES_PATH, 303)
+
+    @staticmethod
+    def validate_module_config(provider_id, config):
+        if provider_id == 'email':
+            if not config.get('host') or not config.get('sender') or config.get('tls') not in {'starttls', 'implicit'} or not 1 <= int(config.get('port', 0)) <= 65535:
+                raise ValueError('Укажите SMTP-сервер, порт, отправителя и TLS')
+        if provider_id == 'zvonok' and (not config.get('public_key') or not config.get('campaign_id')):
+            raise ValueError('Укажите ключ API и кампанию Zvonok')
 
     def issue_recovery(self, request: Request, account_id: str):
         actor = self.p.require_owner(request, fresh=True)
