@@ -119,7 +119,8 @@ test('navigation links select their destination and keep the same content width'
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(heading);
     const active = page.locator('[aria-current=page]');
     await expect(active).toHaveCount(1);
-    await expect(active).toHaveAccessibleName(label);
+    if (path === '/security') await expect(active).toHaveAccessibleName(label);
+    else await expect(active).toHaveText(label);
     await expect(active).toHaveCSS('background-color', 'rgb(185, 28, 28)');
     dimensions.push(await page.locator('main').evaluate(node => ({ width: node.getBoundingClientRect().width, left: node.getBoundingClientRect().left })));
   }

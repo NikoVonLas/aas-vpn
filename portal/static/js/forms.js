@@ -16,12 +16,17 @@ window.addEventListener('pageshow', () => document.querySelectorAll('form[data-s
 for (const form of document.querySelectorAll('[data-role-assignment]')) {
   const targets = form.querySelector('[data-targets]');
   const scope = form.elements.scope;
+  const role = form.elements.role_id;
   const count = targets.querySelector('[data-selected-count]');
   const update = () => {
+    const fullAccess = role.value === 'administrator';
+    if (fullAccess) scope.value = 'global';
+    for (const option of scope.options) option.disabled = fullAccess && option.value !== 'global';
     targets.hidden = scope.value !== 'selected';
     targets.querySelectorAll('[name=targets]').forEach(input => { input.disabled = targets.hidden; });
     count.textContent = 'Выбрано: ' + targets.querySelectorAll('[name=targets]:checked').length;
   };
+  role.addEventListener('change', () => { scope.value = role.value === 'administrator' ? 'global' : 'self'; update(); });
   scope.addEventListener('change', update);
   targets.addEventListener('change', update);
   targets.querySelector('[type=search]').addEventListener('input', event => {

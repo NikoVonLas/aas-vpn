@@ -170,6 +170,9 @@ test('roles are assigned and revoked inside a user card', async ({ page }) => {
   const card = page.locator('.account-list > details[open]');
   await card.locator('.account-roles > summary').click();
   const form = card.locator('.account-roles > form.stack');
+  await form.getByRole('combobox', { name: 'Роль', exact: true }).selectOption('administrator');
+  await expect(form.getByRole('combobox', { name: 'Область', exact: true })).toHaveValue('global');
+  await expect(form.locator('[name=scope] option[value=self]')).toHaveJSProperty('disabled', true);
   await form.getByRole('combobox', { name: 'Роль', exact: true }).selectOption('user');
   await form.getByRole('combobox', { name: 'Область', exact: true }).selectOption('selected');
   await expect(form.locator('[data-targets]')).toBeVisible();
