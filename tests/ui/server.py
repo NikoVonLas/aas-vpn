@@ -49,6 +49,10 @@ with portal.db() as connection:
     connection.execute("INSERT INTO settings(key,value) VALUES('dial_numbers',?)", ('+79990000003',))
 
 portal.identities.migrate()
+with portal.auth_store.db() as connection:
+    connection.execute("DELETE FROM grants WHERE role_id='exit-choice'")
+    connection.execute("DELETE FROM roles WHERE id='exit-choice'")
+    connection.execute("UPDATE roles SET primary_methods='[\"phone\"]' WHERE id='user'")
 
 @portal.app.get('/fixture/reset-sessions')
 def reset_sessions():
@@ -56,6 +60,8 @@ def reset_sessions():
         connection.execute('DELETE FROM identity_sessions')
         connection.execute('DELETE FROM attempts')
         connection.execute('DELETE FROM backup_codes')
+        connection.execute("DELETE FROM grants WHERE role_id='fixture-exit'")
+        connection.execute("DELETE FROM roles WHERE id='fixture-exit'")
     return {'ok': True}
 
 @portal.app.get('/fixture/phone-login/{phone}')
@@ -66,9 +72,23 @@ def fixture_phone_login(phone: str):
     response = portal.RedirectResponse('/cabinet', 303)
     with portal.auth_store.db() as connection:
         account_id = connection.execute('SELECT id FROM accounts WHERE phone=?', (phone,)).fetchone()[0]
+        if phone == '+79990000001':
+            connection.execute("INSERT OR IGNORE INTO roles VALUES('fixture-exit','Выбор выхода','[\"device.exit\"]','[]','[]',0,0)")
+            portal.identity.grant(connection, account_id, 'fixture-exit')
         token = portal.identities.new_session(connection, account_id, ['phone'])
     response.set_cookie(portal.auth.COOKIE, token, secure=True, httponly=True, samesite='lax')
     return response
+
+
+@portal.app.get('/fixture/complete-login')
+def complete_login(request: Request):
+    """Stub only the second factor proof; primary login and session checks are real."""
+    from security_pages import SecurityPages
+    actor = portal.current_account(request, limited=True)
+    with portal.auth_store.db() as con:
+        token = portal.identities.new_session(con, actor['account_id'], ['password', 'totp'])
+        con.execute('DELETE FROM identity_sessions WHERE token_hash=?', (actor['token_hash'],))
+    return SecurityPages(portal).finish(token)
 
 
 with portal.auth_store.db() as connection:
@@ -105,17 +125,21 @@ def fixture_state(name: str, request: Request):
         owner = con.execute('SELECT id FROM accounts WHERE admin_id=1').fetchone()[0]
         first = con.execute("SELECT id FROM accounts WHERE phone='+79990000001'").fetchone()[0]
         con.execute('UPDATE admins SET totp_key=NULL,totp_verified=0,pending_totp=NULL,pending_at=NULL,must_change=0 WHERE id=1')
-        con.execute("UPDATE roles SET require_2fa=0 WHERE id='owner'")
+        con.execute("UPDATE roles SET require_2fa=0 WHERE id='administrator'")
         con.execute('UPDATE accounts SET voluntary_2fa=0 WHERE id=?', (owner,))
         con.executemany('UPDATE roles SET primary_methods=?,require_2fa=? WHERE id=?', login_roles)
         con.executemany('UPDATE providers SET enabled=? WHERE id=?', login_providers)
+        if name == 'optional-mfa':
+            con.execute("UPDATE roles SET require_2fa=0 WHERE id='administrator'")
         if name == 'methods-disabled':
             con.execute("UPDATE providers SET enabled=0 WHERE id IN ('totp','webauthn')")
         if name == 'totp':
             con.execute("UPDATE admins SET pending_totp='JBSWY3DPEHPK3PXP',pending_at=? WHERE id=1", (int(time.time()),))
         if name in {'mfa', 'required'}:
-            con.execute("UPDATE roles SET require_2fa=1 WHERE id='owner'")
+            con.execute("UPDATE roles SET require_2fa=1 WHERE id='administrator'")
             con.execute("UPDATE admins SET totp_key='JBSWY3DPEHPK3PXP',totp_verified=1 WHERE id=1")
+        if name == 'mfa':
+            con.execute("UPDATE identity_sessions SET methods='[\"password\"]' WHERE account_id=?", (owner,))
         if name == 'must-change':
             con.execute('UPDATE admins SET must_change=1 WHERE id=1')
         if name == 'reauth':
@@ -154,7 +178,7 @@ def fixture_confirmation(method: str, request: Request):
     with portal.auth_store.db() as con:
         key = con.execute("SELECT id FROM accounts WHERE phone='+79990000001'").fetchone()[0]
         if method == 'email':
-            con.execute("UPDATE roles SET primary_methods='[\"phone\",\"email\"]' WHERE id='phone'")
+            con.execute("UPDATE roles SET primary_methods='[\"phone\",\"email\"]' WHERE id='user'")
             con.execute("UPDATE providers SET enabled=1 WHERE id='email'")
         challenge = pages.confirmations.start(con, key, 'login', method,
                          request.cookies.get('__Host-aas_csrf', ''), {'dial': '+79990000003'}, '123456', 'fixture-link')

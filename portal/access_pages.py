@@ -26,7 +26,7 @@ METHODS = {method.value: label for method, label in (
     (identity.LoginMethod.PHONE, 'Телефон'),
     (identity.LoginMethod.EMAIL, 'Почта'),
     (identity.LoginMethod.WEBAUTHN, 'Ключ / passkey'),
-    (identity.LoginMethod.TOTP, 'Приложение-аутентификатор'),
+    (identity.LoginMethod.TOTP, 'Приложение-аутентификатор (TOTP)'),
 )}
 
 def parse_rules(ru, direct):
@@ -77,6 +77,7 @@ class AccessPages:
 
     def edit_role(self, request: Request, role_id: str=''):
         self.p.require_owner(request)
+        role_id = 'administrator' if role_id == 'owner' else role_id
         if role_id:
             with self.p.auth_store.db() as con:
                 if not con.execute('SELECT 1 FROM roles WHERE id=?', (role_id,)).fetchone():
@@ -227,10 +228,16 @@ class AccessPages:
         for row in shown:
             row['editor'] = self.account_editor(actor, row, access)
         return self.p.page('Пользователи', render('accounts.html', rows=shown, total=total, opened=edit,
-                           new_editor=render('components/account_form.html', form_action='/admin/accounts', row=None, permissions={}, access=None, can_save=True) if self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT) else '',
+                           new_editor=self.new_account_editor() if self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT) else '',
                            device_count=sum(row['device_count'] for row in rows), query=query, state=state, selected_role=role,
                            role_options=role_options, current_page=current, pages=pages, page_links=links,
                            can_create=self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT)), show_header=True)
+
+    def new_account_editor(self):
+        with self.p.auth_store.db() as con:
+            methods = set(json.loads(con.execute("SELECT primary_methods FROM roles WHERE id='user'").fetchone()[0])) & identity.enabled_methods(con)
+        return render('components/account_form.html', form_action='/admin/accounts', row=None,
+                      permissions={}, access=None, can_save=True, create_methods=methods)
 
     def new_account(self, request: Request):
         self.p.require_permission(request, CREATE_ACCOUNT)
@@ -277,20 +284,35 @@ class AccessPages:
     def assign_account(self, request: Request, account_id: str, role_id: str=Form(''), scope: str=Form('self'), targets: list[str]=Form([]), remove: str=Form('')):
         return self.assign(request, account_id, role_id, scope, targets, remove)
 
-    def create_account(self, request: Request, name: str=Form(...), username: str=Form(...), password: str=Form(...), device_limit: int=Form(2)):
+    def create_account(self, request: Request, name: str=Form(...), username: str=Form(''), password: str=Form(''), device_limit: int=Form(2), phone: str=Form('')):
         actor = self.p.require_permission(request, CREATE_ACCOUNT)
-        self.p.auth_store.validate_password(password)
-        if not name.strip() or not username.strip() or len(username) > 64 or (not 1 <= device_limit <= 20):
+        if not name.strip() or len(username) > 64 or (not 1 <= device_limit <= 20):
             raise ValueError('Проверьте имя, логин и лимит')
         key = str(uuid.uuid4())
         with self.p.identities.transaction() as con:
-            credential = con.execute('INSERT INTO admins(username,password_hash,must_change) VALUES(?,?,1)', (username.strip(), self.p.password_hasher.hash(password))).lastrowid
-            con.execute('INSERT INTO accounts(id,admin_id) VALUES(?,?)', (key, credential))
+            credential, number = self.new_account_credentials(con, username, password, phone)
+            con.execute('INSERT INTO accounts(id,admin_id,phone) VALUES(?,?,?)', (key, credential, number))
             identity.grant(con, key, 'user')
             con.execute('INSERT INTO portal.users(phone,account_id,name,device_limit,created_at) VALUES(?,?,?,?,?)', (key, key, name.strip()[:80], device_limit, int(time.time())))
             identity.ensure_login_paths(con)
             identity.audit(con, actor['account_id'], CREATE_ACCOUNT, key)
         return RedirectResponse(f'/accounts/{key}/edit', 303)
+
+    def new_account_credentials(self, con, username, password, phone):
+        methods = set(json.loads(con.execute("SELECT primary_methods FROM roles WHERE id='user'").fetchone()[0])) & identity.enabled_methods(con)
+        credential = None
+        number = self.p.phone_normalize(phone) if phone.strip() else None
+        if number and 'phone' not in methods:
+            raise ValueError('Телефонный вход не разрешён для пользователей')
+        if username or password:
+            if 'password' not in methods or not username.strip():
+                raise ValueError('Логин и пароль не разрешены или логин не заполнен')
+            self.p.auth_store.validate_password(password)
+            credential = con.execute('INSERT INTO admins(username,password_hash,must_change) VALUES(?,?,1)',
+                                     (username.strip(), self.p.password_hasher.hash(password))).lastrowid
+        if not credential and not number:
+            raise ValueError('Укажите разрешённый способ входа: телефон или логин и пароль')
+        return credential, number
 
     def save_account(self, request: Request, account_id: str, name: str | None=Form(None), device_limit: int | None=Form(None), enabled: str=Form(''), state_present: str=Form('')):
         actor = self.p.current_account(request)
@@ -305,7 +327,7 @@ class AccessPages:
                 raise HTTPException(404)
             privileged = con.execute("SELECT 1 FROM grants WHERE account_id=? AND scope!='self'", (account_id,)).fetchone()
             if privileged and (not identity.owner(con, actor['account_id'])):
-                raise PermissionError('Только владелец управляет административными аккаунтами')
+                raise PermissionError('Только администратор управляет административными аккаунтами')
             if name is not None:
                 con.execute('UPDATE portal.users SET name=? WHERE account_id=?', (name.strip()[:80], account_id))
             if device_limit is not None:

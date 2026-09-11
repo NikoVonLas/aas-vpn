@@ -150,8 +150,8 @@ def test_admin_management_reauth_last_admin_and_revocation(portal):
     assert client.get('/admin').headers['location'] == '/'
     assert post(client, '/admin/login', {'username':'new','password':'permanent-password'}).status_code == 303
     token = client.cookies.get(app.auth.COOKIE)
-    # Administrative permissions do not include management of administrators.
-    assert post(client, route+'/1', {'action':'toggle','password':'permanent-password'}).status_code == 403
+    # Every administrator can manage other administrators.
+    assert post(client, route+'/1', {'action':'toggle','password':'permanent-password'}).status_code == 303
     assert app.auth_store.session(token)['id'] == 2
     phone_login(app, client)
     assert client.get(route).status_code == 403

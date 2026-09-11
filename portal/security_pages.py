@@ -292,7 +292,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
 
     def reauthenticate(self, request: Request):
         self.p.current_account(request, limited=True)
-        return self.p.message('Подтвердите вход', 'Для этого действия подтвердите вход заново. После входа вы вернётесь к редактированию; отправьте форму ещё раз.', back_url='/', back_label='Перейти ко входу')
+        return self.p.message('Повторный вход для защиты аккаунта', 'Вы меняете настройки доступа. С последнего подтверждения прошло более 5 минут: войдите ещё раз, чтобы подтвердить, что это вы. Затем вы вернётесь к своей форме; изменения ещё не отправлены.', back_url='/', back_label='Перейти ко входу')
 
     async def second(self, request: Request, method: str=Form(...), code: str=Form('')):
         actor = self.p.current_account(request, limited=True)

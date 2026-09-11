@@ -1,7 +1,7 @@
 {% from 'components/forms.html' import csrf, button with context %}
 {% from 'components/editor.html' import editor with context %}
 <p data-routing-state>{{ routing_status }}</p>
-{% for node in nodes %}{% call editor('exit-' ~ node.id, node.name, 'Глобальный выход' if node.id == default else '', node.health, editable=node.editor or node.config or can_default, state_id=node.id) %}
+{% for node in nodes %}{% call editor('exit-' ~ node.id, node.name, '', node.health, editable=node.editor or node.config or can_default, state_id=node.id, default=node.id == default) %}
 {{ node.editor }}{% if not node.editor and node.config %}<pre>{{ node.config }}</pre>{% endif %}
 {% if can_default and not can_edit %}<form method="post" action="/admin/ru-exits/{{ node.id }}/default">{{ csrf() }}{{ button('По умолчанию', 'secondary', disabled=node.id == default) }}</form>{% endif %}{% endcall %}{% endfor %}
 {% if can_edit %}{% call editor('exit-new', 'Добавить альтернативный выход') %}{{ new_editor }}{% endcall %}{% endif %}

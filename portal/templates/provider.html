@@ -1,6 +1,6 @@
 {% from 'components/forms.html' import csrf, field, button, check with context %}
 {% from 'components/editor.html' import editor with context %}
-{% call editor('method-' ~ provider.id, label, 'Встроенный способ · не требует подключения' if builtin else 'Подключаемый способ · ' ~ ('Настроено' if configured else 'Нужно настроить'), 'Включён' if provider.enabled else 'Выключен', not provider.enabled, opened=failed) %}
+{% call editor('method-' ~ provider.id, label, 'Встроенный способ · не требует подключения' if builtin else '', 'Включён' if provider.enabled else 'Выключен', not provider.enabled, opened=failed) %}
 <form class="stack" method="post" action="/admin/login-methods/{{ provider.id }}">{{ csrf() }}{{ check('enabled', 'Разрешить для всего сервиса', checked=provider.enabled) }}
 <p class="muted">{% if provider.id == 'totp' %}Коды из приложения используются как второй фактор.{% else %}Способ доступен для входа и подтверждения, если разрешён ролью.{% endif %} Отключение сохраняет реквизиты и ключи пользователей, но запрещает их использование.</p>
 {% for item in fields %}{{ field(item.key, item.caption, item.value, type='password' if item.secret else 'text', hint='Настроено. Оставьте пустым, чтобы сохранить.' if item.saved else '') }}{% endfor %}

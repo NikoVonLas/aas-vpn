@@ -47,7 +47,7 @@ if (loginForm) {
   window.addEventListener('pageshow', update);
 }
 // A per-tab, ten-minute draft allowlist. No passwords, codes or private config.
-const draftNames = new Set(['name', 'username', 'device_limit', 'enabled', 'state_present', 'ru_exit_id', 'role_id', 'scope', 'targets', 'permissions', 'primary', 'secondary', 'required', 'ru', 'direct']);
+const draftNames = new Set(['name', 'username', 'phone', 'device_limit', 'enabled', 'state_present', 'ru_exit_id', 'role_id', 'scope', 'targets', 'permissions', 'primary', 'secondary', 'required', 'ru', 'direct']);
 const draftForms = document.querySelectorAll('form[id^=account-form-], form[data-role-assignment], .routing-form, form[action="/admin/roles/save"], .device-edit');
 const resume = new URL(location.href).searchParams.has('resume');
 for (const form of draftForms) {

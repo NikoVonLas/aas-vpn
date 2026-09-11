@@ -1,3 +1,3 @@
 {% from 'components/forms.html' import csrf, field, button with context %}
-<section class="card"><h2>Ключи и passkeys</h2><p class="muted">{{ keys|length }} ключей</p><details><summary>Настроить ключи и passkeys</summary><form class="device-form" data-passkey="enroll">{{ csrf() }}{{ field('name', 'Название', required=true) }}{{ button('Добавить ключ / passkey') }}</form>
-{% for item in keys %}<form class="device-form" method="post" action="/security/passkeys/delete">{{ csrf() }}<input type="hidden" name="key" value="{{ item.id }}"><p>{{ item.name }} · {{ item.used }}</p>{{ button('Удалить ключ', 'danger') }}</form>{% endfor %}</details></section>
+<section class="card"><h2>Ключи и passkeys</h2><p class="muted">{{ keys|length }} ключей</p><form class="device-form" data-passkey="enroll">{{ csrf() }}{{ field('name', 'Название', required=true) }}{{ button('Добавить ключ / passkey') }}</form>
+{% for item in keys %}<form class="device-form" method="post" action="/security/passkeys/delete">{{ csrf() }}<input type="hidden" name="key" value="{{ item.id }}"><p>{{ item.name }} · {{ item.used }}</p>{{ button('Удалить ключ', 'danger') }}</form>{% endfor %}</section>

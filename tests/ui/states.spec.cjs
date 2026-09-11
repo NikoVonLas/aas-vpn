@@ -7,6 +7,7 @@ async function login(page) {
   await page.locator('[name=identifier]').fill('admin');
   await page.locator('[name=password]').fill('visual-test-password');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
+  if (new URL(page.url()).pathname === '/security') await page.goto('/fixture/complete-login');
   await expect(page).toHaveURL(/\/admin$/);
 }
 async function stable(page) {
@@ -95,12 +96,11 @@ test('screen login and account field errors', async ({ page }) => {
   await expect(page).toHaveScreenshot('login-error.png', { fullPage: true });
   await page.goto('/accounts/new');
   await page.locator('#account-new [name=name]').fill('Новый пользователь');
-  await page.locator('[name=username]').fill('admin');
-  await page.locator('[name=password]').fill('test-password-for-creation');
+  await page.locator('#account-new [name=phone]').fill('+79990000001');
   await page.getByRole('button', { name: 'Добавить аккаунт' }).click();
   await expect(page.getByRole('alert')).toBeVisible();
   await expect(page.locator('#account-new [name=name]')).toHaveValue('Новый пользователь');
-  await expect(page.locator('[name=password]')).toHaveValue('');
+  await expect(page.locator('#account-new [name=phone]')).toHaveValue('+79990000001');
   await expect(page).toHaveScreenshot('account-error.png', { fullPage: true });
   await page.goto('/admin/users/+79990000001/devices');
   const device = page.locator('form[action="/device/1/update"]');

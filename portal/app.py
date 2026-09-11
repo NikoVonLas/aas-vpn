@@ -230,7 +230,7 @@ def require_permission(request, action, target=None):
 def require_owner(request, fresh=False):
     actor = current_account(request)
     if not identities.owner(actor['account_id']):
-        raise HTTPException(403, 'Действие доступно только владельцу')
+        raise HTTPException(403, 'Действие доступно только администратору')
     if fresh:
         require_fresh(actor)
     return actor
@@ -734,7 +734,6 @@ def navigation_model(actor):
             links.append((path, label))
     if identities.owner(key):
         links.extend([('/admin/roles', 'Роли и доступ'), ('/admin/login-methods', 'Способы входа')])
-    links.append((SECURITY_PATH, 'Безопасность профиля'))
     return links
 
 
@@ -768,7 +767,7 @@ def status_text(status):
         return 'Настройки сохранены. Ожидается применение на VPN-сервере.'
     return {'applied': 'Настройки применены на VPN-сервере.',
             'error': 'Не удалось применить изменения. VPN использует предыдущие настройки.',
-            'pending': 'Нет данных о маршрутизации: сервис применения настроек ещё не передал состояние.',
+            'pending': 'Не удалось получить состояние VPN-сервера. Применение маршрутов пока не подтверждено.',
             'stale': 'Данные о маршрутизации устарели: VPN-сервер не обновлял состояние более 45 секунд.'}.get(
                 status.get('state'), 'Настройки сохранены. Ожидается применение на VPN-сервере.')
 
@@ -798,12 +797,12 @@ def permitted_device_form(device, exits, user, administrator, request):
         actor = current_account(request)
         can_rename = identities.allowed(actor['account_id'], RENAME_DEVICE, device['account_id'])
         can_exit = identities.allowed(actor['account_id'], DEVICE_EXIT, device['account_id'])
-    return device_edit_form(device, exits, can_exit, can_rename) if can_rename or can_exit else ''
+    return device_edit_form(device, exits, can_exit, can_rename, device_actions(device, request)) if can_rename or can_exit else ''
 
 
-def device_edit_form(device, exits, can_change_exit, can_rename=True):
+def device_edit_form(device, exits, can_change_exit, can_rename=True, actions=''):
     return render('components/device_form.html', form_action=f"/device/{device['id']}/update", device=device, exits=exits,
-                  can_change_exit=can_change_exit, can_rename=can_rename)
+                  can_change_exit=can_change_exit, can_rename=can_rename, actions=actions)
 
 
 def exit_health_label(status, node_id):
@@ -811,7 +810,7 @@ def exit_health_label(status, node_id):
     if status.get('state') == 'stale':
         return 'Данные о доступности устарели'
     if status.get('state') == 'pending' or not state:
-        return 'Нет данных о доступности'
+        return 'Доступность неизвестна'
     return 'Доступен' if state.get('healthy') else UNAVAILABLE_LABEL
 
 

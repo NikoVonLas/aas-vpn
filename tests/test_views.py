@@ -73,7 +73,7 @@ def test_form_has_one_csrf_and_protected_role_values_survive_post(portal):
     key = accounts(app)[1]
     page = client.get('/accounts/' + key + '/edit').text
     assert 'form="recovery-' + key + '"' in page
-    role = client.get('/admin/roles/owner/edit').text
+    role = client.get('/admin/roles/administrator/edit').text
     assert 'readonly' in role
     assert 'disabled' in role
     assert 'name="permissions" value="accounts.view"' in role
@@ -102,7 +102,7 @@ def test_restricted_session_only_shows_required_confirmation(portal):
     app, client = portal
     with app.auth_store.db() as con:
         con.execute("UPDATE admins SET totp_key='JBSWY3DPEHPK3PXP',totp_verified=1 WHERE id=1")
-        con.execute("UPDATE roles SET require_2fa=1 WHERE id='owner'")
+        con.execute("UPDATE roles SET require_2fa=1 WHERE id='administrator'")
     post(client, '/login', {'identifier': 'admin', 'password': 'test-password'})
     body = client.get('/security').text
     assert 'Завершите подтверждение входа' in body
@@ -171,8 +171,8 @@ def test_absent_router_report_is_not_a_running_health_check(portal):
     app, _ = portal
     pending = app.routing_status()
     assert pending['state'] == 'pending'
-    assert app.exit_health_label(pending, 1) == 'Нет данных о доступности'
-    assert 'ещё не передал состояние' in app.status_text(pending)
+    assert app.exit_health_label(pending, 1) == 'Доступность неизвестна'
+    assert 'Применение маршрутов пока не подтверждено' in app.status_text(pending)
     assert app.exit_health_label({'state': 'stale'}, 1) == 'Данные о доступности устарели'
     assert app.exit_health_label({'state': 'applied', 'exits': {'1': {'healthy': True}}}, 1) == 'Доступен'
     assert app.exit_health_label({'state': 'applied', 'exits': {'1': {'healthy': False}}}, 1) == 'Недоступен'

@@ -1,4 +1,6 @@
 {% from 'components/forms.html' import csrf, field, button with context %}
-{% if 'totp' in allowed %}<section class="card"><h2>Приложение-аутентификатор</h2><p class="muted">{{ 'Настроено' if actor.totp_verified else 'Не настроено' }}. Приложение генерирует одноразовые коды (TOTP).</p><details {% if pending %}open{% endif %}><summary>Настроить приложение</summary><form method="post" action="/security/totp/start">{{ csrf() }}{{ button('Получить QR-код', 'secondary') }}</form>
-{% if pending %}<img class="totp-qr" src="/security/totp/qr" width="240" height="240" alt="QR настройки приложения-аутентификатора"><form class="device-form" method="post" action="/security/totp/confirm">{{ csrf() }}{{ field('code', 'Код из приложения', required=true) }}{{ button('Подтвердить') }}</form>{% endif %}
-{% if actor.totp_verified %}<form method="post" action="/security/totp/delete">{{ csrf() }}{{ button('Удалить приложение-аутентификатор', 'danger') }}</form>{% endif %}</details></section>{% endif %}
+{% if 'totp' in allowed %}<section class="card"><h2>Приложение-аутентификатор (TOTP)</h2><p class="muted">{{ 'Настроено' if actor.totp_verified else 'Не настроено' }}. Приложение генерирует одноразовые коды.</p>
+{% if pending %}<img class="totp-qr" src="/security/totp/qr" width="240" height="240" alt="QR настройки приложения-аутентификатора"><form id="totp-confirm" class="stack" method="post" action="/security/totp/confirm">{{ csrf() }}{{ field('code', 'Код из приложения', required=true) }}</form>{% endif %}
+<div class="form-actions"><form method="post" action="/security/totp/start">{{ csrf() }}{{ button('Получить QR-код', 'secondary') }}</form>
+{% if actor.totp_verified %}<form method="post" action="/security/totp/delete">{{ csrf() }}{{ button('Удалить приложение-аутентификатор', 'danger') }}</form>{% endif %}
+{% if pending %}{{ button('Подтвердить', form='totp-confirm') }}{% endif %}</div></section>{% endif %}

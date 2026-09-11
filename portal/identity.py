@@ -94,18 +94,13 @@ CREATE TABLE IF NOT EXISTS recovery_codes(
 
 def seed_roles(con):
     initial = [
-        ('owner', 'Владелец', set(ACTIONS), ['password'], ['totp', 'webauthn'], True),
-        ('administrator', 'Администратор', set(ACTIONS), ['password'], ['totp', 'webauthn'], False),
-        ('operator', 'Оператор', set(ACCOUNT_ACTIONS) - {'accounts.state'}, ['password'], ['totp', 'webauthn'], False),
-        ('observer', 'Наблюдатель', {p for p in ACCOUNT_ACTIONS if p.endswith('.view')}, ['password'], ['totp', 'webauthn'], False),
-        ('user', 'Пользователь', USER_ACTIONS, ['password'], ['totp', 'webauthn'], False),
-        ('phone', 'Телефонный вход', USER_ACTIONS, ['phone'], ['totp', 'webauthn'], False),
-        ('exit-choice', 'Выбор альтернативного выхода', {'device.exit'}, [], [], False),
+        ('administrator', 'Администратор', set(ACTIONS), 1, 1),
+        ('user', 'Пользователь', USER_ACTIONS, 0, 0),
     ]
-    for key, name, permissions, primary, secondary, protected in initial:
-        con.execute('INSERT OR IGNORE INTO roles VALUES(?,?,?,?,?,0,?)',
-                    (key, name, json.dumps(sorted(permissions)), json.dumps(primary), json.dumps(secondary), int(protected)))
-    con.execute("UPDATE roles SET name='Выбор альтернативного выхода' WHERE id='exit-choice' AND name='Выбор RU-выхода'")
+    for key, name, permissions, required, protected in initial:
+        con.execute('INSERT OR IGNORE INTO roles VALUES(?,?,?,?,?,?,?)',
+                    (key, name, json.dumps(sorted(permissions)), '["password"]', '["totp", "webauthn"]', required, protected))
+    migrate_builtin_roles(con)
     for method in sorted(BUILTIN_METHODS):
         con.execute('INSERT OR IGNORE INTO providers(id,enabled) VALUES(?,1)', (method,))
     for provider in ('zvonok', 'email'):
@@ -116,11 +111,28 @@ def seed_roles(con):
         con.execute('INSERT OR IGNORE INTO providers(id,enabled,config) VALUES(?,?,?)', (provider, int(enabled), json.dumps(config)))
 
 
+def migrate_builtin_roles(con):
+    """Retire old defaults without discarding assigned custom access or login paths."""
+    for old, new in [('owner', 'administrator'), ('phone', 'user')]:
+        previous = con.execute('SELECT * FROM roles WHERE id=?', (old,)).fetchone()
+        if not previous:
+            continue
+        current = con.execute('SELECT * FROM roles WHERE id=?', (new,)).fetchone()
+        if con.execute('SELECT 1 FROM grants WHERE role_id=?', (old,)).fetchone():
+            primary = sorted(set(json.loads(previous['primary_methods'])) | set(json.loads(current['primary_methods'])))
+            secondary = sorted(set(json.loads(previous['secondary_methods'])) | set(json.loads(current['secondary_methods'])))
+            con.execute('UPDATE roles SET primary_methods=?,secondary_methods=? WHERE id=?', (json.dumps(primary), json.dumps(secondary), new))
+        con.execute('UPDATE grants SET role_id=? WHERE role_id=?', (new, old))
+        con.execute('DELETE FROM roles WHERE id=?', (old,))
+    con.execute("UPDATE roles SET protected=1,require_2fa=1,permissions=? WHERE id='administrator'", (json.dumps(sorted(ACTIONS)),))
+    con.execute("DELETE FROM roles WHERE id IN ('operator','observer','exit-choice') AND id NOT IN (SELECT role_id FROM grants)")
+
+
 def grant(con, account_id, role_id, scope='self', targets=()):
     if scope not in SCOPES or (scope != 'selected' and targets) or (scope == 'selected' and not targets):
         raise ValueError('Укажите область назначения и аккаунты')
-    if role_id == 'owner' and scope != 'global':
-        raise ValueError('Роль владельца требует глобальной области')
+    if role_id == 'administrator' and scope != 'global':
+        raise ValueError('Роль администратора требует глобальной области')
     key = str(uuid.uuid4())
     con.execute('INSERT INTO grants VALUES(?,?,?,?)', (key, account_id, role_id, scope))
     con.executemany('INSERT INTO grant_targets VALUES(?,?)', [(key, target) for target in set(targets)])
@@ -145,7 +157,7 @@ def policy(con, account_id):
 def owner(con, account_id):
     return bool(con.execute('''SELECT 1 FROM grants g JOIN accounts a ON a.id=g.account_id
       LEFT JOIN admins c ON c.id=a.admin_id WHERE a.id=? AND a.enabled=1
-      AND (c.id IS NULL OR c.enabled=1) AND g.role_id='owner' AND g.scope='global' ''', (account_id,)).fetchone())
+      AND (c.id IS NULL OR c.enabled=1) AND g.role_id='administrator' AND g.scope='global' ''', (account_id,)).fetchone())
 
 
 def allowed(con, actor, action, target=None):
@@ -174,8 +186,8 @@ def audit(con, actor, action, target):
 def ensure_owner(con):
     if not con.execute('''SELECT 1 FROM accounts a JOIN grants g ON g.account_id=a.id
        LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.enabled=1)
-       AND g.role_id='owner' AND g.scope='global' ''').fetchone():
-        raise ValueError('Нельзя удалить, отключить или лишить роли последнего активного владельца')
+       AND g.role_id='administrator' AND g.scope='global' ''').fetchone():
+        raise ValueError('Нельзя удалить, отключить или лишить роли последнего активного администратора')
 
 
 def configured_methods(con, row):
@@ -247,14 +259,17 @@ class Identity:
                     continue
                 key = str(uuid.uuid4())
                 con.execute('INSERT INTO accounts(id,admin_id,enabled,voluntary_2fa) VALUES(?,?,?,?)', (key, credential['id'], credential['enabled'], credential['totp_verified']))
-                grant(con, key, 'owner' if first else 'user', 'global' if first else 'self')
+                grant(con, key, 'administrator' if first else 'user', 'global' if first else 'self')
                 con.execute('INSERT INTO portal.users(phone,account_id,name,device_limit,enabled,created_at) VALUES(?,?,?,2,?,?)',
                             (key, key, credential['username'], credential['enabled'], int(time.time())))
             for user in con.execute('SELECT * FROM portal.users WHERE account_id IS NULL').fetchall():
                 key = str(uuid.uuid4())
                 con.execute('INSERT INTO accounts(id,phone,enabled) VALUES(?,?,?)', (key, user['phone'], user['enabled']))
-                grant(con, key, 'phone')
+                grant(con, key, 'user')
+                methods = json.loads(con.execute("SELECT primary_methods FROM roles WHERE id='user'").fetchone()[0])
+                con.execute("UPDATE roles SET primary_methods=? WHERE id='user'", (json.dumps(sorted(set(methods) | {'phone'})),))
                 if user['can_change_ru_exit']:
+                    con.execute("INSERT OR IGNORE INTO roles VALUES('exit-choice','Выбор альтернативного выхода','[\"device.exit\"]','[]','[]',0,0)")
                     grant(con, key, 'exit-choice')
                 con.execute('UPDATE portal.users SET account_id=? WHERE phone=?', (key, user['phone']))
             con.execute('''UPDATE portal.devices SET account_id=(SELECT account_id FROM portal.users u
@@ -279,10 +294,12 @@ class Identity:
             raise ValueError('Неизвестный способ входа')
         with self.auth.db() as con:
             if not owner(con, actor):
-                raise PermissionError('Только владелец управляет ролями')
+                raise PermissionError('Только администратор управляет ролями')
             row = con.execute('SELECT * FROM roles WHERE id=?', (role_id,)).fetchone()
             if row and row['protected'] and (set(permissions) != set(ACTIONS) or name != row['name']):
                 raise ValueError('Права и название защищённой роли нельзя изменять')
+            if role_id == 'administrator' and not required:
+                raise ValueError('Для администратора обязательна 2FA')
             key = role_id or str(uuid.uuid4())
             con.execute('''INSERT INTO roles VALUES(?,?,?,?,?,?,0) ON CONFLICT(id) DO UPDATE SET
              name=excluded.name,permissions=excluded.permissions,primary_methods=excluded.primary_methods,
@@ -296,7 +313,7 @@ class Identity:
     def assign(self, actor, account_id, role_id, scope, targets=(), remove=''):
         with self.auth.db() as con:
             if not owner(con, actor):
-                raise PermissionError('Только владелец управляет назначениями')
+                raise PermissionError('Только администратор управляет назначениями')
             if remove:
                 con.execute('DELETE FROM grants WHERE id=? AND account_id=?', (remove, account_id))
             else:

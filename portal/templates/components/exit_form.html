@@ -2,5 +2,5 @@
 <form class="stack" method="post" enctype="multipart/form-data" action="/admin/ru-exits{% if node %}/{{ node.id }}{% endif %}">{{ csrf() }}
 {{ field('name', 'Название', node.name if node else '', required=true) }}
 <label>{{ 'Заменить конфиг' if node else 'WireGuard .conf' }}<input class="form-control" type="file" name="config_upload" accept=".conf"></label><label>Конфиг<textarea class="form-control" name="config_text" rows="8" autocomplete="off" spellcheck="false" placeholder="Загрузите файл или вставьте новый конфиг">{{ config }}</textarea></label>
-<output class="status-output muted config-file-status">{% if node %}Текст можно изменить. Пустой конфиг сохраняет прежнее значение.{% else %}Загрузите файл .conf или вставьте текст.{% endif %}</output>
+<output class="status-output muted config-file-status">{% if not node %}Загрузите файл .conf или вставьте текст.{% endif %}</output>
 <div class="exit-actions">{% if node %}{{ button('Удалить', 'danger', action='/admin/ru-exits/' ~ node.id ~ '/delete') }}{% if can_default %}{{ button('По умолчанию', 'secondary', action='/admin/ru-exits/' ~ node.id ~ '/default', disabled=node.id == default) }}{% endif %}{% endif %}{{ button('Сохранить' if node else 'Добавить выход') }}</div></form>

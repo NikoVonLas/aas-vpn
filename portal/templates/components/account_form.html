@@ -1,7 +1,7 @@
 {% from 'components/forms.html' import csrf, button, link, field, check with context %}
 <form id="account-form-{{ row.account_id if row else 'new' }}" class="settings-form" method="post" action="{{ '/accounts/' ~ row.account_id ~ '/save' if row else '/admin/accounts' }}">{{ csrf() }}
 {% if not row or permissions['accounts.edit'] %}{{ field('name', 'Имя', row.name if row else '', required=true, maxlength=80) }}{% endif %}
-{% if not row %}{{ field('username', 'Логин', required=true, autocomplete='username', maxlength=64) }}{{ field('password', 'Временный пароль', type='password', required=true, hint='Не менее 12 символов', autocomplete='new-password', minlength=12, maxlength=128) }}{% endif %}
+{% if not row %}{% if 'phone' in create_methods %}{{ field('phone', 'Телефон для входа', type='tel', required='password' not in create_methods, autocomplete='tel') }}{% endif %}{% if 'password' in create_methods %}{{ field('username', 'Логин', required='phone' not in create_methods, autocomplete='username', maxlength=64) }}{{ field('password', 'Временный пароль', type='password', required='phone' not in create_methods, hint='Не менее 12 символов', autocomplete='new-password', minlength=12, maxlength=128) }}{% endif %}{% endif %}
 {% if not row or permissions['accounts.limits'] %}{{ field('device_limit', 'Лимит устройств', row.device_limit if row else 2, 'number', true, min=1, max=20) }}{% endif %}
 {% if row and permissions['accounts.state'] %}{{ check('enabled', 'Аккаунт включён', checked=row.enabled) }}<input type="hidden" name="state_present" value="1">{% endif %}
 <div class="form-actions">
