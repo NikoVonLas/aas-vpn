@@ -11,8 +11,8 @@ async function login(page) {
 test('recovery response is visible and code can only be consumed once', async ({ page }) => {
   await login(page);
   await page.locator('.account-row').filter({ hasText: 'Мария' }).click();
-  const account = new URL(page.url()).pathname.split('/')[2];
-  await page.getByRole('button', { name: 'Восстановление', exact: true }).click();
+  const account = (await page.locator('.account-list > details[open]').getAttribute('id')).slice('account-'.length);
+  await page.locator('.account-list > details[open]').getByRole('button', { name: 'Восстановление', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Одноразовое восстановление' })).toBeVisible();
   const code = await page.locator('pre').textContent();
   expect(code.length).toBeGreaterThan(30);
@@ -61,16 +61,16 @@ test('login error preserves identifier and auto-detection explains next step', a
 test('role draft resumes after confirmation without repeating POST', async ({ page }) => {
   await login(page);
   await page.goto('/admin/roles/observer/edit');
-  await page.getByLabel('Название', { exact: true }).fill('Черновик роли');
+  await page.locator('#role-observer').getByLabel('Название', { exact: true }).fill('Черновик роли');
   await page.request.get('/fixture/state/reauth');
-  await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await page.locator('#role-observer').getByRole('button', { name: 'Сохранить', exact: true }).click();
   await expect(page).toHaveURL(/\/security\/confirm$/);
   await page.getByRole('link', { name: 'Перейти ко входу' }).click();
   await page.locator('[name=identifier]').fill('admin');
   await page.locator('[name=password]').fill('visual-test-password');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/roles\/observer\/edit\?resume=1$/);
-  await expect(page.getByLabel('Название', { exact: true })).toHaveValue('Черновик роли');
+  await expect(page.locator('#role-observer').getByLabel('Название', { exact: true })).toHaveValue('Черновик роли');
   await page.goto('/admin/roles');
   await expect(page.getByRole('heading', { name: 'Наблюдатель', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Черновик роли', exact: true })).toHaveCount(0);
@@ -105,7 +105,7 @@ test('navigation links select their destination and keep the same content width'
   for (const [label, path, heading] of [
     ['Мои устройства', '/cabinet', 'Мои устройства'],
     ['Пользователи', '/admin', 'Пользователи'],
-    ['RU-выходы', '/admin/ru-exits', 'RU-выходы'],
+    ['Альтернативные выходы', '/admin/ru-exits', 'Альтернативные выходы'],
     ['Маршрутизация', '/admin/routing', 'Маршрутизация'],
     ['Роли и доступ', '/admin/roles', 'Роли и доступ'],
     ['Способы входа', '/admin/login-methods', 'Способы входа'],
@@ -130,6 +130,49 @@ test('navigation links select their destination and keep the same content width'
   const editor = await page.locator('main').evaluate(node => ({ width: node.getBoundingClientRect().width, left: node.getBoundingClientRect().left }));
   expect(editor).toEqual(dimensions[0]);
   await expect(page.locator('[aria-current=page]')).toHaveText('Пользователи');
-  await page.getByRole('link', { name: 'Устройства', exact: true }).click();
+  await page.locator('.account-list > details[open]').getByRole('link', { name: 'Устройства', exact: true }).click();
   await expect(page.locator('[aria-current=page]')).toHaveText('Пользователи');
+});
+
+test('all entity lists use the same keyboard-operated disclosure', async ({ page }) => {
+  await login(page);
+  for (const [path, selector] of [['/admin', '.account-list > details'], ['/admin/roles', '#role-observer'], ['/admin/ru-exits', '#exit-1'], ['/admin/login-methods', '#method-totp']]) {
+    await page.goto(path);
+    const editor = page.locator(selector).first();
+    const summary = editor.locator(':scope > summary');
+    await expect(editor).not.toHaveAttribute('open', '');
+    await summary.focus();
+    await page.keyboard.press('Enter');
+    await expect(editor).toHaveAttribute('open', '');
+    expect(new URL(page.url()).pathname).toBe(path);
+    await expect(editor.locator('.editor-body')).toBeVisible();
+    await summary.click();
+    await expect(editor.locator('.editor-body')).toBeHidden();
+  }
+});
+
+test('built-in global switches persist and rejected changes preserve other cards', async ({ page }) => {
+  await page.request.get('/fixture/state/reset');
+  await login(page);
+  try {
+    for (const method of ['totp', 'webauthn']) {
+      await page.goto('/admin/login-methods');
+      const card = page.locator('#method-' + method);
+      await card.locator('summary').click();
+      await card.getByRole('checkbox', { name: 'Разрешить для всего сервиса' }).uncheck();
+      await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
+      await expect(card.locator('.badge')).toHaveText('Выключен');
+    }
+    const password = page.locator('#method-password');
+    await password.locator('summary').click();
+    await password.getByRole('checkbox').uncheck();
+    await password.getByRole('button', { name: 'Сохранить', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('способа входа');
+    await expect(password).toHaveAttribute('open', '');
+    await expect(password.locator('.badge')).toHaveText('Включён');
+    await expect(page.locator('#method-totp .badge')).toHaveText('Выключен');
+    await page.goto('/security');
+    await expect(page.getByRole('heading', { name: 'Приложение-аутентификатор', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Ключи и passkeys', exact: true })).toHaveCount(0);
+  } finally { await page.request.get('/fixture/state/reset'); }
 });

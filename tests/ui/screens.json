@@ -27,10 +27,7 @@
     },
     {
       "name": "account-new",
-      "path": "/accounts/new",
-      "templates": [
-        "account_edit.html"
-      ]
+      "path": "/accounts/new"
     },
     {
       "name": "account-edit",
@@ -42,10 +39,7 @@
     },
     {
       "name": "role-new",
-      "path": "/admin/roles/new",
-      "templates": [
-        "role_edit.html"
-      ]
+      "path": "/admin/roles/new"
     },
     {
       "name": "role-rights",
@@ -55,17 +49,17 @@
     {
       "name": "exit-editor",
       "path": "/admin/ru-exits",
-      "open": "Редактировать"
+      "open": "wg-ru"
     },
     {
       "name": "exit-new",
       "path": "/admin/ru-exits",
-      "open": "Добавить RU-выход"
+      "open": "Добавить альтернативный выход"
     },
     {
       "name": "module-editor",
       "path": "/admin/login-methods",
-      "open": "Настроить модуль",
+      "open": "Почта",
       "templates": [
         "provider.html"
       ]
@@ -180,6 +174,16 @@
       "name": "router-applying",
       "path": "/device/1/routing",
       "state": "applying"
+    },
+    {
+      "name": "builtin-editor",
+      "path": "/admin/login-methods",
+      "open": "Приложение-аутентификатор"
+    },
+    {
+      "name": "methods-disabled",
+      "path": "/admin/login-methods",
+      "state": "methods-disabled"
     }
   ]
 }

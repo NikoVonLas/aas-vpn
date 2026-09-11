@@ -21,13 +21,14 @@ for (const state of registry.states) {
     let path = state.path;
     if (path.startsWith('account-')) {
       await page.locator('.account-row').filter({ hasText: 'Александр Константинопольский' }).click();
-      path = new URL(page.url()).pathname;
+      const account = (await page.locator('.account-list > details[open]').getAttribute('id')).slice('account-'.length);
+      path = '/accounts/' + account + '/edit';
       if (state.path === 'account-routing') path = path.replace('/edit', '/routing');
     }
     if (state.state) await page.request.get('/fixture/state/' + state.state);
     await page.goto(path);
     if (state.name !== 'expired') await expect(page.getByRole('heading', { level: 1 })).not.toHaveText('Не получилось');
-    if (state.open) await page.locator('summary').filter({ hasText: state.open }).first().click();
+    if (state.open) await page.locator('summary:visible').filter({ hasText: state.open }).first().click();
     await stable(page);
     await expect(page).toHaveScreenshot(state.name + '.png', { fullPage: true });
   });
@@ -44,7 +45,7 @@ for (const name of ['qr', 'delete']) {
 test('screen recovery result and backup codes', async ({ page }) => {
   await login(page);
   await page.locator('.account-row').filter({ hasText: 'Мария' }).click();
-  await page.getByRole('button', { name: 'Восстановление', exact: true }).click();
+  await page.locator('.account-list > details[open]').getByRole('button', { name: 'Восстановление', exact: true }).click();
   await page.locator('pre').evaluate(node => { node.textContent = 'Тестовый одноразовый код восстановления'; });
   await page.getByText(/^ID аккаунта:/).evaluate(node => { node.textContent = 'ID аккаунта: test-account'; });
   await expect(page).toHaveScreenshot('recovery-result.png', { fullPage: true });
@@ -93,12 +94,12 @@ test('screen login and account field errors', async ({ page }) => {
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
   await expect(page).toHaveScreenshot('login-error.png', { fullPage: true });
   await page.goto('/accounts/new');
-  await page.locator('[name=name]').fill('Новый пользователь');
+  await page.locator('#account-new [name=name]').fill('Новый пользователь');
   await page.locator('[name=username]').fill('admin');
   await page.locator('[name=password]').fill('test-password-for-creation');
   await page.getByRole('button', { name: 'Добавить аккаунт' }).click();
   await expect(page.getByRole('alert')).toBeVisible();
-  await expect(page.locator('[name=name]')).toHaveValue('Новый пользователь');
+  await expect(page.locator('#account-new [name=name]')).toHaveValue('Новый пользователь');
   await expect(page.locator('[name=password]')).toHaveValue('');
   await expect(page).toHaveScreenshot('account-error.png', { fullPage: true });
   await page.goto('/admin/users/+79990000001/devices');

@@ -48,14 +48,16 @@ if (loginForm) {
 }
 // A per-tab, ten-minute draft allowlist. No passwords, codes or private config.
 const draftNames = new Set(['name', 'username', 'device_limit', 'enabled', 'state_present', 'ru_exit_id', 'role_id', 'scope', 'targets', 'permissions', 'primary', 'secondary', 'required', 'ru', 'direct']);
-const draftForms = document.querySelectorAll('#account-form, form[data-role-assignment], .routing-form, form[action="/admin/roles/save"], .device-edit');
+const draftForms = document.querySelectorAll('form[id^=account-form-], form[data-role-assignment], .routing-form, form[action="/admin/roles/save"], .device-edit');
 const resume = new URL(location.href).searchParams.has('resume');
 for (const form of draftForms) {
-  const storageKey = 'aas-draft:' + new URL(form.action).pathname;
+  const storageKey = 'aas-draft:' + new URL(form.action).pathname + ':' + (form.dataset.draftId || '');
   try {
     const raw = sessionStorage.getItem(storageKey);
     const draft = raw ? JSON.parse(raw) : null;
     if (resume && draft && Date.now() - draft.at < 600000) {
+      const editor = form.closest('.entity-editor');
+      if (editor) editor.open = true;
       for (const input of form.elements) {
         if (!draftNames.has(input.name) || !(input.name in draft.values)) continue;
         const values = draft.values[input.name];

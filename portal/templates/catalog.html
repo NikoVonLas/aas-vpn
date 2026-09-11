@@ -4,5 +4,6 @@
 <section class="card"><h2>Действия</h2><div class="form-actions">{{ button('Отмена', 'secondary', 'button') }}{{ button('Удалить', 'danger', 'button') }}{{ button('Сохранить', type='button') }}{{ button('Загрузка…', type='button', disabled=true) }}</div></section>
 <section class="card"><h2>Статусы</h2><div class="device-actions">{{ status('Применено') }}{{ status('Отключено', true) }}</div><p class="alert alert-secondary">Ожидает применения</p></section>
 <section class="card"><h2>Диалоги</h2><button class="btn secondary qr-button" type="button" data-qr-url="/device/1/qr" data-device-name="Рабочий ноутбук">QR</button></section>
-<section class="card"><details><summary>Раскрываемый раздел</summary><p>Настройки открываются по действию.</p></details></section>
+{% from 'components/editor.html' import editor as entity_editor with context %}
+{% call entity_editor('catalog-editor', 'Раскрываемый редактор', 'Общий компонент для всех списков') %}<p>Настройки открываются по действию. Поля, кнопки и поведение одинаковы во всех разделах.</p>{% endcall %}
 {{ editor }}

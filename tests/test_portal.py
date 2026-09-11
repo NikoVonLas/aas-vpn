@@ -189,7 +189,7 @@ def test_recovery_uses_native_post_response(portal):
     admin_login(app, client)
     key = accounts(app)[1]
     body = client.get('/accounts/' + key + '/edit').text
-    assert 'form="recovery-form"' in body
+    assert 'form="recovery-' + key + '"' in body
     assert 'action="/admin/accounts/' + key + '/recovery"' in body
     response = post(client, '/admin/accounts/' + key + '/recovery')
     assert response.status_code == 200

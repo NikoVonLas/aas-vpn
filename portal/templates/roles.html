@@ -1,3 +1,4 @@
-{% from 'components/forms.html' import link, status with context %}
-<div class="section-head"><p class="muted">Назначайте роли в карточке пользователя. Права и способы входа назначенных ролей складываются.</p>{{ link('Создать роль', '/admin/roles/new', 'btn-primary') }}</div>
-<div class="list-group">{% for role in roles %}<a class="list-group-item list-group-item-action account-row" href="/admin/roles/{{ role.id }}/edit"><div><h2>{{ role.name }}</h2><p class="muted">{{ role.permissions|length }} прав · {{ role.primary_labels|join(', ') or 'Нет основного способа' }}</p></div>{{ status('2FA обязательна' if role.require_2fa else '2FA по настройке пользователя') }}{% if role.protected %}<small>Защищённые права владельца</small>{% endif %}</a>{% endfor %}</div>
+{% from 'components/editor.html' import editor with context %}
+<p class="muted">Назначайте роли в карточке пользователя. Права и способы входа назначенных ролей складываются.</p>
+{% call editor('role-new', 'Создать роль', opened=opened == 'new') %}{{ new_editor }}{% endcall %}
+{% for role in roles %}{% call editor('role-' ~ role.id, role.name, role.permissions|length ~ ' прав · ' ~ (role.primary_labels|join(', ') or 'Нет основного способа'), '2FA обязательна' if role.require_2fa else '2FA по настройке пользователя', opened=opened == role.id, row_class='role-row') %}{{ role.editor }}{% endcall %}{% endfor %}

@@ -422,7 +422,7 @@ def test_user_card_role_assignment_scope_and_revoke(portal):
     admin_login(app, client)
     path = '/accounts/' + first + '/roles'
     assert 'class="account-roles"' in client.get('/accounts/' + first + '/edit').text
-    assert 'class="account-roles"' not in client.get('/admin').text
+    assert 'class="account-roles"' in client.get('/admin').text
     assert '/admin/roles/assign' not in client.get('/admin/roles').text
     assert client.get('/admin/administrators').headers['location'] == '/admin'
     payload = {'role_id': 'observer', 'scope': 'selected', 'targets': [second]}
@@ -446,3 +446,81 @@ def test_user_card_role_assignment_scope_and_revoke(portal):
     with app.auth_store.db() as con:
         con.execute('UPDATE identity_sessions SET confirmed=0')
     assert post(client, path, payload).headers['location'] == '/security/confirm'
+
+
+def test_builtin_global_settings_are_persistent_and_enforced(portal):
+    app, client = portal
+    admin_login(app, client)
+    owner = accounts(app)[0]
+    assert post(client, '/security/totp/start').status_code == 303
+    with app.auth_store.db() as con:
+        pending = con.execute('SELECT pending_totp FROM admins WHERE id=1').fetchone()[0]
+    for method in ('totp', 'webauthn'):
+        response = post(client, '/admin/login-methods/' + method)
+        assert response.status_code == 303
+    import pyotp
+    assert post(client, '/security/totp/start').status_code == 403
+    assert client.get('/security/totp/qr').status_code == 403
+    assert post(client, '/security/totp/confirm', {'code': pyotp.TOTP(pending).now()}).status_code == 403
+    assert post(client, '/security/passkeys/start', {'purpose': 'enroll', 'name': 'Disabled'}).status_code == 403
+    with app.auth_store.db() as con:
+        assert identity.policy(con, owner)['secondary'] == set()
+        assert con.execute('SELECT pending_totp FROM admins WHERE id=1').fetchone()[0] == pending
+    app.startup()
+    with app.auth_store.db() as con:
+        assert identity.enabled_methods(con) == {'password', 'phone'}
+    assert post(client, '/admin/login-methods/totp', {'enabled': '1'}).status_code == 303
+    assert post(client, '/security/totp/start').status_code == 303
+
+
+def test_global_password_disable_requires_another_path_and_blocks_old_sessions(portal):
+    app, client = portal
+    admin_login(app, client)
+    owner = accounts(app)[0]
+    assert post(client, '/admin/login-methods/password').status_code == 400
+    with app.auth_store.db() as con:
+        assert 'password' in identity.enabled_methods(con)
+        con.execute("UPDATE accounts SET phone='+79990000999' WHERE id=?", (owner,))
+        con.execute("UPDATE roles SET primary_methods='[\"password\",\"phone\"]' WHERE id='owner'")
+    assert post(client, '/admin/login-methods/password').status_code == 303
+    assert client.get('/admin').headers['location'] == '/security'
+    assert 'name="password"' not in client.get('/').text
+    assert post(client, '/login', {'identifier': 'admin', 'password': 'test-password'}).status_code == 401
+    login_account(app, client, owner, ['phone'])
+    assert post(client, '/admin/login-methods/password', {'enabled': '1'}).status_code == 303
+    assert post(client, '/login', {'identifier': 'admin', 'password': 'test-password'}).status_code == 303
+
+
+def test_global_switch_preserves_working_required_second_factor(portal):
+    app, client = portal
+    owner = accounts(app)[0]
+    with app.auth_store.db() as con:
+        con.execute("UPDATE admins SET totp_key='JBSWY3DPEHPK3PXP',totp_verified=1 WHERE id=1")
+        con.execute("UPDATE roles SET require_2fa=1 WHERE id='owner'")
+    login_account(app, client, owner, ['password', 'totp'])
+    response = post(client, '/admin/login-methods/totp')
+    assert response.status_code == 400
+    assert 'обязательный второй фактор' in response.text
+    with app.auth_store.db() as con:
+        assert 'totp' in identity.enabled_methods(con)
+
+
+def test_in_flight_passkey_cannot_complete_after_global_disable(portal):
+    app, client = portal
+    admin_login(app, client)
+    owner = accounts(app)[0]
+    confirmation = Confirmations(app.identities)
+    with app.auth_store.db() as con:
+        key = confirmation.start(con, owner, 'enroll-webauthn', 'webauthn', 'fixture-browser')
+    assert post(client, '/admin/login-methods/webauthn').status_code == 303
+    row = confirmation.attempt(key, 'fixture-browser')
+    with app.auth_store.db() as con, pytest.raises(PermissionError):
+        confirmation.validate_policy(con, row)
+
+
+def test_global_switches_are_owner_only(portal):
+    app, client = portal
+    accounts(app)
+    phone_login(app, client)
+    for method in ('password', 'webauthn', 'totp'):
+        assert post(client, '/admin/login-methods/' + method).status_code == 403

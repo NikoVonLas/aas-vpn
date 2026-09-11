@@ -319,6 +319,8 @@ def failed_form(request, detail):
             return cabinet(request, device['phone'])
         if path.endswith('/routing'):
             return failed_routing_form(request, access)
+        if path.startswith('/admin/login-methods/'):
+            return SecurityPages(__import__(__name__)).modules(request)
         if path.startswith('/login/verify/') and not path.endswith('/retry'):
             return SecurityPages(__import__(__name__)).verify_page(request, path.split('/')[-1])
     except (HTTPException, ValueError, PermissionError):
@@ -588,9 +590,9 @@ def assignment_author(administrator):
 def validate_exit_assignment(con, phone, administrator, exit_id):
     permission = con.execute("SELECT can_change_ru_exit FROM users WHERE phone=?", (phone,)).fetchone()
     if not administrator and not permission[0]:
-        raise HTTPException(403, "Смена RU-выхода запрещена администратором")
+        raise HTTPException(403, "Смена альтернативного выхода запрещена администратором")
     if exit_id and not con.execute("SELECT 1 FROM ru_exits WHERE id=?", (exit_id,)).fetchone():
-        raise HTTPException(400, "RU-выход не найден")
+        raise HTTPException(400, "Альтернативный выход не найден")
 
 
 def save_exit_assignment(con, device_id, exit_id, administrator):
@@ -727,7 +729,7 @@ def navigation_model(actor):
     links = [(CABINET_PATH, 'Мои устройства')]
     if accounts_visible:
         links.append((ADMIN_PATH, 'Пользователи'))
-    for path, label, permission in [(RU_EXITS_PATH, 'RU-выходы', VIEW_EXITS), (ROUTING_PATH, 'Маршрутизация', GLOBAL_ROUTING)]:
+    for path, label, permission in [(RU_EXITS_PATH, 'Альтернативные выходы', VIEW_EXITS), (ROUTING_PATH, 'Маршрутизация', GLOBAL_ROUTING)]:
         if identities.allowed(key, permission):
             links.append((path, label))
     if identities.owner(key):
@@ -756,16 +758,19 @@ def routing_status():
             return {'state': 'stale', 'message': 'Контроллер не отвечает'}
         return status
     except (OSError, ValueError):
-        return {'state': 'pending', 'message': 'Ожидание контроллера'}
+        return {'state': 'pending', 'message': 'Нет данных о маршрутизации'}
 
 
 def status_text(status):
     with db() as con:
         revision = int(con.execute("SELECT value FROM settings WHERE key='routing_revision'").fetchone()[0])
     if status.get('applied_revision') != revision and status.get('state') == 'applied':
-        return 'Ожидает применения'
-    return {'applied': 'Применено', 'error': 'Ошибка применения; сохранена рабочая конфигурация',
-            'pending': 'Ожидание контроллера', 'stale': 'Контроллер не отвечает'}.get(status.get('state'), 'Ожидает применения')
+        return 'Настройки сохранены. Ожидается применение на VPN-сервере.'
+    return {'applied': 'Настройки применены на VPN-сервере.',
+            'error': 'Не удалось применить изменения. VPN использует предыдущие настройки.',
+            'pending': 'Нет данных о маршрутизации: сервис применения настроек ещё не передал состояние.',
+            'stale': 'Данные о маршрутизации устарели: VPN-сервер не обновлял состояние более 45 секунд.'}.get(
+                status.get('state'), 'Настройки сохранены. Ожидается применение на VPN-сервере.')
 
 
 def device_actions(device, request=None):
@@ -803,8 +808,10 @@ def device_edit_form(device, exits, can_change_exit, can_rename=True):
 
 def exit_health_label(status, node_id):
     state = status.get('exits', {}).get(str(node_id), {})
-    if status.get('state') in {'pending', 'stale'} or not state:
-        return 'Проверяется'
+    if status.get('state') == 'stale':
+        return 'Данные о доступности устарели'
+    if status.get('state') == 'pending' or not state:
+        return 'Нет данных о доступности'
     return 'Доступен' if state.get('healthy') else UNAVAILABLE_LABEL
 
 
@@ -837,7 +844,7 @@ def ru_exits_page(request: Request):
                     editor=render('components/exit_form.html', node=node, config=config,
                                   can_default=can_default, default=default) if can_edit else '')
         nodes.append(node)
-    return page('RU-выходы', render('exits.html', nodes=nodes, default=default, can_edit=can_edit,
+    return page('Альтернативные выходы', render('exits.html', nodes=nodes, default=default, can_edit=can_edit,
                 can_default=can_default, routing_status=status_text(status),
                 new_editor=render('components/exit_form.html', node=None, config='', can_default=False, default=default)), show_header=True)
 
@@ -883,7 +890,7 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
         con.execute(BEGIN_WRITE)
         old = con.execute('SELECT * FROM ru_exits WHERE id=?', (exit_id,)).fetchone() if exit_id else None
         if exit_id and not old:
-            raise HTTPException(404, 'RU-выход не найден')
+            raise HTTPException(404, 'Альтернативный выход не найден')
         if not old and not endpoint:
             raise HTTPException(400, 'Загрузите или вставьте WireGuard-конфиг')
         if not old and con.execute('SELECT count(*) FROM ru_exits').fetchone()[0] >= 64:
@@ -904,7 +911,7 @@ def default_ru_exit(request: Request, exit_id: int):
     with db() as con:
         con.execute(BEGIN_WRITE)
         if not con.execute('SELECT 1 FROM ru_exits WHERE id=?', (exit_id,)).fetchone():
-            raise HTTPException(404, 'RU-выход не найден')
+            raise HTTPException(404, 'Альтернативный выход не найден')
         con.execute("UPDATE settings SET value=? WHERE key='ru_default'", (str(exit_id),))
         changed(con)
     audit_change(request, DEFAULT_EXIT_ACTION, exit_id)

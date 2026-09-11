@@ -42,7 +42,7 @@ def test_account_editor_is_scoped_and_search_cannot_leak_other_accounts(portal):
     assert '/accounts/' + owner + '/edit' not in page
     assert client.get('/accounts/' + owner + '/edit').status_code == 404
     assert client.get('/accounts/' + second + '/edit').status_code == 200
-    assert 'RU-выходы' not in client.get('/admin').text
+    assert 'Альтернативные выходы' not in client.get('/admin').text
     assert 'Способы входа' not in client.get('/admin').text
 
 
@@ -57,11 +57,11 @@ def test_account_filter_pagination_and_invalid_save_are_atomic(portal):
             con.execute('INSERT INTO portal.users(phone,account_id,name,device_limit,enabled,created_at) VALUES(?,?,?,2,1,0)', (new, new, f'Find {index:02}'))
     first = client.get('/admin?q=Find&page=1').text
     second = client.get('/admin?q=Find&page=2').text
-    assert first.count('class="list-group-item list-group-item-action account-row"') == 25
-    assert second.count('class="list-group-item list-group-item-action account-row"') == 5
-    assert 'Find 25' not in first
-    assert 'Find 25' in second
-    assert 'Find 00' not in client.get('/admin?q=Find&state=disabled').text
+    assert first.count('class="editor-summary account-row"') == 25
+    assert second.count('class="editor-summary account-row"') == 5
+    assert '<h2>Find 25</h2>' not in first
+    assert '<h2>Find 25</h2>' in second
+    assert '<h2>Find 00</h2>' not in client.get('/admin?q=Find&state=disabled').text
     assert post(client, '/accounts/' + key + '/save', {'name': 'Not saved', 'device_limit': '0'}).status_code == 400
     with app.db() as con:
         assert con.execute('SELECT name FROM users WHERE account_id=?', (key,)).fetchone()[0] == 'Первый'
@@ -72,14 +72,14 @@ def test_form_has_one_csrf_and_protected_role_values_survive_post(portal):
     admin_login(app, client)
     key = accounts(app)[1]
     page = client.get('/accounts/' + key + '/edit').text
-    assert 'form="recovery-form"' in page
+    assert 'form="recovery-' + key + '"' in page
     role = client.get('/admin/roles/owner/edit').text
     assert 'readonly' in role
     assert 'disabled' in role
     assert 'name="permissions" value="accounts.view"' in role
     # Ordinary and secondary form actions receive a token, without regex insertion.
     import re
-    forms = re.findall(r'<form\b.*?</form>', page, re.S)
+    forms = re.findall(r'<form\b[^>]*method="post".*?</form>', page, re.S)
     assert all(form.count('name="csrf_token"') == 1 for form in forms)
 
 
@@ -165,3 +165,14 @@ def test_privileges_do_not_change_personal_device_navigation(portal):
         active = re.findall(r'<a[^>]*aria-current="page"[^>]*>([^<]+)</a>', response.text)
         assert active == ['Мои устройства' if path in personal else 'Пользователи']
     assert post(client, '/device/1/update', {'name': 'phone1'}).headers['location'] == '/cabinet'
+
+
+def test_absent_router_report_is_not_a_running_health_check(portal):
+    app, _ = portal
+    pending = app.routing_status()
+    assert pending['state'] == 'pending'
+    assert app.exit_health_label(pending, 1) == 'Нет данных о доступности'
+    assert 'ещё не передал состояние' in app.status_text(pending)
+    assert app.exit_health_label({'state': 'stale'}, 1) == 'Данные о доступности устарели'
+    assert app.exit_health_label({'state': 'applied', 'exits': {'1': {'healthy': True}}}, 1) == 'Доступен'
+    assert app.exit_health_label({'state': 'applied', 'exits': {'1': {'healthy': False}}}, 1) == 'Недоступен'

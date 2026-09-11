@@ -56,12 +56,17 @@ class AccessPages:
     def conflict(self, request: Request, _exc):
         return self.p.friendly_http_error(request, HTTPException(409, 'Данные уже используются или объект недоступен'))
 
-    def roles(self, request: Request):
+    def roles(self, request: Request, edit: str=''):
         self.p.require_owner(request)
         self.p.admin_nav(ROLES_PATH)
         with self.p.auth_store.db() as con:
             rows = [self.role_model(row) for row in con.execute('SELECT * FROM roles ORDER BY protected DESC,name')]
-        return self.p.page('Роли и доступ', render('roles.html', roles=rows), show_header=True)
+            disabled = [METHODS[key] for key in sorted(identity.SECONDARY - identity.enabled_methods(con))]
+        for row in rows:
+            row['editor'] = self.role_editor(request, row, disabled)
+        new = {'id': '', 'name': '', 'permissions': [], 'primary_methods': ['password'], 'secondary_methods': ['totp', 'webauthn'], 'require_2fa': 0, 'protected': 0}
+        return self.p.page('Роли и доступ', render('roles.html', roles=rows, opened=edit,
+                           new_editor=self.role_editor(request, new, disabled)), show_header=True)
 
     def role_model(self, row):
         result = dict(row)
@@ -72,14 +77,13 @@ class AccessPages:
 
     def edit_role(self, request: Request, role_id: str=''):
         self.p.require_owner(request)
-        self.p.admin_nav(ROLES_PATH)
-        role = {'id': '', 'name': '', 'permissions': [], 'primary_methods': ['password'], 'secondary_methods': ['totp', 'webauthn'], 'require_2fa': 0, 'protected': 0}
         if role_id:
             with self.p.auth_store.db() as con:
-                row = con.execute('SELECT * FROM roles WHERE id=?', (role_id,)).fetchone()
-            if not row:
-                raise HTTPException(404)
-            role = self.role_model(row)
+                if not con.execute('SELECT 1 FROM roles WHERE id=?', (role_id,)).fetchone():
+                    raise HTTPException(404)
+        return self.roles(request, edit=role_id or 'new')
+
+    def role_editor(self, request, role, disabled):
         groups = {name: {} for name in ('Аккаунты', DEVICES_LABEL, ROUTING_LABEL, 'Инфраструктура')}
         for key, label in identity.ACTIONS.items():
             group = 'Инфраструктура'
@@ -90,8 +94,10 @@ class AccessPages:
             elif 'routing' in key or key in {ACCOUNT_EXIT, 'device.exit'}:
                 group = ROUTING_LABEL
             groups[group][key] = label
-        return self.p.page(role['name'] or 'Новая роль', render('role_edit.html', role=role, groups=groups,
-                           primary={key: METHODS[key] for key in sorted(identity.PRIMARY)}, methods=METHODS), show_header=True)
+        submitted = getattr(request.state, 'form_draft', {}).get('role_id', [''])[0]
+        action = '/admin/roles/save' if submitted == role['id'] else '/admin/roles/other'
+        return render('components/role_form.html', form_action=action, role=role, groups=groups,
+                      primary={key: METHODS[key] for key in sorted(identity.PRIMARY)}, methods=METHODS, disabled_methods=disabled)
 
     def save_role(self, request: Request, name: str=Form(...), role_id: str=Form(''), permissions: list[str]=Form([]), primary: list[str]=Form([]), secondary: list[str]=Form([]), required: str=Form(''), copy_role: str=Form('', alias='copy')):
         actor = self.p.require_owner(request, fresh=True)
@@ -145,7 +151,7 @@ class AccessPages:
         editor = render('components/routing_editor.html', path=path, values=values(rows), editable=editable,
                         can_exit=can_exit, exits=exits, selected_exit=resource['ru_exit_id'])
         names = {str(node['id']): node['name'] for node in exits}
-        chain = 'RU-выход аккаунта: ' + names.get(str(account_default), 'Глобальный выход') + ' → Глобальный: ' + names.get(default, '—')
+        chain = 'Альтернативный выход аккаунта: ' + names.get(str(account_default), 'Глобальный выход') + ' → Глобальный: ' + names.get(default, '—')
         status = self.p.routing_status()
         actual = self.p.device_state_labels(resource, {int(k): v for k, v in names.items()}, account_default or int(default), status) if scope == 'device' else ''
         inherited_sources = [('Аккаунт', values(inherited))] if scope == 'device' else []
@@ -175,7 +181,7 @@ class AccessPages:
             if rules != existing or exit_id is None:
                 self.p.require_permission(request, f'{scope}.routing.edit', resource['account_id'])
             if exit_id and (not con.execute('SELECT 1 FROM ru_exits WHERE id=?', (exit_id,)).fetchone()):
-                raise ValueError('RU-выход не найден')
+                raise ValueError('Альтернативный выход не найден')
             con.execute('DELETE FROM scoped_routing_rules WHERE scope=? AND owner_id=?', (scope, str(key)))
             con.executemany('INSERT INTO scoped_routing_rules VALUES(?,?,?,?,?)', [(scope, str(key), *rule) for rule in rules])
             if exit_id is not None:
@@ -202,7 +208,7 @@ class AccessPages:
             row['roles'] = sorted({g['name'] for g in grants if g['account_id'] == row['account_id']})
         return rows, grants
 
-    def accounts(self, request: Request, q: str='', state: str='', role: str='', page: int=1):
+    def accounts(self, request: Request, q: str='', state: str='', role: str='', page: int=1, edit: str=''):
         actor = self.p.current_account(request)
         self.p.admin_nav()
         rows, grants = self.account_rows(actor)
@@ -216,28 +222,35 @@ class AccessPages:
         pages = max(1, (total + 24) // 25)
         current = min(max(1, page), pages)
         links = [(number, '/admin?' + urlencode({'q': query, 'state': state, 'role': role, 'page': number})) for number in range(1, pages + 1)]
-        return self.p.page('Пользователи', render('accounts.html', rows=rows[(current-1)*25:current*25], total=total,
+        shown = rows[(current-1)*25:current*25]
+        access = self.account_access_model() if self.p.identities.owner(actor['account_id']) else None
+        for row in shown:
+            row['editor'] = self.account_editor(actor, row, access)
+        return self.p.page('Пользователи', render('accounts.html', rows=shown, total=total, opened=edit,
+                           new_editor=render('components/account_form.html', form_action='/admin/accounts', row=None, permissions={}, access=None, can_save=True) if self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT) else '',
                            device_count=sum(row['device_count'] for row in rows), query=query, state=state, selected_role=role,
                            role_options=role_options, current_page=current, pages=pages, page_links=links,
                            can_create=self.p.identities.allowed(actor['account_id'], CREATE_ACCOUNT)), show_header=True)
 
     def new_account(self, request: Request):
         self.p.require_permission(request, CREATE_ACCOUNT)
-        self.p.admin_nav()
-        return self.p.page('Новый аккаунт', render('account_edit.html', row=None, permissions={}, access=None, can_save=True), show_header=True)
+        return self.accounts(request, edit='new')
 
     def edit_account(self, request: Request, account_id: str):
         actor = self.p.require_permission(request, 'accounts.view', account_id)
-        self.p.admin_nav()
         rows, _ = self.account_rows(actor)
-        row = next((row for row in rows if row['account_id'] == account_id), None)
-        if not row:
+        index = next((index for index, row in enumerate(rows) if row['account_id'] == account_id), None)
+        if index is None:
             raise HTTPException(404)
+        return self.accounts(request, page=index // 25 + 1, edit=account_id)
+
+    def account_editor(self, actor, row, access):
+        account_id = row['account_id']
         permissions = {action: self.p.identities.allowed(actor['account_id'], action, account_id)
                        for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE, 'devices.view', 'account.routing.view')}
-        access = self.account_roles(account_id, self.account_access_model()) if self.p.identities.owner(actor['account_id']) else None
-        return self.p.page(row['name'], render('account_edit.html', row=row, permissions=permissions, access=access,
-                           can_save=any(permissions[action] for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE))), show_header=True)
+        return render('components/account_form.html', form_action=f'/accounts/{account_id}/save', row=row, permissions=permissions,
+                      access=self.account_roles(account_id, access) if access else None,
+                      can_save=any(permissions[action] for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE)))
 
     def account_access_model(self):
         with self.p.identities.transaction() as con:
@@ -275,6 +288,7 @@ class AccessPages:
             con.execute('INSERT INTO accounts(id,admin_id) VALUES(?,?)', (key, credential))
             identity.grant(con, key, 'user')
             con.execute('INSERT INTO portal.users(phone,account_id,name,device_limit,created_at) VALUES(?,?,?,?,?)', (key, key, name.strip()[:80], device_limit, int(time.time())))
+            identity.ensure_login_paths(con)
             identity.audit(con, actor['account_id'], CREATE_ACCOUNT, key)
         return RedirectResponse(f'/accounts/{key}/edit', 303)
 

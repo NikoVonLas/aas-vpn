@@ -21,15 +21,15 @@ ACCOUNT_ACTIONS = {
     'devices.config': 'Конфигурация и QR устройств',
     'account.routing.view': 'Просмотр маршрутов аккаунта',
     'account.routing.edit': 'Изменение маршрутов аккаунта',
-    'account.exit': 'Выбор RU-выхода аккаунта',
+    'account.exit': 'Выбор альтернативного выхода аккаунта',
     'device.routing.view': 'Просмотр маршрутов устройства',
     'device.routing.edit': 'Изменение маршрутов устройства',
-    'device.exit': 'Выбор RU-выхода устройства',
+    'device.exit': 'Выбор альтернативного выхода устройства',
 }
 GLOBAL_ACTIONS = {
     'accounts.create': 'Создание аккаунтов', 'routing.global': 'Глобальная маршрутизация',
-    'exits.view': 'Просмотр RU-нод', 'exits.edit': 'Управление RU-нодами',
-    'exits.private': 'Просмотр приватных RU-конфигов', 'exits.default': 'Глобальный RU-дефолт',
+    'exits.view': 'Просмотр альтернативных выходов', 'exits.edit': 'Управление альтернативными выходами',
+    'exits.private': 'Просмотр конфигураций альтернативных выходов', 'exits.default': 'Выбор глобального альтернативного выхода',
     'settings.edit': 'Общие настройки', 'devices.assign': 'Назначение устройств без владельца',
 }
 ACTIONS = {**ACCOUNT_ACTIONS, **GLOBAL_ACTIONS}
@@ -43,6 +43,8 @@ class LoginMethod(Enum):
 
 PRIMARY = {method.value for method in LoginMethod if method != LoginMethod.TOTP}
 SECONDARY = {method.value for method in LoginMethod}
+BUILTIN_METHODS = {'password', 'webauthn', 'totp'}
+METHOD_PROVIDERS = {method: ('zvonok' if method == 'phone' else method) for method in SECONDARY}
 USER_ACTIONS = {'accounts.view', 'devices.view', 'devices.create', 'devices.rename',
                 'devices.delete', 'devices.config', 'account.routing.view', 'device.routing.view'}
 SCOPES = {'self', 'selected', 'global'}
@@ -98,11 +100,14 @@ def seed_roles(con):
         ('observer', 'Наблюдатель', {p for p in ACCOUNT_ACTIONS if p.endswith('.view')}, ['password'], ['totp', 'webauthn'], False),
         ('user', 'Пользователь', USER_ACTIONS, ['password'], ['totp', 'webauthn'], False),
         ('phone', 'Телефонный вход', USER_ACTIONS, ['phone'], ['totp', 'webauthn'], False),
-        ('exit-choice', 'Выбор RU-выхода', {'device.exit'}, [], [], False),
+        ('exit-choice', 'Выбор альтернативного выхода', {'device.exit'}, [], [], False),
     ]
     for key, name, permissions, primary, secondary, protected in initial:
         con.execute('INSERT OR IGNORE INTO roles VALUES(?,?,?,?,?,0,?)',
                     (key, name, json.dumps(sorted(permissions)), json.dumps(primary), json.dumps(secondary), int(protected)))
+    con.execute("UPDATE roles SET name='Выбор альтернативного выхода' WHERE id='exit-choice' AND name='Выбор RU-выхода'")
+    for method in sorted(BUILTIN_METHODS):
+        con.execute('INSERT OR IGNORE INTO providers(id,enabled) VALUES(?,1)', (method,))
     for provider in ('zvonok', 'email'):
         enabled = provider == 'zvonok' and bool(os.getenv('ZVONOK_PUBLIC_KEY'))
         config = {key: os.getenv('ZVONOK_' + key.upper(), '') for key in ('public_key', 'campaign_id')} if provider == 'zvonok' else {}
@@ -122,12 +127,18 @@ def grant(con, account_id, role_id, scope='self', targets=()):
     return key
 
 
+def enabled_methods(con):
+    providers = {row['id'] for row in con.execute('SELECT id FROM providers WHERE enabled=1')}
+    return {method for method, provider in METHOD_PROVIDERS.items() if provider in providers}
+
+
 def policy(con, account_id):
     rows = con.execute('''SELECT r.* FROM roles r JOIN grants g ON g.role_id=r.id
                           WHERE g.account_id=?''', (account_id,)).fetchall()
     account = con.execute('SELECT voluntary_2fa FROM accounts WHERE id=?', (account_id,)).fetchone()
-    return {'primary': set().union(*(set(json.loads(r['primary_methods'])) for r in rows)),
-            'secondary': set().union(*(set(json.loads(r['secondary_methods'])) for r in rows)),
+    enabled = enabled_methods(con)
+    return {'primary': set().union(*(set(json.loads(r['primary_methods'])) for r in rows)) & enabled,
+            'secondary': set().union(*(set(json.loads(r['secondary_methods'])) for r in rows)) & enabled,
             'required': bool(account and account[0]) or any(r['require_2fa'] for r in rows)}
 
 
@@ -179,7 +190,7 @@ def configured_methods(con, row):
     for method, provider in (('phone', 'zvonok'), ('email', 'email')):
         if row[method] and con.execute('SELECT 1 FROM providers WHERE id=? AND enabled=1', (provider,)).fetchone():
             methods.add(method)
-    return methods
+    return methods & enabled_methods(con)
 
 
 def ensure_login_paths(con):
@@ -190,6 +201,20 @@ def ensure_login_paths(con):
             raise ValueError('Изменение лишает активный аккаунт настроенного способа входа')
         if rules['required'] and not rules['secondary'] and 'webauthn' not in rules['primary']:
             raise ValueError('Для обязательной 2FA нужен второй способ или WebAuthn с проверкой пользователя')
+
+
+def ready_accounts(con):
+    """Accounts that can currently complete sign-in with their configured factors."""
+    ready = set()
+    for row in con.execute('''SELECT a.* FROM accounts a LEFT JOIN admins c ON c.id=a.admin_id
+                             WHERE a.enabled=1 AND (c.id IS NULL OR c.enabled=1)''').fetchall():
+        rules = policy(con, row['id'])
+        configured = configured_methods(con, row)
+        primary = rules['primary'] & configured
+        secondary = rules['secondary'] & configured
+        if any(not rules['required'] or method == 'webauthn' or secondary - {method} for method in primary):
+            ready.add(row['id'])
+    return ready
 
 
 class Identity:
@@ -302,12 +327,10 @@ class Identity:
             row = dict(row)
             rules = policy(con, row['id'])
             methods = json.loads(row['methods'])
-            available = {'password', 'totp', 'webauthn', 'backup'}
-            for provider in con.execute('SELECT id FROM providers WHERE enabled=1'):
-                available.add('phone' if provider['id'] == 'zvonok' else provider['id'])
+            available = enabled_methods(con) | {'backup'}
             ready = bool(methods and methods[0] in rules['primary'] & available)
             if rules['required']:
-                webauthn_permitted = methods[0] == 'webauthn' or 'webauthn' in rules['secondary']
+                webauthn_permitted = 'webauthn' in available and (methods[0] == 'webauthn' or 'webauthn' in rules['secondary'])
                 ready &= bool(('webauthn' in methods and row['user_verified'] and webauthn_permitted) or
                               (len(set(methods)) >= 2 and methods[-1] in available and (methods[-1] in rules['secondary'] or methods[-1] == 'backup')))
             row.update(account_id=row['id'], id=row['admin_id'], ready=ready, policy=rules)

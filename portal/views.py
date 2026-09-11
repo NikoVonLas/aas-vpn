@@ -36,7 +36,7 @@ def render(template, *, form_action='', **values):
         return draft[name][0] if failed and name in draft and draft[name] else default
     def form_checked(name, value, default=False):
         return str(value) in draft.get(name, []) if failed and name in DRAFT_FIELDS else default
-    return Markup(environment.get_template(template).render(csrf_token=token, form_value=form_value,
+    return Markup(environment.get_template(template).render(csrf_token=token, failed=failed, form_value=form_value,
                   form_checked=form_checked, field_errors=errors, form_error=getattr(request.state, 'form_error', '') if request else '', **values))
 
 

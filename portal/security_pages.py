@@ -100,12 +100,9 @@ class SecurityPages:
             rows = con.execute('''SELECT DISTINCT r.primary_methods FROM roles r
 JOIN grants g ON g.role_id=r.id JOIN accounts a ON a.id=g.account_id
 LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.enabled=1)''').fetchall()
-            enabled = {r['id'] for r in con.execute('SELECT id FROM providers WHERE enabled=1')}
+            enabled = identity.enabled_methods(con)
         methods = {method for row in rows for method in json.loads(row['primary_methods'])} & identity.PRIMARY
-        for method, provider in (('phone', 'zvonok'), ('email', 'email')):
-            if provider not in enabled:
-                methods.discard(method)
-        return methods
+        return methods & enabled
 
     def login_page(self):
         return self.p.page('Вход', login_form(self.available_login_methods()))
@@ -265,7 +262,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         confirmation_only = limited and bool(remaining) and not recovering and not actor['must_change']
         allowed = actor['policy']['primary'] | actor['policy']['secondary']
         if actor['must_change']:
-            allowed = {'password'}
+            allowed &= {'password'}
         elif limited and not recovering:
             allowed = actor['policy']['secondary'] - set(json.loads(actor['methods']))
         if confirmation_only:
@@ -340,6 +337,8 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
 
     def totp_qr(self, request: Request):
         actor = self.profile_actor(request, enrollment=True)
+        if 'totp' not in actor['policy']['secondary']:
+            raise PermissionError('Приложение-аутентификатор отключено или запрещено ролью')
         if not actor['pending_totp'] or time.time() - (actor['pending_at'] or 0) > 600:
             raise HTTPException(404)
         out = io.BytesIO()
@@ -348,6 +347,8 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
 
     def totp_confirm(self, request: Request, code: str=Form(...)):
         actor = self.profile_actor(request, enrollment=True)
+        if 'totp' not in actor['policy']['secondary']:
+            raise PermissionError('Приложение-аутентификатор отключено или запрещено ролью')
         self.p.auth_store.throttle('totp-enroll:' + actor['account_id'], request.client.host)
         self.p.auth_store.confirm_totp(actor['id'], code)
         with self.p.auth_store.db() as con:
@@ -499,19 +500,24 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
     def provider_form(self, provider, fields):
         config = json.loads(provider['config'])
         items = []
-        for key, caption in fields[provider['id']]:
+        for key, caption in fields.get(provider['id'], []):
             secret = key in {'password', 'public_key'}
             items.append({'key': key, 'caption': caption, 'secret': secret, 'value': '' if secret else config.get(key, ''), 'saved': secret and bool(config.get(key))})
         required = ('host', 'port', 'sender') if provider['id'] == 'email' else ('campaign_id', 'public_key')
-        return render('provider.html', provider=provider, fields=items, configured=all(config.get(key) for key in required), tls=config.get('tls', 'starttls'))
+        builtin = provider['id'] in identity.BUILTIN_METHODS
+        label = METHODS.get(provider['id'], 'Звонок · Zvonok')
+        return render('provider.html', form_action=MODULES_PATH + '/' + provider['id'], provider=provider, label=label, builtin=builtin, fields=items,
+                      configured=builtin or all(config.get(key) for key in required), tls=config.get('tls', 'starttls'))
 
     async def save_module(self, request: Request, provider_id: str):
         actor = self.p.require_owner(request, fresh=True)
         form = await request.form()
         fields = {'email': {'host', 'port', 'sender', 'username', 'password', 'tls'}, 'zvonok': {'campaign_id', 'public_key', 'success_statuses'}}
+        fields.update({method: set() for method in identity.BUILTIN_METHODS})
         if provider_id not in fields:
             raise HTTPException(404)
         with self.p.auth_store.db() as con:
+            ready_before = identity.ready_accounts(con)
             config = json.loads(con.execute('SELECT config FROM providers WHERE id=?', (provider_id,)).fetchone()[0])
             for key in fields[provider_id]:
                 value = str(form.get(key, ''))
@@ -526,6 +532,8 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
                 raise ValueError('Укажите ключ API и кампанию Zvonok')
             con.execute('UPDATE providers SET config=?,enabled=? WHERE id=?', (json.dumps(config), int(bool(form.get('enabled'))), provider_id))
             identity.ensure_login_paths(con)
+            if ready_before - identity.ready_accounts(con):
+                raise ValueError('Сначала настройте другой разрешённый способ подтверждения: изменение отключит обязательный второй фактор')
             identity.audit(con, actor['account_id'], 'providers.save', provider_id)
         return RedirectResponse(MODULES_PATH, 303)
 

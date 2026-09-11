@@ -1,6 +1,6 @@
 {% from 'components/forms.html' import csrf, button with context %}
 <form class="stack routing-form" method="post" action="{{ path }}">{{ csrf() }}
-{% for target, label in [('ru', 'Через RU'), ('direct', 'Через основной сервер')] %}<label>{{ label }}<textarea class="form-control" name="{{ target }}" rows="8" {% if not editable %}readonly{% endif %}>{{ form_value(target, values[target]) }}</textarea></label>{% endfor %}
+{% for target, label in [('ru', 'Через альтернативный выход'), ('direct', 'Через основной сервер')] %}<label>{{ label }}<textarea class="form-control" name="{{ target }}" rows="8" {% if not editable %}readonly{% endif %}>{{ form_value(target, values[target]) }}</textarea></label>{% endfor %}
 <p class="muted routing-help">По одному правилу на строку: example.ru — точный домен; .example.ru — домен и поддомены; IPv4 или CIDR. При равной точности используется основной сервер.</p>
-{% if can_exit %}<label>RU-выход аккаунта<select class="form-select" name="ru_exit_id"><option value="0">Глобальный выход</option>{% for node in exits %}<option value="{{ node.id }}" {% if node.id == selected_exit %}selected{% endif %}>{{ node.name }}</option>{% endfor %}</select></label>{% endif %}
+{% if can_exit %}<label>Альтернативный выход аккаунта<select class="form-select" name="ru_exit_id"><option value="0">Глобальный выход</option>{% for node in exits %}<option value="{{ node.id }}" {% if node.id == selected_exit %}selected{% endif %}>{{ node.name }}</option>{% endfor %}</select></label>{% endif %}
 {% if editable or can_exit %}{{ button() }}{% endif %}</form>
