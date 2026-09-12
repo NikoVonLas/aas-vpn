@@ -260,7 +260,7 @@ def admin_ok(request):
     if not row or row['must_change']:
         return False
     with auth_store.db() as con:
-        return bool(con.execute("SELECT 1 FROM grants WHERE account_id=? AND scope!='self'", (row['account_id'],)).fetchone())
+        return identity.privileged(con, row['account_id'])
 
 
 def require_admin(request, action=None):

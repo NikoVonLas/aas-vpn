@@ -260,26 +260,17 @@ class AccessPages:
                       can_save=any(permissions[action] for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE)))
 
     def account_access_model(self):
-        with self.p.identities.transaction() as con:
+        with self.p.auth_store.db() as con:
             roles = {r['id']: r['name'] for r in con.execute('SELECT id,name FROM roles ORDER BY protected DESC,name')}
-            names = {r['id']: r['name'] + ' · ' + (r['login'] or r['id']) for r in con.execute('SELECT a.id,u.name,COALESCE(c.username,a.phone) login FROM accounts a JOIN portal.users u ON u.account_id=a.id LEFT JOIN admins c ON c.id=a.admin_id ORDER BY u.name')}
             grants = {}
-            for row in con.execute('SELECT g.*,r.name FROM grants g JOIN roles r ON r.id=g.role_id ORDER BY r.name,g.scope'):
-                grants.setdefault(row['account_id'], []).append(dict(row))
-            targets = {}
-            for row in con.execute('SELECT * FROM grant_targets'):
-                targets.setdefault(row['grant_id'], []).append(row['account_id'])
-        return roles, names, grants, targets
+            for row in con.execute('SELECT account_id,role_id FROM grants'):
+                grants.setdefault(row['account_id'], set()).add(row['role_id'])
+        return roles, grants
 
     def account_roles(self, key, access):
-        roles, names, grants, targets = access
-        assigned = grants.get(key, [])
-        summary = ', '.join(sorted({row['name'] for row in assigned})) or 'не назначены'
-        for row in assigned:
-            row['scope_label'] = {'self': 'Свой аккаунт', 'selected': 'Выбранные аккаунты', 'global': 'Глобально'}[row['scope']]
-            row['selected'] = ', '.join(names.get(target, target) for target in targets.get(row['id'], []))
-        return render('components/account_roles.html', summary=summary, assigned=assigned,
-                      path=f'/accounts/{key}/roles', roles=roles, names=names)
+        roles, grants = access
+        return render('components/account_roles.html', form_action=f'/accounts/{key}/save',
+                      account_id=key, roles=roles, selected=grants.get(key, set()))
 
     def assign_account(self, request: Request, account_id: str, role_id: str=Form(''), scope: str=Form('self'), targets: list[str]=Form([]), remove: str=Form('')):
         return self.assign(request, account_id, role_id, scope, targets, remove)
@@ -292,7 +283,7 @@ class AccessPages:
         with self.p.identities.transaction() as con:
             credential, number = self.new_account_credentials(con, username, password, phone)
             con.execute('INSERT INTO accounts(id,admin_id,phone) VALUES(?,?,?)', (key, credential, number))
-            identity.grant(con, key, 'user')
+            identity.grant(con, key, 'user', role_based=True)
             con.execute('INSERT INTO portal.users(phone,account_id,name,device_limit,created_at) VALUES(?,?,?,?,?)', (key, key, name.strip()[:80], device_limit, int(time.time())))
             identity.ensure_login_paths(con)
             identity.audit(con, actor['account_id'], CREATE_ACCOUNT, key)
@@ -314,8 +305,8 @@ class AccessPages:
             raise ValueError('Укажите разрешённый способ входа: телефон или логин и пароль')
         return credential, number
 
-    def save_account(self, request: Request, account_id: str, name: str | None=Form(None), device_limit: int | None=Form(None), enabled: str=Form(''), state_present: str=Form('')):
-        actor = self.p.current_account(request)
+    def save_account(self, request: Request, account_id: str, name: str | None=Form(None), device_limit: int | None=Form(None), enabled: str=Form(''), state_present: str=Form(''), roles: list[str]=Form([]), roles_present: str=Form('')):
+        actor = self.p.require_owner(request) if roles_present or roles else self.p.current_account(request)
         for (present, action) in [(name is not None, EDIT_ACCOUNT), (device_limit is not None, ACCOUNT_LIMITS), (bool(state_present), ACCOUNT_STATE)]:
             if present:
                 self.p.require_permission(request, action, account_id)
@@ -325,22 +316,33 @@ class AccessPages:
             target = con.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
             if not target:
                 raise HTTPException(404)
-            privileged = con.execute("SELECT 1 FROM grants WHERE account_id=? AND scope!='self'", (account_id,)).fetchone()
-            if privileged and (not identity.owner(con, actor['account_id'])):
+            if identity.privileged(con, account_id) and (not identity.owner(con, actor['account_id'])):
                 raise PermissionError('Только администратор управляет административными аккаунтами')
             if name is not None:
                 con.execute('UPDATE portal.users SET name=? WHERE account_id=?', (name.strip()[:80], account_id))
             if device_limit is not None:
                 con.execute('UPDATE portal.users SET device_limit=? WHERE account_id=?', (device_limit, account_id))
             if state_present:
-                con.execute('UPDATE portal.users SET enabled=? WHERE account_id=?', (int(bool(enabled)), account_id))
-                con.execute('UPDATE accounts SET enabled=? WHERE id=?', (int(bool(enabled)), account_id))
-                con.execute('UPDATE admins SET enabled=? WHERE id=?', (int(bool(enabled)), target['admin_id']))
-                identity.ensure_owner(con)
-                if target['enabled'] != int(bool(enabled)):
-                    con.execute('DELETE FROM identity_sessions WHERE account_id=?', (account_id,))
+                self.save_account_state(con, target, bool(enabled))
+            if roles_present or roles:
+                self.save_account_roles(con, actor, account_id, roles)
             identity.audit(con, actor['account_id'], 'accounts.save', account_id)
         return RedirectResponse(f'/accounts/{account_id}/edit', 303)
+
+    def save_account_state(self, con, target, enabled):
+        account_id = target['id']
+        con.execute('UPDATE portal.users SET enabled=? WHERE account_id=?', (int(enabled), account_id))
+        con.execute('UPDATE accounts SET enabled=? WHERE id=?', (int(enabled), account_id))
+        con.execute('UPDATE admins SET enabled=? WHERE id=?', (int(enabled), target['admin_id']))
+        identity.ensure_owner(con)
+        if bool(target['enabled']) != enabled:
+            con.execute('DELETE FROM identity_sessions WHERE account_id=?', (account_id,))
+
+    def save_account_roles(self, con, actor, account_id, roles):
+        current = {r['role_id'] for r in con.execute('SELECT role_id FROM grants WHERE account_id=?', (account_id,))}
+        if set(roles) != current:
+            self.p.require_fresh(actor)
+        identity.replace_roles(con, actor['account_id'], account_id, roles)
 
 def register(portal):
     pages = AccessPages(portal)

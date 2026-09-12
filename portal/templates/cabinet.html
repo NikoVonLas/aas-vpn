@@ -1,6 +1,21 @@
 {% from 'components/forms.html' import csrf, field, button, link, breadcrumbs with context %}
 {% if managed %}{{ breadcrumbs([('Пользователи', '/admin'), (user.name, '/accounts/' ~ user.account_id ~ '/edit'), ('Устройства', '')]) }}{% endif %}
 <div class="section-head"><p>Устройств: {{ count }} из {{ user.device_limit }}</p>{% if can_route %}{{ link('Маршрутизация аккаунта', '/accounts/' ~ user.account_id ~ '/routing') }}{% endif %}</div>
-<details class="card guide"><summary>Как подключиться</summary><p>Установите AmneziaWG на устройство.</p><div class="app-links"><a href="https://play.google.com/store/apps/details?id=org.amnezia.awg" target="_blank" rel="noopener">Android</a><a href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">iPhone / iPad</a><a href="macappstore://apps.apple.com/app/id6478942365">macOS</a><a href="/download/amneziawg/windows">Windows</a></div><p>Добавьте устройство ниже. В AmneziaWG импортируйте «Файл» из карточки или отсканируйте её QR-код с другого экрана.</p></details>
+<details class="card guide"><summary>Как подключиться</summary>
+<div class="guide-content">
+<h3>1. Установите AmneziaWG</h3>
+<p>Выберите приложение для устройства, которое хотите подключить к VPN.</p>
+<div class="app-links"><a href="https://play.google.com/store/apps/details?id=org.amnezia.awg" target="_blank" rel="noopener">Android</a><a href="https://apps.apple.com/app/amneziawg/id6478942365" target="_blank" rel="noopener">iPhone / iPad</a><a href="macappstore://apps.apple.com/app/id6478942365">macOS</a><a href="/download/amneziawg/windows">Windows</a></div>
+<h3>2. Добавьте устройство на сайте</h3>
+<ol><li>Под инструкцией найдите форму «Добавить устройство».</li><li>Введите понятное название, например «Телефон», и нажмите «Добавить устройство».</li><li>Дождитесь появления карточки с кнопками «Файл» и «QR». Если карточка уже есть, используйте её.</li></ol>
+<h3>3. Импортируйте настройки</h3>
+<p><strong>Если сайт открыт на подключаемом устройстве:</strong></p>
+<ol><li>Нажмите «Файл» в карточке этого устройства.</li><li>Откройте AmneziaWG и нажмите кнопку добавления подключения.</li><li>Выберите импорт из файла и откройте скачанный файл настроек.</li></ol>
+<p><strong>Если сайт открыт на другом устройстве:</strong></p>
+<ol><li>Нажмите «QR» в карточке подключаемого устройства на сайте.</li><li>На подключаемом телефоне откройте AmneziaWG, нажмите кнопку добавления подключения и выберите сканирование QR-кода.</li><li>Наведите камеру на код на другом экране.</li></ol>
+<h3>4. Включите подключение</h3>
+<p>В AmneziaWG включите добавленное подключение. При первом запуске разрешите приложению добавить VPN-подключение, если система запросит подтверждение.</p>
+<p>Для каждого телефона или компьютера создавайте отдельное устройство на сайте. Если лимит исчерпан, удалите ненужное устройство или обратитесь к администратору.</p>
+</div></details>
 {% if can_create %}<section class="card"><h2>Добавить устройство</h2><form class="device-form" method="post" action="/device">{{ csrf() }}{% if is_admin %}<input type="hidden" name="phone" value="{{ user.phone }}">{% endif %}{{ field('name', 'Название устройства', required=true, restore=false) }}{{ button('Добавить устройство') }}</form></section>{% elif count >= user.device_limit %}<output class="d-block alert alert-secondary">Достигнут лимит устройств. Удалите ненужное устройство или обратитесь к владельцу.</output>{% endif %}
 <div class="devices">{{ cards }}{% if not count %}<section class="card"><p>Устройств пока нет.</p></section>{% endif %}</div>

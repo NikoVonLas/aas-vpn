@@ -230,3 +230,42 @@ test('disabled role methods explain their state and survive saving', async ({ pa
     await expect(key).toBeChecked();
   } finally { await page.request.get('/fixture/state/reset'); }
 });
+
+test('account role multiselect supports keyboard, draft and one save', async ({ page }) => {
+  await login(page);
+  await page.locator('.account-row').filter({ hasText: 'Мария' }).click();
+  const initialCard = page.locator('.account-list > details[open]');
+  const account = (await initialCard.getAttribute('id')).slice('account-'.length);
+  await page.goto('/accounts/' + account + '/edit');
+  const card = page.locator('.account-list > details[open]');
+  const roles = card.locator('.account-roles');
+  const control = roles.getByRole('button', { name: /^Роли/ });
+  await control.focus();
+  await page.keyboard.press('Enter');
+  const administrator = roles.getByRole('checkbox', { name: 'Администратор', exact: true });
+  await expect(administrator).toBeFocused();
+  await page.keyboard.press('Space');
+  await page.keyboard.press('Escape');
+  await expect(control).toBeFocused();
+  await card.getByLabel('Лимит устройств').fill('4');
+  await page.request.get('/fixture/state/reauth');
+  await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(page).toHaveURL(/\/security\/confirm$/);
+  await page.getByRole('link', { name: 'Перейти ко входу' }).click();
+  await page.locator('[name=identifier]').fill('admin');
+  await page.locator('[name=password]').fill('visual-test-password');
+  await page.getByRole('button', { name: 'Войти', exact: true }).click();
+  if (new URL(page.url()).pathname === '/security') await page.goto('/fixture/complete-login');
+  await expect(page).toHaveURL(new RegExp('/accounts/' + account + '/edit\\?resume=1$'));
+  await expect(control).toContainText('Администратор, Пользователь');
+  await expect(card.getByLabel('Лимит устройств')).toHaveValue('4');
+  await expect(card.locator(':scope > summary')).not.toContainText('Администратор');
+  await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(card.locator(':scope > summary')).toContainText('Администратор');
+  await control.click();
+  await administrator.uncheck();
+  await page.keyboard.press('Escape');
+  await card.getByLabel('Лимит устройств').fill('3');
+  await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(control).toHaveText('Пользователь');
+});

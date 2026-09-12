@@ -26,7 +26,9 @@ ACCOUNT_ACTIONS = {
     'device.routing.edit': 'Изменение маршрутов устройства',
     'device.exit': 'Выбор альтернативного выхода устройства',
 }
+OTHER_ACCOUNTS = 'accounts.others'
 GLOBAL_ACTIONS = {
+    OTHER_ACCOUNTS: 'Доступ к чужим аккаунтам',
     'accounts.create': 'Создание аккаунтов', 'routing.global': 'Глобальная маршрутизация',
     'exits.view': 'Просмотр альтернативных выходов', 'exits.edit': 'Управление альтернативными выходами',
     'exits.private': 'Просмотр конфигураций альтернативных выходов', 'exits.default': 'Выбор глобального альтернативного выхода',
@@ -60,7 +62,8 @@ CREATE TABLE IF NOT EXISTS roles(
  require_2fa INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS grants(
  id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id),
- role_id TEXT NOT NULL REFERENCES roles(id), scope TEXT NOT NULL CHECK(scope IN ('self','selected','global')));
+ role_id TEXT NOT NULL REFERENCES roles(id), scope TEXT NOT NULL CHECK(scope IN ('self','selected','global')),
+ role_based INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS grant_targets(
  grant_id TEXT NOT NULL REFERENCES grants(id) ON DELETE CASCADE,
  account_id TEXT NOT NULL REFERENCES accounts(id), PRIMARY KEY(grant_id,account_id));
@@ -102,6 +105,7 @@ def seed_roles(con):
         con.execute('INSERT OR IGNORE INTO roles VALUES(?,?,?,?,?,?,?)',
                     (key, name, json.dumps(sorted(permissions)), '["password"]', '["totp", "webauthn"]', required, protected))
     migrate_builtin_roles(con)
+    con.execute("UPDATE grants SET role_based=1 WHERE (role_id='user' AND scope='self') OR (role_id='administrator' AND scope='global')")
     for method in sorted(BUILTIN_METHODS):
         con.execute('INSERT OR IGNORE INTO providers(id,enabled) VALUES(?,1)', (method,))
     for provider in ('zvonok', 'email'):
@@ -129,13 +133,13 @@ def migrate_builtin_roles(con):
     con.execute("DELETE FROM roles WHERE id IN ('operator','observer','exit-choice') AND id NOT IN (SELECT role_id FROM grants)")
 
 
-def grant(con, account_id, role_id, scope='self', targets=()):
+def grant(con, account_id, role_id, scope='self', targets=(), *, role_based=False):
     if scope not in SCOPES or (scope != 'selected' and targets) or (scope == 'selected' and not targets):
         raise ValueError('Укажите область назначения и аккаунты')
     if role_id == 'administrator' and scope != 'global':
         raise ValueError('Роль администратора требует глобальной области')
     key = str(uuid.uuid4())
-    con.execute('INSERT INTO grants VALUES(?,?,?,?)', (key, account_id, role_id, scope))
+    con.execute('INSERT INTO grants(id,account_id,role_id,scope,role_based) VALUES(?,?,?,?,?)', (key, account_id, role_id, scope, int(role_based)))
     con.executemany('INSERT INTO grant_targets VALUES(?,?)', [(key, target) for target in set(targets)])
     return key
 
@@ -161,22 +165,51 @@ def owner(con, account_id):
       AND (c.id IS NULL OR c.enabled=1) AND g.role_id='administrator' AND g.scope='global' ''', (account_id,)).fetchone())
 
 
+def legacy_allowed(con, row, actor, action, target):
+    """Retain existing restrictions for older scoped assignments."""
+    if row['scope'] == 'global':
+        return True
+    if action in GLOBAL_ACTIONS or target is None:
+        return False
+    if row['scope'] == 'self':
+        return target == actor
+    return bool(con.execute('SELECT 1 FROM grant_targets WHERE grant_id=? AND account_id=?', (row['id'], target)).fetchone())
+
+
 def allowed(con, actor, action, target=None):
     if action not in ACTIONS:
         return False
-    for row in con.execute('''SELECT g.id,g.scope,r.permissions FROM grants g
-                              JOIN roles r ON r.id=g.role_id WHERE g.account_id=?''', (actor,)):
-        if action not in json.loads(row['permissions']):
-            continue
-        if row['scope'] == 'global':
-            return True
-        if action in GLOBAL_ACTIONS or target is None:
-            continue
-        if row['scope'] == 'self' and target == actor:
-            return True
-        if row['scope'] == 'selected' and con.execute('SELECT 1 FROM grant_targets WHERE grant_id=? AND account_id=?', (row['id'], target)).fetchone():
-            return True
-    return False
+    rows = con.execute('''SELECT g.*,r.permissions FROM grants g
+                          JOIN roles r ON r.id=g.role_id WHERE g.account_id=?''', (actor,)).fetchall()
+    permissions = set().union(*(set(json.loads(row['permissions'])) for row in rows if row['role_based']))
+    if action in permissions and (action in GLOBAL_ACTIONS or target == actor or OTHER_ACCOUNTS in permissions):
+        return True
+    return any(not row['role_based'] and action in json.loads(row['permissions'])
+               and legacy_allowed(con, row, actor, action, target) for row in rows)
+
+
+def privileged(con, account_id):
+    return any((set(json.loads(row['permissions'])) & GLOBAL_ACTIONS.keys()) if row['role_based'] else row['scope'] != 'self'
+               for row in con.execute('SELECT g.*,r.permissions FROM grants g JOIN roles r ON r.id=g.role_id WHERE g.account_id=?', (account_id,)))
+
+
+def replace_roles(con, actor, account_id, role_ids):
+    if not owner(con, actor):
+        raise PermissionError('Только администратор управляет ролями пользователей')
+    selected = set(role_ids)
+    known = {row['id'] for row in con.execute('SELECT id FROM roles')}
+    if not selected or not selected <= known:
+        raise ValueError('Выберите хотя бы одну существующую роль')
+    current = {row['role_id'] for row in con.execute('SELECT role_id FROM grants WHERE account_id=?', (account_id,))}
+    if selected == current:
+        return
+    for role_id in current - selected:
+        con.execute('DELETE FROM grants WHERE account_id=? AND role_id=?', (account_id, role_id))
+    for role_id in sorted(selected - current):
+        grant(con, account_id, role_id, 'global' if role_id == 'administrator' else 'self', role_based=True)
+    ensure_owner(con)
+    ensure_login_paths(con)
+    audit(con, actor, 'roles.replace', account_id)
 
 
 def audit(con, actor, action, target):
@@ -244,6 +277,8 @@ class Identity:
     def initialize(self):
         with self.auth.db() as con:
             con.executescript(SCHEMA)
+            if 'role_based' not in {row['name'] for row in con.execute('PRAGMA table_info(grants)')}:
+                con.execute('ALTER TABLE grants ADD COLUMN role_based INTEGER NOT NULL DEFAULT 0')
             seed_roles(con)
         # Requiring rollback journals is essential for a cross-file atomic commit.
         for path in (self.auth.path, self.main_path):
@@ -260,13 +295,13 @@ class Identity:
                     continue
                 key = str(uuid.uuid4())
                 con.execute('INSERT INTO accounts(id,admin_id,enabled,voluntary_2fa) VALUES(?,?,?,?)', (key, credential['id'], credential['enabled'], credential['totp_verified']))
-                grant(con, key, 'administrator' if first else 'user', 'global' if first else 'self')
+                grant(con, key, 'administrator' if first else 'user', 'global' if first else 'self', role_based=True)
                 con.execute('INSERT INTO portal.users(phone,account_id,name,device_limit,enabled,created_at) VALUES(?,?,?,2,?,?)',
                             (key, key, credential['username'], credential['enabled'], int(time.time())))
             for user in con.execute('SELECT * FROM portal.users WHERE account_id IS NULL').fetchall():
                 key = str(uuid.uuid4())
                 con.execute('INSERT INTO accounts(id,phone,enabled) VALUES(?,?,?)', (key, user['phone'], user['enabled']))
-                grant(con, key, 'user')
+                grant(con, key, 'user', role_based=True)
                 methods = json.loads(con.execute("SELECT primary_methods FROM roles WHERE id='user'").fetchone()[0])
                 con.execute("UPDATE roles SET primary_methods=? WHERE id='user'", (json.dumps(sorted(set(methods) | {'phone'})),))
                 if user['can_change_ru_exit']:

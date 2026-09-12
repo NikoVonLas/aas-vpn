@@ -15,3 +15,11 @@
 {%- endmacro %}
 {% macro status(label, off=false) -%}<span class="badge{% if off %} off{% endif %}">{{ label }}</span>{%- endmacro %}
 {% macro breadcrumbs(items) -%}<nav aria-label="Путь страницы"><ol class="breadcrumb">{% for label, url in items %}<li class="breadcrumb-item">{% if url %}<a href="{{ url }}">{{ label }}</a>{% else %}{{ label }}{% endif %}</li>{% endfor %}</ol></nav>{%- endmacro %}
+
+{% macro multiselect(id, name, label, catalog, selected) -%}
+<div class="multiselect dropdown" data-multiselect>
+<label id="{{ id }}-label" for="{{ id }}">{{ label }}</label>
+<button id="{{ id }}" class="form-select" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="{{ id }}-label {{ id }}-value"><span id="{{ id }}-value" data-selection>Выберите роли</span></button>
+<div class="dropdown-menu" aria-labelledby="{{ id }}-label">{{ choices(name, catalog, selected) }}</div>
+</div>
+{%- endmacro %}

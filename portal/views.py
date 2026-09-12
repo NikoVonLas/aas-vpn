@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 from markupsafe import Markup
 
-DRAFT_FIELDS = {'name', 'username', 'identifier', 'phone', 'device_limit', 'enabled', 'state_present', 'ru_exit_id', 'role_id', 'scope', 'targets', 'permissions', 'primary', 'secondary', 'required', 'ru', 'direct'}
+DRAFT_FIELDS = {'name', 'username', 'identifier', 'phone', 'device_limit', 'enabled', 'state_present', 'ru_exit_id', 'role_id', 'roles', 'roles_present', 'permissions', 'primary', 'secondary', 'required', 'ru', 'direct'}
 
 request_context = ContextVar('presentation_request', default=None)
 environment = Environment(loader=FileSystemLoader(Path(__file__).with_name('templates')),

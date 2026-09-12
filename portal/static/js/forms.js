@@ -13,28 +13,6 @@ window.addEventListener('pageshow', () => document.querySelectorAll('form[data-s
   form.removeAttribute('aria-busy');
   form.querySelectorAll('[aria-disabled]').forEach(button => button.removeAttribute('aria-disabled'));
 }));
-for (const form of document.querySelectorAll('[data-role-assignment]')) {
-  const targets = form.querySelector('[data-targets]');
-  const scope = form.elements.scope;
-  const role = form.elements.role_id;
-  const count = targets.querySelector('[data-selected-count]');
-  const update = () => {
-    const fullAccess = role.value === 'administrator';
-    if (fullAccess) scope.value = 'global';
-    for (const option of scope.options) option.disabled = fullAccess && option.value !== 'global';
-    targets.hidden = scope.value !== 'selected';
-    targets.querySelectorAll('[name=targets]').forEach(input => { input.disabled = targets.hidden; });
-    count.textContent = 'Выбрано: ' + targets.querySelectorAll('[name=targets]:checked').length;
-  };
-  role.addEventListener('change', () => { scope.value = role.value === 'administrator' ? 'global' : 'self'; update(); });
-  scope.addEventListener('change', update);
-  targets.addEventListener('change', update);
-  targets.querySelector('[type=search]').addEventListener('input', event => {
-    const query = event.target.value.toLocaleLowerCase('ru');
-    targets.querySelectorAll('.check-label').forEach(label => { label.hidden = !label.textContent.toLocaleLowerCase('ru').includes(query); });
-  });
-  update();
-}
 const loginForm = document.querySelector('[data-login-methods]');
 if (loginForm) {
   const methods = new Set(loginForm.dataset.loginMethods.split(','));
@@ -52,8 +30,8 @@ if (loginForm) {
   window.addEventListener('pageshow', update);
 }
 // A per-tab, ten-minute draft allowlist. No passwords, codes or private config.
-const draftNames = new Set(['name', 'username', 'phone', 'device_limit', 'enabled', 'state_present', 'ru_exit_id', 'role_id', 'scope', 'targets', 'permissions', 'primary', 'secondary', 'required', 'ru', 'direct']);
-const draftForms = document.querySelectorAll('form[id^=account-form-], form[data-role-assignment], .routing-form, form[action="/admin/roles/save"], .device-edit');
+const draftNames = new Set(['name', 'username', 'phone', 'device_limit', 'enabled', 'state_present', 'ru_exit_id', 'role_id', 'roles', 'roles_present', 'permissions', 'primary', 'secondary', 'required', 'ru', 'direct']);
+const draftForms = document.querySelectorAll('form[id^=account-form-], .routing-form, form[action="/admin/roles/save"], .device-edit');
 const resume = new URL(location.href).searchParams.has('resume');
 for (const form of draftForms) {
   const storageKey = 'aas-draft:' + new URL(form.action).pathname + ':' + (form.dataset.draftId || '');
@@ -103,3 +81,21 @@ document.addEventListener('keydown', event => {
   if (event.key !== 'Escape') return;
   document.querySelectorAll('[data-bs-toggle=tooltip]').forEach(element => bootstrap.Tooltip.getInstance(element)?.hide());
 });
+
+for (const field of document.querySelectorAll('[data-multiselect]')) {
+  const update = () => {
+    const selected = [...field.querySelectorAll('input:checked')].map(input => input.closest('label').textContent.trim());
+    field.querySelector('[data-selection]').textContent = selected.join(', ') || 'Выберите роли';
+  };
+  field.addEventListener('change', update);
+  field.addEventListener('shown.bs.dropdown', () => field.querySelector('input:not(:disabled)')?.focus());
+  field.addEventListener('keydown', event => {
+    if (!['ArrowDown', 'ArrowUp'].includes(event.key) || !field.querySelector('.dropdown-menu.show')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const inputs = [...field.querySelectorAll('input:not(:disabled)')];
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    inputs[(inputs.indexOf(document.activeElement) + step + inputs.length) % inputs.length]?.focus();
+  });
+  update();
+}

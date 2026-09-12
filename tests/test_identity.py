@@ -530,3 +530,55 @@ def test_global_switches_are_owner_only(portal):
     phone_login(app, client)
     for method in ('password', 'webauthn', 'totp'):
         assert post(client, '/admin/login-methods/' + method).status_code == 403
+
+
+def test_role_multiselect_saves_atomically_and_rejects_invalid_changes(portal):
+    app, client = portal
+    owner, first, second = accounts(app)
+    admin_login(app, client)
+    path = '/accounts/' + second + '/save'
+    payload = {'name': 'Общее сохранение', 'device_limit': '5', 'roles_present': '1', 'roles': ['user', 'administrator']}
+    assert post(client, path, payload).status_code == 303
+    with app.identities.transaction() as con:
+        assert con.execute('SELECT name,device_limit FROM portal.users WHERE account_id=?', (second,)).fetchone()[:] == ('Общее сохранение', 5)
+        assert identity.owner(con, second)
+        assert identity.allowed(con, second, 'devices.view', first)
+    assert post(client, path, {**payload, 'name': 'Не сохранять', 'roles': ['missing']}).status_code == 400
+    assert post(client, path, {**payload, 'name': 'Не сохранять', 'roles': []}).status_code == 400
+    with app.db() as con:
+        assert con.execute('SELECT name FROM users WHERE account_id=?', (second,)).fetchone()[0] == 'Общее сохранение'
+    assert post(client, path, {**payload, 'roles': ['user']}).status_code == 303
+    assert not app.identities.allowed(second, 'devices.view', first)
+    assert post(client, '/accounts/' + owner + '/save', {'name': 'Не сохранять', 'roles_present': '1', 'roles': ['user']}).status_code == 400
+    phone_login(app, client)
+    assert post(client, '/accounts/' + first + '/save', {'roles': ['administrator']}).status_code == 403
+
+
+def test_role_permissions_control_other_accounts_and_global_settings_independently(portal):
+    app, _ = portal
+    owner, first, second = accounts(app)
+    with app.auth_store.db() as con:
+        con.execute('INSERT INTO roles VALUES(?,?,?,?,?,0,0)', ('limited-global', 'Настройки', json.dumps(['settings.edit']), '["phone"]', '[]'))
+        identity.replace_roles(con, owner, second, ['user', 'limited-global'])
+        assert identity.allowed(con, second, 'devices.view', second)
+        assert identity.allowed(con, second, 'settings.edit')
+        assert not identity.allowed(con, second, 'devices.view', first)
+        con.execute('UPDATE roles SET permissions=? WHERE id=?', (json.dumps(['settings.edit', identity.OTHER_ACCOUNTS]), 'limited-global'))
+        assert identity.allowed(con, second, 'devices.view', first)
+        assert not identity.allowed(con, second, 'accounts.edit', first)
+        con.execute('UPDATE roles SET permissions=? WHERE id=?', (json.dumps([identity.OTHER_ACCOUNTS]), 'limited-global'))
+        assert not identity.allowed(con, second, 'settings.edit')
+        assert identity.allowed(con, second, 'devices.view', first)
+
+
+def test_old_assignment_schema_migrates_without_widening_selected_access(portal):
+    app, _ = portal
+    _, first, second = accounts(app)
+    with app.auth_store.db() as con:
+        identity.grant(con, first, 'observer', 'selected', [second])
+        con.execute('ALTER TABLE grants DROP COLUMN role_based')
+    app.identities.initialize()
+    assert app.identities.allowed(first, 'devices.view', second)
+    assert not app.identities.allowed(first, 'settings.edit')
+    with app.auth_store.db() as con:
+        assert con.execute("SELECT role_based FROM grants WHERE role_id='observer'").fetchone()[0] == 0

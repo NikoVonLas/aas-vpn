@@ -161,33 +161,26 @@ for (const [phone, allowed] of [['+79990000001', true], ['+79990000002', false]]
   });
 }
 
-test('roles are assigned and revoked inside a user card', async ({ page }) => {
+test('roles are selected together inside a user card', async ({ page }) => {
   await login(page);
-  await page.goto('/admin/administrators');
-  await expect(page).toHaveURL(/\/admin$/);
-  await expect(page.getByRole('link', { name: 'Администраторы', exact: true })).toHaveCount(0);
   await page.locator('.account-row').filter({ hasText: 'Александр Константинопольский' }).click();
   const card = page.locator('.account-list > details[open]');
-  await card.locator('.account-roles > summary').click();
-  const form = card.locator('.account-roles > form.stack');
-  await form.getByRole('combobox', { name: 'Роль', exact: true }).selectOption('administrator');
-  await expect(form.getByRole('combobox', { name: 'Область', exact: true })).toHaveValue('global');
-  await expect(form.locator('[name=scope] option[value=self]')).toHaveJSProperty('disabled', true);
-  await form.getByRole('combobox', { name: 'Роль', exact: true }).selectOption('user');
-  await form.getByRole('combobox', { name: 'Область', exact: true }).selectOption('selected');
-  await expect(form.locator('[data-targets]')).toBeVisible();
-  await form.getByRole('checkbox', { name: /^Мария ·/ }).check();
-  await expect(card).toHaveScreenshot('user-role-assignment.png');
-  await form.getByRole('button', { name: 'Добавить роль', exact: true }).click();
+  const roles = card.locator('.account-roles');
+  await expect(roles).toBeVisible();
+  await expect(roles.locator('summary, [name=scope]')).toHaveCount(0);
+  await roles.getByRole('button', { name: /^Роли/ }).click();
+  await roles.getByRole('checkbox', { name: 'Администратор', exact: true }).check();
+  await expect(page).toHaveScreenshot('user-role-assignment.png', { fullPage: true });
+  await page.keyboard.press('Escape');
+  await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await expect(page).toHaveURL(/\/accounts\/[^/]+\/edit$/);
-  await expect(card.locator('.account-roles > summary')).toContainText('Пользователь');
-  await card.locator('.account-roles > summary').click();
-  const grant = card.locator('form').filter({ hasText: 'Пользователь · Выбранные аккаунты Мария' });
-  await grant.getByRole('button', { name: 'Отозвать назначение', exact: true }).click();
-  await expect(card.locator('form').filter({ hasText: 'Пользователь · Выбранные аккаунты Мария' })).toHaveCount(0);
-  await page.goto('/admin/roles');
-  await expect(page.getByRole('button', { name: 'Добавить роль', exact: true })).toHaveCount(0);
-  await expect(page.locator('form[action="/admin/roles/assign"]')).toHaveCount(0);
+  await expect(roles.getByRole('button', { name: /^Роли/ })).toContainText('Администратор, Пользователь');
+  await roles.getByRole('button', { name: /^Роли/ }).click();
+  await roles.getByRole('checkbox', { name: 'Администратор', exact: true }).uncheck();
+  await page.keyboard.press('Escape');
+  await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(roles.getByRole('button', { name: /^Роли/ })).toHaveText('Пользователь');
+  await expect(card.getByRole('button', { name: /Добавить роль|Отозвать назначение/ })).toHaveCount(0);
 });
 
 
