@@ -326,6 +326,9 @@ test('Enter in the common form starts the mandatory administrator confirmation',
   await page.getByLabel('Пароль', { exact: true }).fill('visual-test-password');
   await page.getByLabel('Пароль', { exact: true }).press('Enter');
   await expect(page).toHaveURL(/\/security$/);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Настройте второй фактор');
+  await expect(page.getByRole('navigation')).toHaveCount(0);
+  await expect(page.locator('.profile-link')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Приложение-аутентификатор (TOTP)', exact: true })).toBeVisible();
 });
 
