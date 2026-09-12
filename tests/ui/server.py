@@ -138,7 +138,7 @@ def fixture_state(name: str, request: Request):
         if name in {'mfa', 'required'}:
             con.execute("UPDATE roles SET require_2fa=1 WHERE id='administrator'")
             con.execute("UPDATE admins SET totp_key='JBSWY3DPEHPK3PXP',totp_verified=1 WHERE id=1")
-        if name == 'mfa':
+        if name in {'mfa', 'mfa-setup'}:
             con.execute("UPDATE identity_sessions SET methods='[\"password\"]' WHERE account_id=?", (owner,))
         if name == 'must-change':
             con.execute('UPDATE admins SET must_change=1 WHERE id=1')

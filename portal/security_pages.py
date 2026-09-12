@@ -26,6 +26,20 @@ REVOKE_ACCOUNT_SESSIONS = 'DELETE FROM identity_sessions WHERE account_id=?'
 MODULES_PATH = '/admin/login-methods'
 
 
+def security_stage(actor, recovering, confirmation_only, allowed):
+    if recovering:
+        return 'Восстановление доступа', 'Настройте разрешённый способ входа, затем войдите заново. До завершения восстановления разделы недоступны.'
+    if actor['must_change']:
+        return 'Задайте новый пароль', 'Замените временный пароль и войдите с новым. После завершения входа откроются разделы портала.'
+    if confirmation_only:
+        return 'Второй шаг входа', 'Первый шаг выполнен. Подтвердите второй фактор — затем автоматически откроется портал. До этого остальные разделы недоступны.'
+    if not actor['ready']:
+        if not allowed:
+            return 'Вход пока недоступен', 'Для аккаунта обязательна 2FA, но доступных способов подтверждения нет. Обратитесь к администратору.'
+        return 'Настройте второй фактор', 'Для вашей роли обязательна 2FA. Настройте один из способов ниже и завершите вход. До этого остальные разделы недоступны.'
+    return 'Безопасность профиля', ''
+
+
 def join_choices(choices):
     return choices[0] if len(choices) == 1 else ', '.join(choices[:-1]) + ' или ' + choices[-1]
 
@@ -278,7 +292,10 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         if confirmation_only:
             allowed = set()
         second = render('second_factor.html', remaining=remaining, methods=METHODS) if confirmation_only else ''
-        return self.p.page('Безопасность профиля', render('security.html', actor=actor, role_requires=role_requires,
+        title, introduction = security_stage(actor, recovering, confirmation_only, allowed)
+        home = '/admin' if self.p.identities.owner(key) else '/cabinet'
+        return self.p.page(title, render('security.html', actor=actor, role_requires=role_requires,
+                           introduction=introduction, home=home, setup_totp='totp' in allowed,
                            limited=limited, recovering=recovering, backup_count=backup_count, second=second,
                            credentials=self.credential_forms(actor, allowed), totp=self.totp_form(actor, allowed),
                            passkeys=render('components/passkeys.html', keys=keys) if 'webauthn' in allowed else '', sessions=sessions), show_header=True)

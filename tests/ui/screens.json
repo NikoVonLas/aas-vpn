@@ -187,6 +187,11 @@
       "name": "optional-mfa",
       "path": "/security",
       "state": "optional-mfa"
+    },
+    {
+      "name": "mfa-setup",
+      "path": "/security",
+      "state": "mfa-setup"
     }
   ]
 }

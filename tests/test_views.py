@@ -105,11 +105,26 @@ def test_restricted_session_only_shows_required_confirmation(portal):
         con.execute("UPDATE roles SET require_2fa=1 WHERE id='administrator'")
     post(client, '/login', {'identifier': 'admin', 'password': 'test-password'})
     body = client.get('/security').text
+    assert '<h1>Второй шаг входа</h1>' in body
     assert 'Завершите подтверждение входа' in body
     assert 'action="/security/second"' in body
     assert 'action="/security/password"' not in body
     assert 'action="/security/mfa"' not in body
     assert 'Сессии' not in body
+
+
+def test_first_admin_login_explains_setup_and_keeps_access_locked(portal):
+    app, client = portal
+    with app.auth_store.db() as con:
+        con.execute("UPDATE roles SET require_2fa=1 WHERE id='administrator'")
+    response = post(client, '/login', {'identifier': 'admin', 'password': 'test-password'})
+    assert response.headers['location'] == '/security'
+    body = client.get('/security').text
+    assert '<h1>Настройте второй фактор</h1>' in body
+    assert 'До этого остальные разделы недоступны' in body
+    assert 'profile-link' not in body
+    assert 'id="navigation"' not in body
+    assert client.get('/admin', follow_redirects=False).headers['location'] == '/security'
 
 
 def test_vendored_bootstrap_matches_pinned_integrity():

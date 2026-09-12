@@ -200,4 +200,6 @@ test('role permissions and profile forms are visible with consistent actions', a
   await expect(page.locator('.admin-nav a[href="/security"]')).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Подтвердить вход заново' })).toHaveCount(0);
   await expect(page.locator('.profile-link')).toHaveAttribute('aria-current', 'page');
+  await page.getByRole('link', { name: 'Вернуться к разделам', exact: true }).click();
+  await expect(page).toHaveURL(/\/admin$/);
 });
