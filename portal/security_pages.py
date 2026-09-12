@@ -1,6 +1,5 @@
 """Unified sign-in and profile security, including staged MFA and passkeys."""
 import base64
-import html
 import io
 import json
 import os
@@ -17,14 +16,28 @@ from webauthn.helpers import options_to_json, base64url_to_bytes
 from webauthn.helpers.structs import AuthenticatorSelectionCriteria, ResidentKeyRequirement, UserVerificationRequirement, PublicKeyCredentialDescriptor
 from webauthn.helpers.exceptions import WebAuthnException
 import identity
-from access_pages import esc, METHODS
+from access_pages import METHODS
+from views import render, local_path, request_context
 from login_methods import Confirmations, totp_check
 
 SECURITY_PATH = '/security'
 ACCOUNT_QUERY = 'SELECT * FROM accounts WHERE id=?'
-SECTION_END = '</section>'
 REVOKE_ACCOUNT_SESSIONS = 'DELETE FROM identity_sessions WHERE account_id=?'
 MODULES_PATH = '/admin/login-methods'
+
+
+def security_stage(actor, recovering, confirmation_only, allowed):
+    if recovering:
+        return 'Восстановление доступа', 'Настройте разрешённый способ входа, затем войдите заново. До завершения восстановления разделы недоступны.'
+    if actor['must_change']:
+        return 'Задайте новый пароль', 'Замените временный пароль и войдите с новым. После завершения входа откроются разделы портала.'
+    if confirmation_only:
+        return 'Второй шаг входа', 'Первый шаг выполнен. Подтвердите второй фактор — затем автоматически откроется портал. До этого остальные разделы недоступны.'
+    if not actor['ready']:
+        if not allowed:
+            return 'Вход пока недоступен', 'Для аккаунта обязательна 2FA, но доступных способов подтверждения нет. Обратитесь к администратору.'
+        return 'Настройте второй фактор', 'Для вашей роли обязательна 2FA. Настройте один из способов ниже и завершите вход. До этого остальные разделы недоступны.'
+    return 'Безопасность профиля', ''
 
 
 def join_choices(choices):
@@ -32,44 +45,20 @@ def join_choices(choices):
 
 
 def login_hint(methods):
-    hints = ['Введите логин и пароль.'] if 'password' in methods else []
-    contacts = [label for method, label in [('phone', 'телефон с кодом страны, например +7'), ('email', 'почту')] if method in methods]
-    if contacts:
-        hint = 'Для подтверждения укажите ' + join_choices(contacts)
-        hints.append(hint + (' и оставьте пароль пустым.' if 'password' in methods else '.'))
-    if methods == {'webauthn'}:
-        hints.append('Укажите реквизит аккаунта и подтвердите вход ключом / passkey.')
-    return ' '.join(hints)
+    labels = [label for key, label in [('password', 'логин'), ('phone', 'телефон с кодом страны'), ('email', 'почту')] if key in methods]
+    return 'Введите ' + join_choices(labels) + '.' if labels else 'Укажите реквизит аккаунта для входа с ключом / passkey.'
 
 
-def login_actions(methods):
-    body = ''
-    if 'webauthn' in methods:
-        attributes = 'type=submit' if methods == {'webauthn'} else 'type=button class=secondary'
-        body += f'<button {attributes} data-passkey-submit>Войти с ключом / passkey</button>'
-    if methods - {'webauthn'}:
-        body += '<button>' + ('Войти' if 'password' in methods else 'Продолжить') + '</button>'
-    return body
-
-
-def login_form(methods):
-    labels = [label for method, label in [('password', 'логин'), ('phone', 'телефон'), ('email', 'почта')] if method in methods]
-    label = join_choices(labels).capitalize() if labels else 'Аккаунт'
-    attributes = 'autocomplete=username'
+def login_form(methods, identifier='', error=''):
+    labels = [label for key, label in [('password', 'логин'), ('phone', 'телефон'), ('email', 'почта')] if key in methods]
+    input_type = 'text'
     if methods == {'phone'}:
-        attributes = 'type=tel autocomplete=tel placeholder="+7 999 123-45-67"'
+        input_type = 'tel'
     elif methods == {'email'}:
-        attributes = 'type=email autocomplete=email'
-    body = f'''<form class=stack method=post action=/login data-passkey=login>
-<label>{label}<input name=identifier {attributes} autocapitalize=none spellcheck=false maxlength=254 aria-describedby=login-hint required></label>'''
-    if 'password' in methods:
-        required = 'required' if methods == {'password'} else ''
-        body += f'<label>Пароль<input name=password type=password autocomplete=current-password aria-describedby=login-hint {required}></label>'
-    body += f'<p class=muted id=login-hint>{login_hint(methods)}</p>'
-    body += login_actions(methods) + '</form>'
-    if 'webauthn' in methods:
-        body += '<script src=/assets/js/passkeys.js defer></script>'
-    return body
+        input_type = 'email'
+    return render('login.html', methods=sorted(methods), label=join_choices(labels).capitalize() if labels else 'Аккаунт',
+                  input_type=input_type,
+                  identifier=identifier, error=error, hint=login_hint(methods))
 
 
 class SecurityPages:
@@ -90,13 +79,26 @@ class SecurityPages:
             destination = SECURITY_PATH
         elif self.p.identities.owner(session['account_id']):
             destination = '/admin'
+        request = request_context.get()
+        if request and destination != SECURITY_PATH:
+            from itsdangerous import BadSignature
+            try:
+                saved = self.p.return_signer().loads(request.cookies.get('__Host-aas_return', ''), max_age=600)
+                destination = local_path(saved)
+                destination += ('&' if '?' in destination else '?') + 'resume=1'
+            except BadSignature:
+                pass
         response = RedirectResponse(destination, 303)
         response.set_cookie(self.p.auth.COOKIE, token, secure=True, httponly=True, samesite='lax', path='/')
         response.delete_cookie('aas_session', path='/')
+        if destination != SECURITY_PATH:
+            response.delete_cookie('__Host-aas_return', path='/', secure=True, httponly=True)
         return response
 
     def profile_actor(self, request, enrollment=False):
         actor = self.p.current_account(request, limited=True)
+        if self.primary_revoked(actor):
+            raise PermissionError('Использованный способ входа отключён. Войдите другим разрешённым способом.')
         if not actor['ready']:
             with self.p.auth_store.db() as con:
                 row = con.execute(ACCOUNT_QUERY, (actor['account_id'],)).fetchone()
@@ -114,24 +116,22 @@ class SecurityPages:
             rows = con.execute('''SELECT DISTINCT r.primary_methods FROM roles r
 JOIN grants g ON g.role_id=r.id JOIN accounts a ON a.id=g.account_id
 LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.enabled=1)''').fetchall()
-            enabled = {r['id'] for r in con.execute('SELECT id FROM providers WHERE enabled=1')}
+            enabled = identity.enabled_methods(con)
         methods = {method for row in rows for method in json.loads(row['primary_methods'])} & identity.PRIMARY
-        for method, provider in (('phone', 'zvonok'), ('email', 'email')):
-            if provider not in enabled:
-                methods.discard(method)
-        return methods
+        return methods & enabled
 
     def login_page(self):
-        methods = self.available_login_methods()
-        if not methods:
-            return self.p.page('Вход', '<section class=card><p>Способы входа пока не настроены. Обратитесь к владельцу сервиса.</p></section>')
-        form = login_form(methods)
-        return self.p.page('Вход', '<section class=card>' + form + SECTION_END)
+        return self.p.page('Вход', login_form(self.available_login_methods()))
 
     async def login(self, request: Request, identifier: str=Form(...), password: str=Form('')):
         identifier = identifier.strip()
         if password:
-            return self.password_login(request, identifier, password, '')
+            try:
+                return self.password_login(request, identifier, password, '')
+            except HTTPException as exc:
+                response = self.p.page('Вход', login_form(self.available_login_methods(), identifier, str(exc.detail)))
+                response.status_code = exc.status_code
+                return response
         if identifier.startswith('+'):
             return await self.send_confirmation(request, 'phone', identifier)
         if '@' in identifier:
@@ -219,12 +219,15 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             row = con.execute('SELECT * FROM challenges WHERE id=? AND browser_hash=? AND expires>?', (key, self.p.auth_store.digest(self.browser(request)), int(time.time()))).fetchone()
         if not row:
             raise HTTPException(410, 'Подтверждение устарело')
-        if row['method'] == 'phone':
-            dial = json.loads(row['payload']).get('dial', '')
-            body = f'<p>Позвоните на номер кампании: <a href="tel:{esc(dial)}">{esc(dial)}</a></p>'
-        else:
-            body = '<label>Код из письма<input name=code inputmode=numeric pattern="[0-9]{6}" maxlength=6 autocomplete=one-time-code required></label>'
-        return self.p.page('Подтверждение', f'<section class=card><form class=stack method=post action=/login/verify/{esc(key)}>{body}<button>Подтвердить</button></form><p class=muted>Подтверждение действует 10 минут.</p></section>')
+        return self.p.page('Подтверждение', render('confirmation.html', key=key, method=row['method'], dial=json.loads(row['payload']).get('dial', '')))
+
+    async def retry_confirmation(self, request: Request, key: str):
+        with self.p.auth_store.db() as con:
+            row = con.execute('SELECT * FROM challenges WHERE id=? AND browser_hash=?', (key, self.p.auth_store.digest(self.browser(request)))).fetchone()
+        if not row:
+            raise HTTPException(410, 'Подтверждение устарело')
+        payload = json.loads(row['payload'])
+        return await self.send_confirmation(request, row['method'], payload.get('recipient', ''), row['purpose'])
 
     async def verify_confirmation(self, request: Request, key: str, code: str=Form('')):
         row = self.confirmations.attempt(key, self.browser(request))
@@ -239,7 +242,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         return self.finish(token) if token else RedirectResponse(SECURITY_PATH, 303)
 
     def email_link_page(self):
-        return self.p.page('Подтверждение почты', '<section class=card><p>Нажмите кнопку, чтобы подтвердить вход в этом браузере.</p><form class=stack method=post action=/login/link id=email-link><input type=hidden name=proof><button>Подтвердить</button></form><script src=/assets/js/email-link.js defer></script></section>')
+        return self.p.page('Подтверждение почты', render('email_link.html'))
 
     def email_link_finish(self, request: Request, proof: str=Form(...)):
         (key, separator, secret) = proof.partition('.')
@@ -254,69 +257,59 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         token = self.confirmations.consume(row, link=secret)
         return self.finish(token) if token else RedirectResponse(SECURITY_PATH, 303)
 
+    @staticmethod
+    def primary_revoked(actor):
+        methods = json.loads(actor['methods'])
+        return bool(methods and methods[0] != 'recovery' and methods[0] not in actor['policy']['primary'])
+
     def security_page(self, request: Request):
         actor = self.p.current_account(request, limited=True)
+        if self.primary_revoked(actor):
+            return self.p.message('Войдите другим способом', 'Использованный способ входа отключён или больше не разрешён вашей ролью.',
+                                  back_url='/', back_label='Перейти ко входу')
         key = actor['account_id']
         with self.p.auth_store.db() as con:
-            keys = con.execute('SELECT id,name,last_used FROM passkeys WHERE account_id=?', (key,)).fetchall()
-            sessions = con.execute('SELECT token_hash,created,expires FROM identity_sessions WHERE account_id=?', (key,)).fetchall()
+            keys = [dict(row) for row in con.execute('SELECT id,name,last_used FROM passkeys WHERE account_id=?', (key,))]
+            sessions = [dict(row) for row in con.execute('SELECT token_hash,created,expires FROM identity_sessions WHERE account_id=?', (key,))]
             backup_count = con.execute('SELECT count(*) FROM backup_codes WHERE account_id=?', (key,)).fetchone()[0]
-        body = self.p.admin_nav(SECURITY_PATH) if actor['ready'] and self.p.admin_ok(request) else '<p><a href=/cabinet>Устройства</a></p>'
-        body += self.second_factor_form(actor)
-        body += f"""<section class=card><h2>Безопасность профиля</h2><p>{('2FA обязательна' if actor['policy']['required'] else '2FA добровольная')} · резервных кодов: {backup_count}</p><a class="btn secondary" href=/security/confirm>Подтвердить вход заново</a></section>"""
-        allowed = actor['policy']['primary'] | actor['policy']['secondary']
-        body += self.credential_forms(actor, allowed)
-        body += self.totp_form(actor, allowed)
-        if 'webauthn' in allowed:
-            body += '<section class=card><h2>Ключи и passkeys</h2><form class=device-form data-passkey=enroll><label>Название<input name=name maxlength=80 required></label><button>Добавить ключ / passkey</button></form>'
-            for item in keys:
-                used = time.strftime('%Y-%m-%d %H:%M', time.localtime(item['last_used'])) if item['last_used'] else 'ещё не использовался'
-                body += f'''<form class=device-form method=post action=/security/passkeys/delete><input type=hidden name=key value="{esc(item['id'])}"><p>{esc(item['name'])} · {used}</p><button class=danger-soft>Удалить ключ</button></form>'''
-            body += SECTION_END
-        body += f"<section class=card><h2>Второй фактор и восстановление</h2><form class=stack method=post action=/security/mfa><label>Личная настройка 2FA<select name=enabled><option value=1 {'selected' if actor['voluntary_2fa'] else ''}>Включена</option><option value=0 {'' if actor['voluntary_2fa'] else 'selected'}>Выключена (если роль разрешает)</option></select></label><button>Сохранить</button></form><form method=post action=/security/backup/new><button class=secondary>Выпустить резервные коды</button></form></section>"
-        body += '<section class=card><h2>Сессии</h2>'
+            role_requires = bool(con.execute('SELECT 1 FROM roles r JOIN grants g ON g.role_id=r.id WHERE g.account_id=? AND r.require_2fa=1', (key,)).fetchone())
+            account = con.execute(ACCOUNT_QUERY, (key,)).fetchone()
+            configured = identity.configured_methods(con, account)
+        for item in keys:
+            item['used'] = time.strftime('%Y-%m-%d %H:%M', time.localtime(item['last_used'])) if item['last_used'] else 'ещё не использовался'
         for session in sessions:
-            body += f'''<form class=device-form method=post action=/security/sessions/revoke><input type=hidden name=key value="{session['token_hash']}"><p>{('Текущая' if session['token_hash'] == actor['token_hash'] else 'Другая сессия')} · {time.strftime('%Y-%m-%d %H:%M', time.localtime(session['created']))}</p><button class=danger-soft>Завершить</button></form>'''
-        body += '</section><form method=post action=/admin/logout><button class=secondary>Выйти</button></form><script src=/assets/js/passkeys.js defer></script>'
-        return self.p.page('Безопасность профиля', body, show_header=True)
-
-    def second_factor_form(self, actor):
-        body = ''
-        if actor['ready']:
-            return body
-        body += '<section class=card><h2>Завершите подтверждение входа</h2><p>Устройства и управление станут доступны после обязательных проверок.</p>'
-        remaining = actor['policy']['secondary'] - set(json.loads(actor['methods']))
-        for method in sorted(remaining):
-            body += f'<form class=device-form method=post action=/security/second><input type=hidden name=method value={method}>'
-            if method in {'password', 'totp'}:
-                body += f"<label>{METHODS[method]}<input name=code type={('password' if method == 'password' else 'text')} autocomplete={('current-password' if method == 'password' else 'one-time-code')} required></label>"
-            body += f'<button>Подтвердить: {METHODS[method]}</button></form>' if method != 'webauthn' else '</form><form data-passkey=second><button>Подтвердить ключом / passkey</button></form>'
-        body += '<form class=device-form method=post action=/security/backup><label>Резервный код<input name=code autocomplete=off required></label><button>Использовать код</button></form></section>'
-        return body
+            session['date'] = time.strftime('%Y-%m-%d %H:%M', time.localtime(session['created']))
+        self.p.admin_nav(SECURITY_PATH)
+        recovering = json.loads(actor['methods']) == ['recovery']
+        limited = not actor['ready'] or bool(actor['must_change'])
+        remaining = configured & actor['policy']['secondary'] - set(json.loads(actor['methods']))
+        confirmation_only = limited and bool(remaining) and not recovering and not actor['must_change']
+        allowed = actor['policy']['primary'] | actor['policy']['secondary']
+        if actor['must_change']:
+            allowed &= {'password'}
+        elif limited and not recovering:
+            allowed = actor['policy']['secondary'] - set(json.loads(actor['methods']))
+        if confirmation_only:
+            allowed = set()
+        second = render('second_factor.html', remaining=remaining, methods=METHODS) if confirmation_only else ''
+        title, introduction = security_stage(actor, recovering, confirmation_only, allowed)
+        home = '/admin' if self.p.identities.owner(key) else '/cabinet'
+        return self.p.page(title, render('security.html', actor=actor, role_requires=role_requires,
+                           introduction=introduction, home=home, setup_totp='totp' in allowed,
+                           limited=limited, recovering=recovering, backup_count=backup_count, second=second,
+                           credentials=self.credential_forms(actor, allowed), totp=self.totp_form(actor, allowed),
+                           passkeys=render('components/passkeys.html', keys=keys) if 'webauthn' in allowed else '', sessions=sessions), show_header=True)
 
     def credential_forms(self, actor, allowed):
-        body = ''
-        if 'password' in allowed:
-            body += f'''<section class=card><h2>Логин и пароль</h2><form class=stack method=post action=/security/password><label>Логин<input name=username value="{esc(actor['username'] if actor['username'] and (not actor['username'].startswith('account-')) else '')}" maxlength=64 required autocomplete=username></label><label>Новый пароль<input name=password type=password minlength=12 maxlength=128 required autocomplete=new-password></label><button>Сохранить</button></form></section>'''
-        for method in ('phone', 'email'):
-            if method in allowed:
-                body += f"<section class=card><h2>{METHODS[method]}</h2><p>{esc(actor[method])}</p><form class=device-form method=post action=/security/enroll><input type=hidden name=method value={method}><label>Новый реквизит<input name=identifier type={('tel' if method == 'phone' else 'email')} required></label><button>Подтвердить и сохранить</button></form></section>"
-        return body
+        return render('credentials.html', actor=actor, allowed=allowed, methods=METHODS)
 
     def totp_form(self, actor, allowed):
-        body = ''
-        if 'totp' in allowed:
-            body += '<section class=card><h2>TOTP</h2><form method=post action=/security/totp/start><button class=secondary>Настроить TOTP</button></form>'
-            if actor['pending_totp'] and time.time() - (actor['pending_at'] or 0) <= 600:
-                body += '<img src=/security/totp/qr width=240 height=240 alt="QR настройки TOTP"><form class=device-form method=post action=/security/totp/confirm><label>Код TOTP<input name=code inputmode=numeric required></label><button>Подтвердить</button></form>'
-            if actor['totp_verified']:
-                body += '<form method=post action=/security/totp/delete><button class=danger-soft>Удалить TOTP</button></form>'
-            body += SECTION_END
-        return body
+        return render('totp.html', actor=actor, allowed=allowed,
+                      pending=bool(actor['pending_totp']) and time.time() - (actor['pending_at'] or 0) <= 600)
 
     def reauthenticate(self, request: Request):
         self.p.current_account(request, limited=True)
-        return self.p.page('Подтвердите вход', '<section class=card><p>Для изменения доступа и настроек безопасности нужен вход, подтверждённый не более пяти минут назад. Войдите заново разрешённым способом.</p><a class=btn href=/>Перейти ко входу</a></section>')
+        return self.p.message('Повторный вход для защиты аккаунта', 'Вы меняете настройки доступа. С последнего подтверждения прошло более 5 минут: войдите ещё раз, чтобы подтвердить, что это вы. Затем вы вернётесь к своей форме; изменения ещё не отправлены.', back_url='/', back_label='Перейти ко входу')
 
     async def second(self, request: Request, method: str=Form(...), code: str=Form('')):
         actor = self.p.current_account(request, limited=True)
@@ -371,6 +364,8 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
 
     def totp_qr(self, request: Request):
         actor = self.profile_actor(request, enrollment=True)
+        if 'totp' not in actor['policy']['secondary']:
+            raise PermissionError('Приложение-аутентификатор отключено или запрещено ролью')
         if not actor['pending_totp'] or time.time() - (actor['pending_at'] or 0) > 600:
             raise HTTPException(404)
         out = io.BytesIO()
@@ -379,6 +374,8 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
 
     def totp_confirm(self, request: Request, code: str=Form(...)):
         actor = self.profile_actor(request, enrollment=True)
+        if 'totp' not in actor['policy']['secondary']:
+            raise PermissionError('Приложение-аутентификатор отключено или запрещено ролью')
         self.p.auth_store.throttle('totp-enroll:' + actor['account_id'], request.client.host)
         self.p.auth_store.confirm_totp(actor['id'], code)
         with self.p.auth_store.db() as con:
@@ -416,7 +413,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         with self.p.auth_store.db() as con:
             con.execute('DELETE FROM backup_codes WHERE account_id=?', (actor['account_id'],))
             con.executemany('INSERT INTO backup_codes VALUES(?,?)', [(actor['account_id'], self.p.auth_store.digest(code)) for code in codes])
-        return self.p.page('Резервные коды', '<section class=card><p>Сохраните коды в безопасном месте. Каждый используется один раз после основного способа входа. Повторно увидеть их нельзя.</p><pre>' + '\n'.join(codes) + '</pre><a class="btn secondary" href=/security>Готово</a></section>')
+        return self.p.message('Резервные коды', 'Сохраните коды в безопасном месте. Каждый используется один раз после основного способа входа. Повторно увидеть их нельзя.', codes='\n'.join(codes), back_url=SECURITY_PATH, back_label='Готово')
 
     def use_backup(self, request: Request, code: str=Form(...)):
         actor = self.p.current_account(request, limited=True)
@@ -522,30 +519,32 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         self.p.require_owner(request)
         with self.p.auth_store.db() as con:
             providers = con.execute('SELECT * FROM providers ORDER BY id').fetchall()
-        body = self.p.admin_nav(MODULES_PATH)
+        self.p.admin_nav(MODULES_PATH)
         fields = {'email': [('host', 'SMTP-сервер'), ('port', 'Порт'), ('sender', 'Отправитель'), ('username', 'Логин SMTP'), ('password', 'Пароль SMTP')], 'zvonok': [('campaign_id', 'Кампания'), ('public_key', 'Ключ API'), ('success_statuses', 'Успешные статусы')]}
-        body += ''.join(self.provider_form(provider, fields) for provider in providers)
-        return self.p.page('Способы входа', body, show_header=True)
+        from markupsafe import Markup
+        return self.p.page('Способы входа', render('modules.html', providers=Markup('').join(self.provider_form(provider, fields) for provider in providers)), show_header=True)
 
     def provider_form(self, provider, fields):
-        body = ''
         config = json.loads(provider['config'])
-        body += f"<section class=card><h2>{('Почта' if provider['id'] == 'email' else 'Zvonok')}</h2><form class=stack method=post action=/admin/login-methods/{provider['id']}><label class=check-label><input type=checkbox name=enabled value=1 {('checked' if provider['enabled'] else '')}> Модуль включён</label>"
-        for (key, caption) in fields[provider['id']]:
+        items = []
+        for key, caption in fields.get(provider['id'], []):
             secret = key in {'password', 'public_key'}
-            body += f'''<label>{caption}<input name={key} type={('password' if secret else 'text')} value="{(esc(config.get(key, '')) if not secret else '')}" autocomplete=off></label>'''
-        if provider['id'] == 'email':
-            body += f"<label>TLS<select name=tls><option value=starttls>STARTTLS</option><option value=implicit {'selected' if config.get('tls') == 'implicit' else ''}>TLS при подключении</option></select></label>"
-        body += '<p class=muted>Пустое поле секрета сохраняет прежнее значение.</p><button>Сохранить</button></form></section>'
-        return body
+            items.append({'key': key, 'caption': caption, 'secret': secret, 'value': '' if secret else config.get(key, ''), 'saved': secret and bool(config.get(key))})
+        required = ('host', 'port', 'sender') if provider['id'] == 'email' else ('campaign_id', 'public_key')
+        builtin = provider['id'] in identity.BUILTIN_METHODS
+        label = METHODS.get(provider['id'], 'Звонок · Zvonok')
+        return render('provider.html', form_action=MODULES_PATH + '/' + provider['id'], provider=provider, label=label, builtin=builtin, fields=items,
+                      configured=builtin or all(config.get(key) for key in required), tls=config.get('tls', 'starttls'))
 
     async def save_module(self, request: Request, provider_id: str):
         actor = self.p.require_owner(request, fresh=True)
         form = await request.form()
         fields = {'email': {'host', 'port', 'sender', 'username', 'password', 'tls'}, 'zvonok': {'campaign_id', 'public_key', 'success_statuses'}}
+        fields.update({method: set() for method in identity.BUILTIN_METHODS})
         if provider_id not in fields:
             raise HTTPException(404)
         with self.p.auth_store.db() as con:
+            ready_before = identity.ready_accounts(con)
             config = json.loads(con.execute('SELECT config FROM providers WHERE id=?', (provider_id,)).fetchone()[0])
             for key in fields[provider_id]:
                 value = str(form.get(key, ''))
@@ -553,15 +552,22 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
                     value = value.strip()
                 if value or key not in {'password', 'public_key'}:
                     config[key] = value
-            if provider_id == 'email' and form.get('enabled'):
-                if not config.get('host') or not config.get('sender') or config.get('tls') not in {'starttls', 'implicit'} or (not 1 <= int(config.get('port', 0)) <= 65535):
-                    raise ValueError('Укажите SMTP-сервер, порт, отправителя и TLS')
-            if provider_id == 'zvonok' and form.get('enabled') and (not config.get('public_key') or not config.get('campaign_id')):
-                raise ValueError('Укажите ключ API и кампанию Zvonok')
+            if form.get('enabled'):
+                self.validate_module_config(provider_id, config)
             con.execute('UPDATE providers SET config=?,enabled=? WHERE id=?', (json.dumps(config), int(bool(form.get('enabled'))), provider_id))
             identity.ensure_login_paths(con)
+            if ready_before - identity.ready_accounts(con):
+                raise ValueError('Сначала настройте другой разрешённый способ подтверждения: изменение отключит обязательный второй фактор')
             identity.audit(con, actor['account_id'], 'providers.save', provider_id)
         return RedirectResponse(MODULES_PATH, 303)
+
+    @staticmethod
+    def validate_module_config(provider_id, config):
+        if provider_id == 'email':
+            if not config.get('host') or not config.get('sender') or config.get('tls') not in {'starttls', 'implicit'} or not 1 <= int(config.get('port', 0)) <= 65535:
+                raise ValueError('Укажите SMTP-сервер, порт, отправителя и TLS')
+        if provider_id == 'zvonok' and (not config.get('public_key') or not config.get('campaign_id')):
+            raise ValueError('Укажите ключ API и кампанию Zvonok')
 
     def issue_recovery(self, request: Request, account_id: str):
         actor = self.p.require_owner(request, fresh=True)
@@ -571,10 +577,11 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
                 raise HTTPException(404)
             con.execute('INSERT INTO recovery_codes VALUES(?,?,?) ON CONFLICT(account_id) DO UPDATE SET digest=excluded.digest,expires=excluded.expires', (account_id, self.p.auth_store.digest(code), int(time.time()) + 600))
             identity.audit(con, actor['account_id'], 'recovery.issue', account_id)
-        return self.p.page('Одноразовое восстановление', f'<section class=card><p>Код позволяет настроить реквизиты в течение 10 минут и показывается только сейчас. Передайте его владельцу аккаунта безопасным способом.</p><p>ID аккаунта: {esc(account_id)}</p><pre>{esc(code)}</pre><p>Страница восстановления: /login/recovery</p></section>')
+        return self.p.message('Одноразовое восстановление', 'Код позволяет настроить реквизиты в течение 10 минут и показывается только сейчас. Передайте его владельцу аккаунта безопасным способом.',
+                              codes=code, account_id=account_id, recovery=True, back_url=f'/accounts/{account_id}/edit', back_label='К пользователю')
 
     def recovery_form(self):
-        return self.p.page('Восстановление', '<section class=card><form class=stack method=post><label>ID аккаунта<input name=account_id required></label><label>Одноразовый код владельца<input name=code required autocomplete=off></label><button>Продолжить</button></form></section>')
+        return self.p.page('Восстановление', render('recovery.html'))
 
     def recover(self, request: Request, account_id: str=Form(...), code: str=Form(...)):
         self.p.auth_store.throttle('recovery:' + account_id, request.client.host)
@@ -596,6 +603,7 @@ def register(portal):
     portal.app.add_api_route('/admin/login', pages.password_login, methods=['POST'])
     portal.app.add_api_route('/login/start', pages.login_start, methods=['POST'])
     portal.app.add_api_route('/login/verify/{key}', pages.verify_page, methods=['GET'])
+    portal.app.add_api_route('/login/verify/{key}/retry', pages.retry_confirmation, methods=['POST'])
     portal.app.add_api_route('/login/verify/{key}', pages.verify_confirmation, methods=['POST'])
     portal.app.add_api_route('/login/link', pages.email_link_page, methods=['GET'])
     portal.app.add_api_route('/login/link', pages.email_link_finish, methods=['POST'])

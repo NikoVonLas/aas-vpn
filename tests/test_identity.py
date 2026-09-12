@@ -19,6 +19,58 @@ def accounts(app):
     return owner, *users
 
 
+def test_account_state_action_is_explicit_scoped_and_revokes_sessions(portal):
+    app, client = portal
+    owner, first, second = accounts(app)
+    phone_login(app, client)
+    assert post(client, f'/accounts/{second}/state', {'enabled': '0'}).status_code == 404
+    admin_login(app, client)
+    with app.auth_store.db() as con:
+        token = app.identities.new_session(con, first, ['phone'])
+    assert app.auth_store.session(token) is not None
+    path = f'/accounts/{first}/state'
+    assert client.post(path, data={'enabled': '0'}).status_code == 403
+    assert post(client, path, {'enabled': 'false'}).status_code == 400
+    for _ in range(2):
+        assert post(client, path, {'enabled': '0', 'name': 'Ignored'}).status_code == 303
+    assert app.auth_store.session(token) is None
+    with app.db() as con:
+        row = con.execute('SELECT name,enabled FROM users WHERE account_id=?', (first,)).fetchone()
+        assert row['name'] != 'Ignored'
+        assert row['enabled'] == 0
+    assert post(client, path, {'enabled': '1'}).status_code == 303
+    assert post(client, f'/accounts/{owner}/state', {'enabled': '0'}).status_code == 400
+    with app.auth_store.db() as con:
+        assert con.execute('SELECT enabled FROM accounts WHERE id=?', (owner,)).fetchone()[0] == 1
+
+
+def test_account_cannot_be_enabled_without_a_login_method(portal):
+    app, client = portal
+    admin_login(app, client)
+    first = accounts(app)[1]
+    path = f'/accounts/{first}/state'
+    assert post(client, path, {'enabled': '0'}).status_code == 303
+    with app.auth_store.db() as con:
+        con.execute('UPDATE accounts SET phone=NULL WHERE id=?', (first,))
+    assert post(client, path, {'enabled': '1'}).status_code == 400
+    with app.db() as con:
+        assert con.execute('SELECT enabled FROM users WHERE account_id=?', (first,)).fetchone()[0] == 0
+    with app.auth_store.db() as con:
+        assert con.execute('SELECT enabled FROM accounts WHERE id=?', (first,)).fetchone()[0] == 0
+
+
+def test_state_only_editor_has_no_empty_save_action(portal):
+    app, client = portal
+    owner, first, second = accounts(app)
+    app.identities.save_role(owner, 'state-manager', 'State manager', ['accounts.view', 'accounts.state'], [], [], False)
+    give(app, first, 'state-manager', 'selected', [second])
+    phone_login(app, client)
+    response = client.get(f'/accounts/{second}/edit')
+    assert response.status_code == 200
+    assert 'Приостановить' in response.text
+    assert '>Сохранить</button>' not in response.text
+
+
 def give(app, actor, role, scope='self', targets=()):
     with app.auth_store.db() as con:
         return identity.grant(con, actor, role, scope, targets)
@@ -108,7 +160,7 @@ def test_last_owner_and_fresh_confirmation(portal):
     owner, first, _ = accounts(app)
     admin_login(app, client)
     with app.auth_store.db() as con:
-        grant = con.execute("SELECT id FROM grants WHERE account_id=? AND role_id='owner'", (owner,)).fetchone()[0]
+        grant = con.execute("SELECT id FROM grants WHERE account_id=? AND role_id='administrator'", (owner,)).fetchone()[0]
     assert post(client, '/admin/roles/assign', {'account_id': owner, 'remove': grant}).status_code == 400
     assert post(client, '/accounts/' + owner + '/save', {'state_present': '1'}).status_code == 400
     with app.auth_store.db() as con:
@@ -137,13 +189,15 @@ def test_policy_union_and_new_requirement_downgrades_existing_session(portal):
 def test_new_password_account_without_phone_and_immutable_id(portal):
     app, client = portal
     admin_login(app, client)
+    with app.auth_store.db() as con:
+        con.execute("UPDATE roles SET primary_methods='[\"password\",\"phone\"]' WHERE id='user'")
     result = post(client, '/admin/accounts', {'name': 'Password user', 'username': 'password-user', 'password': 'temporary-password', 'device_limit': 3})
     assert result.status_code == 303
     with app.auth_store.db() as con:
         row = con.execute("SELECT a.* FROM accounts a JOIN admins c ON c.id=a.admin_id WHERE c.username='password-user'").fetchone()
         key = row['id']
         assert row['phone'] is None
-        assert identity.policy(con, key)['primary'] == {'password'}
+        assert identity.policy(con, key)['primary'] == {'password', 'phone'}
     state_path = '/accounts/' + key + '/save'
     assert post(client, state_path, {'state_present': '1'}).status_code == 303
     with app.auth_store.db() as con:
@@ -293,7 +347,7 @@ def test_exit_permission_does_not_require_rename_or_route_edit(portal):
         con.execute("INSERT INTO scoped_routing_rules VALUES('account',?,'ru','suffix','example.test')", (first,))
     phone_login(app, client)
     page = client.get('/cabinet').text
-    assert 'name=name' in page
+    assert 'name="name"' in page
     assert 'readonly' in page
     assert post(client, '/device/1/update', {'name': name, 'ru_exit_id': 1}).status_code == 303
     assert post(client, '/device/1/update', {'name': 'Forbidden', 'ru_exit_id': 0}).status_code == 404
@@ -310,10 +364,10 @@ def test_exit_permission_does_not_require_rename_or_route_edit(portal):
 def test_security_page_preserves_mfa_and_module_tls_selection(portal):
     app, client = portal
     admin_login(app, client)
-    assert 'value=0 selected' in client.get('/security').text
+    assert 'value="0" selected' in client.get('/security').text
     with app.auth_store.db() as con:
         con.execute('UPDATE providers SET config=? WHERE id=\'email\'', (json.dumps({'tls': 'implicit'}),))
-    assert 'value=implicit selected' in client.get('/admin/login-methods').text
+    assert 'value="implicit" selected' in client.get('/admin/login-methods').text
     assert client.get('/admin/roles').status_code == 200
 
 
@@ -325,7 +379,7 @@ def test_maintenance_allows_signin_checks_but_freezes_device_changes(portal, mon
     secret = pyotp.random_base32()
     with app.auth_store.db() as con:
         con.execute('UPDATE admins SET totp_key=?,totp_verified=1 WHERE id=1', (secret,))
-        con.execute('UPDATE roles SET require_2fa=1 WHERE id=\'owner\'')
+        con.execute('UPDATE roles SET require_2fa=1 WHERE id=\'administrator\'')
     Path(app.DB).with_name('maintenance').touch()
     response = post(client, '/login', {'identifier': 'admin', 'password': 'test-password'})
     assert response.headers['location'] == '/security'
@@ -393,10 +447,10 @@ def test_login_form_follows_every_method_combination(portal, mask):
         con.execute('UPDATE roles SET primary_methods=?', (json.dumps(sorted(methods)),))
         con.execute('UPDATE providers SET enabled=1')
     body = client.get('/').text
-    assert ('name=password ' in body) == ('password' in methods)
+    assert ('name="password" ' in body) == ('password' in methods)
     assert ('data-passkey-submit' in body) == ('webauthn' in methods)
-    assert ('action=/login ' in body) == bool(methods)
-    for method, text in [('phone', 'телефон с кодом страны'), ('email', 'почту'), ('password', 'Введите логин и пароль.')]:
+    assert ('action="/login" ' in body) == bool(methods)
+    for method, text in [('phone', 'телефон с кодом страны'), ('email', 'почту'), ('password', 'Пароль<input')]:
         assert (text in body) == (method in methods)
 
 
@@ -421,12 +475,13 @@ def test_user_card_role_assignment_scope_and_revoke(portal):
     owner, first, second = accounts(app)
     admin_login(app, client)
     path = '/accounts/' + first + '/roles'
-    assert 'class=account-roles' in client.get('/admin').text
+    assert 'class="account-roles"' in client.get('/accounts/' + first + '/edit').text
+    assert 'class="account-roles"' in client.get('/admin').text
     assert '/admin/roles/assign' not in client.get('/admin/roles').text
     assert client.get('/admin/administrators').headers['location'] == '/admin'
     payload = {'role_id': 'observer', 'scope': 'selected', 'targets': [second]}
     response = post(client, path, payload)
-    assert response.headers['location'] == '/admin#account-' + first
+    assert response.headers['location'] == '/accounts/' + first + '/edit'
     assert app.identities.allowed(first, 'accounts.view', second)
     assert not app.identities.allowed(first, 'accounts.view', owner)
     with app.auth_store.db() as con:
@@ -436,12 +491,146 @@ def test_user_card_role_assignment_scope_and_revoke(portal):
     assert post(client, path, {'role_id': 'observer', 'scope': 'selected'}).status_code == 400
     with app.auth_store.db() as con:
         assert not con.execute("SELECT 1 FROM grants WHERE account_id=? AND role_id='observer'", (first,)).fetchone()
-        protected = con.execute("SELECT id FROM grants WHERE account_id=? AND role_id='owner'", (owner,)).fetchone()[0]
+        protected = con.execute("SELECT id FROM grants WHERE account_id=? AND role_id='administrator'", (owner,)).fetchone()[0]
     assert post(client, '/accounts/' + owner + '/roles', {'remove': protected}).status_code == 400
     phone_login(app, client)
-    assert 'class=account-roles' not in client.get('/admin').text
+    assert 'class="account-roles"' not in client.get('/admin').text
     assert post(client, path, payload).status_code == 403
     admin_login(app, client)
     with app.auth_store.db() as con:
         con.execute('UPDATE identity_sessions SET confirmed=0')
     assert post(client, path, payload).headers['location'] == '/security/confirm'
+
+
+def test_builtin_global_settings_are_persistent_and_enforced(portal):
+    app, client = portal
+    admin_login(app, client)
+    owner = accounts(app)[0]
+    assert post(client, '/security/totp/start').status_code == 303
+    with app.auth_store.db() as con:
+        pending = con.execute('SELECT pending_totp FROM admins WHERE id=1').fetchone()[0]
+    for method in ('totp', 'webauthn'):
+        response = post(client, '/admin/login-methods/' + method)
+        assert response.status_code == 303
+    import pyotp
+    assert post(client, '/security/totp/start').status_code == 403
+    assert client.get('/security/totp/qr').status_code == 403
+    assert post(client, '/security/totp/confirm', {'code': pyotp.TOTP(pending).now()}).status_code == 403
+    assert post(client, '/security/passkeys/start', {'purpose': 'enroll', 'name': 'Disabled'}).status_code == 403
+    with app.auth_store.db() as con:
+        assert identity.policy(con, owner)['secondary'] == set()
+        assert con.execute('SELECT pending_totp FROM admins WHERE id=1').fetchone()[0] == pending
+    app.startup()
+    with app.auth_store.db() as con:
+        assert identity.enabled_methods(con) == {'password', 'phone'}
+    with app.auth_store.db() as con:
+        con.execute("UPDATE roles SET require_2fa=0 WHERE id='administrator'")
+    assert post(client, '/admin/login-methods/totp', {'enabled': '1'}).status_code == 303
+    assert post(client, '/security/totp/start').status_code == 303
+
+
+def test_global_password_disable_requires_another_path_and_blocks_old_sessions(portal):
+    app, client = portal
+    admin_login(app, client)
+    owner = accounts(app)[0]
+    assert post(client, '/admin/login-methods/password').status_code == 400
+    with app.auth_store.db() as con:
+        assert 'password' in identity.enabled_methods(con)
+        con.execute("UPDATE accounts SET phone='+79990000999' WHERE id=?", (owner,))
+        con.execute("UPDATE roles SET primary_methods='[\"password\",\"phone\"]' WHERE id='administrator'")
+    assert post(client, '/admin/login-methods/password').status_code == 303
+    assert client.get('/admin').headers['location'] == '/security'
+    assert 'Войдите другим способом' in client.get('/security').text
+    assert post(client, '/security/totp/start').status_code == 403
+    assert 'name="password"' not in client.get('/').text
+    assert post(client, '/login', {'identifier': 'admin', 'password': 'test-password'}).status_code == 401
+    login_account(app, client, owner, ['phone'])
+    assert post(client, '/admin/login-methods/password', {'enabled': '1'}).status_code == 303
+    assert post(client, '/login', {'identifier': 'admin', 'password': 'test-password'}).status_code == 303
+
+
+def test_global_switch_preserves_working_required_second_factor(portal):
+    app, client = portal
+    owner = accounts(app)[0]
+    with app.auth_store.db() as con:
+        con.execute("UPDATE admins SET totp_key='JBSWY3DPEHPK3PXP',totp_verified=1 WHERE id=1")
+        con.execute("UPDATE roles SET require_2fa=1 WHERE id='administrator'")
+    login_account(app, client, owner, ['password', 'totp'])
+    response = post(client, '/admin/login-methods/totp')
+    assert response.status_code == 400
+    assert 'обязательный второй фактор' in response.text
+    with app.auth_store.db() as con:
+        assert 'totp' in identity.enabled_methods(con)
+
+
+def test_in_flight_passkey_cannot_complete_after_global_disable(portal):
+    app, client = portal
+    admin_login(app, client)
+    owner = accounts(app)[0]
+    confirmation = Confirmations(app.identities)
+    with app.auth_store.db() as con:
+        key = confirmation.start(con, owner, 'enroll-webauthn', 'webauthn', 'fixture-browser')
+    assert post(client, '/admin/login-methods/webauthn').status_code == 303
+    row = confirmation.attempt(key, 'fixture-browser')
+    with app.auth_store.db() as con, pytest.raises(PermissionError):
+        confirmation.validate_policy(con, row)
+
+
+def test_global_switches_are_owner_only(portal):
+    app, client = portal
+    accounts(app)
+    phone_login(app, client)
+    for method in ('password', 'webauthn', 'totp'):
+        assert post(client, '/admin/login-methods/' + method).status_code == 403
+
+
+def test_role_multiselect_saves_atomically_and_rejects_invalid_changes(portal):
+    app, client = portal
+    owner, first, second = accounts(app)
+    admin_login(app, client)
+    path = '/accounts/' + second + '/save'
+    payload = {'name': 'Общее сохранение', 'device_limit': '5', 'roles_present': '1', 'roles': ['user', 'administrator']}
+    assert post(client, path, payload).status_code == 303
+    with app.identities.transaction() as con:
+        assert con.execute('SELECT name,device_limit FROM portal.users WHERE account_id=?', (second,)).fetchone()[:] == ('Общее сохранение', 5)
+        assert identity.owner(con, second)
+        assert identity.allowed(con, second, 'devices.view', first)
+    assert post(client, path, {**payload, 'name': 'Не сохранять', 'roles': ['missing']}).status_code == 400
+    assert post(client, path, {**payload, 'name': 'Не сохранять', 'roles': []}).status_code == 400
+    with app.db() as con:
+        assert con.execute('SELECT name FROM users WHERE account_id=?', (second,)).fetchone()[0] == 'Общее сохранение'
+    assert post(client, path, {**payload, 'roles': ['user']}).status_code == 303
+    assert not app.identities.allowed(second, 'devices.view', first)
+    assert post(client, '/accounts/' + owner + '/save', {'name': 'Не сохранять', 'roles_present': '1', 'roles': ['user']}).status_code == 400
+    phone_login(app, client)
+    assert post(client, '/accounts/' + first + '/save', {'roles': ['administrator']}).status_code == 403
+
+
+def test_role_permissions_control_other_accounts_and_global_settings_independently(portal):
+    app, _ = portal
+    owner, first, second = accounts(app)
+    with app.auth_store.db() as con:
+        con.execute('INSERT INTO roles VALUES(?,?,?,?,?,0,0)', ('limited-global', 'Настройки', json.dumps(['settings.edit']), '["phone"]', '[]'))
+        identity.replace_roles(con, owner, second, ['user', 'limited-global'])
+        assert identity.allowed(con, second, 'devices.view', second)
+        assert identity.allowed(con, second, 'settings.edit')
+        assert not identity.allowed(con, second, 'devices.view', first)
+        con.execute('UPDATE roles SET permissions=? WHERE id=?', (json.dumps(['settings.edit', identity.OTHER_ACCOUNTS]), 'limited-global'))
+        assert identity.allowed(con, second, 'devices.view', first)
+        assert not identity.allowed(con, second, 'accounts.edit', first)
+        con.execute('UPDATE roles SET permissions=? WHERE id=?', (json.dumps([identity.OTHER_ACCOUNTS]), 'limited-global'))
+        assert not identity.allowed(con, second, 'settings.edit')
+        assert identity.allowed(con, second, 'devices.view', first)
+
+
+def test_old_assignment_schema_migrates_without_widening_selected_access(portal):
+    app, _ = portal
+    _, first, second = accounts(app)
+    with app.auth_store.db() as con:
+        identity.grant(con, first, 'observer', 'selected', [second])
+        con.execute('ALTER TABLE grants DROP COLUMN role_based')
+    app.identities.initialize()
+    assert app.identities.allowed(first, 'devices.view', second)
+    assert not app.identities.allowed(first, 'settings.edit')
+    with app.auth_store.db() as con:
+        assert con.execute("SELECT role_based FROM grants WHERE role_id='observer'").fetchone()[0] == 0

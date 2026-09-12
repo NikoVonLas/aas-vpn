@@ -1,0 +1,4 @@
+{% from 'components/forms.html' import csrf, button, field, link with context %}
+<section class="card"><form class="stack" method="post" action="/login/verify/{{ key }}">{{ csrf() }}
+{% if method == 'phone' %}<p>Позвоните на <a href="tel:{{ dial }}">{{ dial }}</a> с указанного при входе номера. После звонка нажмите «Подтвердить».</p>{% else %}<p>Введите код из письма или откройте ссылку в этом браузере.</p>{{ field('code', 'Код из письма', required=true) }}{% endif %}
+{{ button('Подтвердить') }}</form><p class="muted">Подтверждение действует 10 минут.</p><form method="post" action="/login/verify/{{ key }}/retry">{{ csrf() }}{{ button('Повторить попытку', 'secondary') }}</form></section>

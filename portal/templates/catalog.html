@@ -1,0 +1,9 @@
+{% from 'components/forms.html' import csrf, field, button, status, check, link, multiselect with context %}
+<p class="muted">Общие компоненты приложения и их состояния.</p>
+<section class="card"><h2>Поля и состояния</h2><form class="stack" data-catalog>{{ field('normal', 'Обычное поле', 'Рабочий ноутбук') }}{{ field('focus', 'Фокус', 'Перейдите клавишей Tab') }}{{ field('invalid', 'Ошибка', error='Укажите название') }}{{ field('readonly', 'Только просмотр', 'Назначение владельца', readonly=true) }}<label>Отключено<input class="form-control" disabled value="Недоступно"></label>{{ field('long', 'Длинное название', 'Домашний Keenetic с длинным названием выхода') }}{{ check('example', 'Переключатель', checked=true) }}{{ multiselect('catalog-roles', 'roles', 'Роли', {'admin': 'Администратор', 'user': 'Пользователь'}, ['user']) }}</form></section>
+<section class="card"><h2>Действия</h2><div class="form-actions">{{ button('Отмена', 'secondary', 'button') }}{{ button('Удалить', 'danger', 'button') }}{{ button('Сохранить', type='button') }}{{ button('Загрузка…', type='button', disabled=true) }}</div></section>
+<section class="card"><h2>Статусы</h2><div class="device-actions">{{ status('Применено') }}{{ status('Отключено', true) }}</div><p class="alert alert-secondary">Ожидает применения</p></section>
+<section class="card"><h2>Диалоги</h2><button class="btn secondary qr-button" type="button" data-qr-url="/device/1/qr" data-device-name="Рабочий ноутбук">QR</button></section>
+{% from 'components/editor.html' import editor as entity_editor with context %}
+{% call entity_editor('catalog-editor', 'Раскрываемый редактор', 'Общий компонент для всех списков') %}<p>Настройки открываются по действию. Поля, кнопки и поведение одинаковы во всех разделах.</p>{% endcall %}
+{{ editor }}

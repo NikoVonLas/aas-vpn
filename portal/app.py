@@ -1,5 +1,4 @@
 import asyncio
-import html
 import io
 import ipaddress
 import json
@@ -15,6 +14,8 @@ import httpx
 import auth
 import identity
 import qrcode
+from amnezia import connection_url
+from views import render, request_context, local_path, DRAFT_FIELDS
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.exceptions import RequestValidationError
 from pathlib import Path
@@ -24,6 +25,8 @@ from fastapi.staticfiles import StaticFiles
 
 SECURITY_PATH = '/security'
 EDIT_EXITS = 'exits.edit'
+VIEW_EXITS = 'exits.view'
+ACCOUNT_PREFIX = '/accounts/'
 DEFAULT_EXIT_ACTION = 'exits.default'
 GLOBAL_ROUTING = 'routing.global'
 RENAME_DEVICE = 'devices.rename'
@@ -73,18 +76,18 @@ device_lock = asyncio.Lock()
 async def validate_csrf(request, token):
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         if not request.headers.get("content-length", "0").isdigit():
-            return JSONResponse({"detail": "Некорректный размер запроса"}, 400)
+            return friendly_http_error(request, HTTPException(400, "Некорректный размер запроса"))
         if int(request.headers.get("content-length", "0")) > 131072:
-            return JSONResponse({"detail": "Форма слишком большая"}, 413)
+            return friendly_http_error(request, HTTPException(413, "Форма слишком большая"))
         if request.headers.get("sec-fetch-site") == "cross-site":
-            return JSONResponse({"detail": "Запрос с другого сайта запрещён"}, 403)
+            return friendly_http_error(request, HTTPException(403, "Запрос с другого сайта запрещён"))
         # Double-submit token, host-only secure cookie; protect login/logout too.
         if len(await request.body()) > 131072:
-            return JSONResponse({"detail": "Форма слишком большая"}, 413)
+            return friendly_http_error(request, HTTPException(413, "Форма слишком большая"))
         form = await request.form()
         supplied = request.headers.get("X-CSRF-Token") or form.get("csrf_token", "")
         if not isinstance(supplied, str) or not request.cookies.get("__Host-aas_csrf") or not secrets.compare_digest(supplied, token):
-            return JSONResponse({"detail": "Обновите страницу и повторите действие (CSRF)"}, 403)
+            return friendly_http_error(request, HTTPException(403, "Обновите страницу и повторите действие (CSRF)"))
         # BaseHTTPMiddleware must leave the original body available to FastAPI.
     return None
 
@@ -93,22 +96,20 @@ async def validate_csrf(request, token):
 async def csrf_and_privacy(request, call_next):
     authentication = request.url.path in {'/login', '/admin/login', '/admin/logout'} or request.url.path.startswith(('/login/', '/security/'))
     if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and not authentication and Path(DB).with_name('maintenance').exists():
-        return JSONResponse({'detail': 'Сервис обновляется. Повторите действие через несколько минут'}, 503, headers={'Retry-After': '30'})
+        return friendly_http_error(request, HTTPException(503, 'Сервис обновляется. Повторите действие через несколько минут', headers={'Retry-After': '30'}))
     token = request.cookies.get("__Host-aas_csrf") or secrets.token_urlsafe(32)
     error = await validate_csrf(request, token)
     if error is not None:
         return error
-    response = await call_next(request)
-    if response.headers.get("content-type", "").startswith("text/html"):
-        data = b"".join([chunk async for chunk in response.body_iterator]).decode()
-        field = f'<input type="hidden" name="csrf_token" value="{html.escape(token)}">'
-        data = re.sub(r"(<form\b[^>]*>)", lambda m: m[0] + field, data, flags=re.I)
-        cookies = response.headers.getlist("set-cookie")
-        response = HTMLResponse(data, status_code=response.status_code,
-                                headers={k: v for k, v in response.headers.items() if k.lower() not in {"content-length", "set-cookie"}})
-        for cookie in cookies:
-            response.headers.append("set-cookie", cookie)
-
+    request.state.csrf_token = token
+    if request.method == 'POST':
+        form = await request.form()
+        request.state.form_draft = {key: [value for value in form.getlist(key) if isinstance(value, str)] for key in DRAFT_FIELDS if key in form}
+    context_token = request_context.set(request)
+    try:
+        response = await call_next(request)
+    finally:
+        request_context.reset(context_token)
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     if not request.cookies.get("__Host-aas_csrf"):
@@ -168,119 +169,15 @@ def startup():
     RU_CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
-def page(title, body, show_header=False, phone_widget=False):
-    heading = f"<div class=topbar><div class=brand><span class=logo>A+</span><span>AAS VPN</span></div></div><h1>{html.escape(title)}</h1>" if show_header else ""
-    phone_head = '<link rel=stylesheet href=/assets/css/intlTelInput.min.css>' if phone_widget else ""
-    phone_script = """<script src=/assets/js/intlTelInputWithUtils.min.js></script><script>
-const regionNames=typeof Intl.DisplayNames==='function'?new Intl.DisplayNames(['ru'],{type:'region'}):null;
-const countryCodes='ad ae af ag ai al am ao ar as at au aw ax az ba bb bd be bf bg bh bi bj bl bm bn bo bq br bs bt bw by bz ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg eh er es et fi fj fk fm fo fr ga gb gd ge gf gg gh gi gl gm gn gp gq gr gt gu gw gy hk hn hr ht hu id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mf mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sj sk sl sm sn so sr ss st sv sx sy sz tc td tg th tj tk tl tm tn to tr tt tv tw tz ua ug us uy uz va vc ve vg vi vn vu wf ws xk ye yt za zm zw'.split(' ');
-const localizedCountries=Object.fromEntries(countryCodes.map(iso2=>{
-  if(iso2==='xk')return [iso2,'Косово'];
-  try{return [iso2,regionNames?.of(iso2.toUpperCase())||iso2.toUpperCase()]}catch{return [iso2,iso2.toUpperCase()]}
-}));
-const phoneWidgets=new WeakMap();
-function initPhone(input){
-  if(phoneWidgets.has(input))return;
-  const iti=window.intlTelInput(input,{initialCountry:'ru',nationalMode:true,separateDialCode:true,formatAsYouType:true,strictMode:true,localizedCountries,i18n:{
-selectedCountryAriaLabel:'Изменить страну, выбрана ${countryName} (${dialCode})',noCountrySelected:'Выберите страну',countryListAriaLabel:'Список стран',searchPlaceholder:'Поиск',clearSearchAriaLabel:'Очистить поиск',searchEmptyState:'Ничего не найдено',searchSummaryAria:(count)=>`Найдено: ${count}`
-  }});
-  phoneWidgets.set(input,iti);
-  const formatPasted=()=>{const normalized=iti.getNumber();if(normalized)iti.setNumber(normalized)};
-  input.addEventListener('paste',()=>setTimeout(formatPasted,0));
-  input.addEventListener('input',event=>{
-    if(event.inputType==='insertFromPaste'||event.inputType==='insertReplacementText'){
-      requestAnimationFrame(formatPasted);
-    }
-  });
-  input.form?.addEventListener('submit',()=>{const normalized=iti.getNumber();if(input.dataset.target){document.getElementById(input.dataset.target).value=normalized||input.value}else{input.value=normalized||input.value}});
-}
-document.querySelectorAll('.phone-input').forEach(initPhone);
-document.addEventListener('click',event=>{if(event.target.id==='add-dial-number'){
-  const row=document.createElement('div');row.className='dial-number-row';
-  row.innerHTML='<input class="phone-input" name="numbers" type="tel" autocomplete="off" inputmode="tel" placeholder="999 123-45-67" required><button type="button" class="secondary remove-number" aria-label="Удалить номер">Удалить</button>';
-  document.getElementById('dial-numbers').append(row);initPhone(row.querySelector('input'));
-}});
-document.addEventListener('click',event=>{if(event.target.classList.contains('remove-number'))event.target.closest('.dial-number-row').remove()});
-function formError(detail,status){
-  if(typeof detail==='string')return detail;
-  if(Array.isArray(detail)){
-    const fields={name:'Имя',phone:'Телефон',device_limit:'Лимит устройств',numbers:'Номера',ru_exit_id:'RU-выход'};
-    const messages=detail.filter(x=>x&&typeof x.msg==='string').map(x=>{
-      const field=Array.isArray(x.loc)?x.loc.filter(v=>v!=='body').join('.'):'';
-      return `${fields[field]||field}: ${x.msg}`;
-    });
-    if(messages.length)return messages.join('\\n');
-  }
-  return `Ошибка HTTP ${status}`;
-}
-let adminSaving=false;
-document.addEventListener('submit',async event=>{
-  const form=event.target;
-  const action=new URL(event.submitter?.hasAttribute('formaction')?event.submitter.formAction:form.action,location.href);
-  if(adminSaving||action.origin!==location.origin||(!action.pathname.startsWith('/admin/')&&action.pathname!=='/admin')||action.pathname==='/admin/login'||action.pathname==='/admin/logout')return;
-  event.preventDefault();adminSaving=true;
-  const submitter=event.submitter;submitter?.setAttribute('disabled','');
-  try{
-    const response=await fetch(action,{method:(form.method||'post').toUpperCase(),body:new FormData(form),headers:{'X-Requested-With':'fetch'}});
-    if(response.redirected&&new URL(response.url).pathname==='/admin/login'){location.assign('/admin/login');return}
-    if(!response.ok){const error=await response.json().catch(()=>null);throw new Error(formError(error?.detail,response.status))}
-    const pageResponse=await fetch(location.pathname,{headers:{Accept:'text/html'}});
-    if(pageResponse.redirected&&new URL(pageResponse.url).pathname==='/admin/login'){location.assign('/admin/login');return}
-    if(!pageResponse.ok)throw new Error('Не удалось обновить данные');
-    const documentNew=new DOMParser().parseFromString(await pageResponse.text(),'text/html');
-    document.querySelector('main').replaceWith(documentNew.querySelector('main'));
-    document.querySelectorAll('.phone-input').forEach(initPhone);
-  }catch(error){alert(error.message)}finally{adminSaving=false;submitter?.removeAttribute('disabled')}
-});
-</script>""" if phone_widget else ""
-    share_script = """<script>
-const qrDialog=document.getElementById('qr-dialog');
-const qrImage=document.getElementById('qr-image');
-document.addEventListener('click',event=>{
-  const button=event.target.closest('.qr-button');if(!button)return;
-  if(qrDialog?.showModal){qrImage.src=button.dataset.qrUrl;qrDialog.showModal()}
-  else{window.open(button.dataset.qrUrl,'_blank','noopener')}
-});
-qrDialog?.addEventListener('click',event=>{if(event.target===qrDialog)qrDialog.close()});
-document.addEventListener('click',event=>{
-  const button=event.target.closest('.delete-device');if(!button)return;
-  const dialog=document.getElementById('delete-dialog');
-  const form=document.getElementById('delete-form');
-  form.action=button.dataset.deleteUrl;
-  document.getElementById('delete-device-name').textContent=button.dataset.deviceName;
-  if(dialog?.showModal)dialog.showModal();else if(confirm('Удалить это устройство?'))form.requestSubmit();
-});
-const shareFiles=new WeakMap();
-const shareProbe=typeof File==='function'?new File([''], 'qr-code.png', {type:'image/png'}):null;
-if(navigator.share&&navigator.canShare&&shareProbe&&navigator.canShare({files:[shareProbe]})){
-  document.querySelectorAll('.share-button').forEach(async button=>{
-    try{
-      const id=button.dataset.deviceId;
-      const qrResponse=await fetch(`/device/${id}/qr`);
-      if(!qrResponse.ok)return;
-      const qrFile=new File([await qrResponse.blob()],'qr-code.png',{type:'image/png'});
-      shareFiles.set(button,[qrFile]);
-      button.style.display='inline-flex';
-    }catch{}
-  });
-}
-document.addEventListener('click',event=>{
-  const button=event.target.closest('.share-button');if(!button)return;
-  const files=shareFiles.get(button);if(!files)return;
-  button.disabled=true;
-  navigator.share({files})
-    .catch(error=>{if(error.name!=='AbortError')alert(error.message)})
-    .finally(()=>button.disabled=false);
-});
-</script>"""
-    return HTMLResponse(f"""<!doctype html><html lang=ru><meta charset=utf-8>
-<script src=/assets/js/routing-status.js defer></script>
-<script src=/assets/js/config-editor.js defer></script>
-<meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title or 'Вход')}</title>{phone_head}
-<link rel=stylesheet href=/assets/css/portal.css>
-<main>{heading}{body}</main><dialog id=qr-dialog class=qr-dialog><img id=qr-image alt='QR-код подключения'><button type=button onclick="this.closest('dialog').close()">Закрыть</button></dialog><dialog id=delete-dialog class=confirm-dialog><form id=delete-form method=post><h2>Удалить устройство?</h2><p>Настройки <b id=delete-device-name></b> сразу перестанут работать.</p><div class=confirm-actions><button type=button class=secondary onclick="this.closest('dialog').close()">Отмена</button><button class=danger-soft>Удалить</button></div></form></dialog>{phone_script}{share_script}</html>""")
-
-
+def page(title, body, show_header=False):
+    request = request_context.get()
+    actor = identities.session(request.cookies.get(auth.COOKIE, ''), limited=True) if request else None
+    navigation = navigation_model(actor) if show_header and actor and actor['ready'] and not actor['must_change'] else []
+    active = getattr(request.state, 'active_section', '') if request else ''
+    return HTMLResponse(render('base.html', title=title, body=body, show_header=show_header,
+                               actor=actor,
+                               navigation=navigation, active=active,
+                               active_label=dict(navigation).get(active, 'Разделы')))
 
 
 def phone_normalize(value):
@@ -334,7 +231,7 @@ def require_permission(request, action, target=None):
 def require_owner(request, fresh=False):
     actor = current_account(request)
     if not identities.owner(actor['account_id']):
-        raise HTTPException(403, 'Действие доступно только владельцу')
+        raise HTTPException(403, 'Действие доступно только администратору')
     if fresh:
         require_fresh(actor)
     return actor
@@ -364,7 +261,7 @@ def admin_ok(request):
     if not row or row['must_change']:
         return False
     with auth_store.db() as con:
-        return bool(con.execute("SELECT 1 FROM grants WHERE account_id=? AND scope!='self'", (row['account_id'],)).fetchone())
+        return identity.privileged(con, row['account_id'])
 
 
 def require_admin(request, action=None):
@@ -378,30 +275,96 @@ def require_admin(request, action=None):
         raise HTTPException(403, 'Недостаточно прав')
 
 
+def message(title, text, back_url='/', back_label='На главную', codes='', account_id='', recovery=False, error=False, not_found=False):
+    return page(title, render('message.html', message=text, back_url=back_url, back_label=back_label,
+                             codes=codes, account_id=account_id, recovery=recovery, error=error, not_found=not_found))
+
+
+def return_signer():
+    from itsdangerous import URLSafeTimedSerializer
+    with auth_store.db() as con:
+        secret = con.execute("SELECT value FROM settings WHERE key='phone_secret'").fetchone()[0]
+    return URLSafeTimedSerializer(secret, salt='return-to-editor')
+
+
+def return_path(request):
+    from urllib.parse import urlsplit
+    referer = urlsplit(request.headers.get('referer', ''))
+    if referer.netloc == request.url.netloc and referer.scheme == request.url.scheme:
+        return local_path(referer.path + ('?' + referer.query if referer.query else ''))
+    if request.url.path.startswith(ACCOUNT_PREFIX):
+        return ACCOUNT_PREFIX + request.url.path.split('/')[2] + '/edit'
+    return CABINET_PATH
+
+
+def failed_form(request, detail):
+    """Re-render a permitted GET view; never replay a mutation or retain secrets."""
+    if request.method != 'POST' or request_context.get() is None:
+        return None
+    from access_pages import AccessPages
+    from security_pages import SecurityPages
+    path = request.url.path
+    access = AccessPages(__import__(__name__))
+    request.state.form_failed = True
+    request.state.form_error = detail
+    try:
+        if path == '/admin/accounts':
+            return access.new_account(request)
+        if path.startswith(ACCOUNT_PREFIX) and path.endswith('/save'):
+            return access.edit_account(request, path.split('/')[2])
+        if path == '/admin/roles/save':
+            draft = getattr(request.state, 'form_draft', {})
+            return access.edit_role(request, draft.get('role_id', [''])[0])
+        if path.startswith('/device/') and path.endswith('/update'):
+            device = owned_device(request, int(path.split('/')[2]))
+            return cabinet(request, device['phone'])
+        if path.endswith('/routing'):
+            return failed_routing_form(request, access)
+        if path.startswith('/admin/login-methods/'):
+            return SecurityPages(__import__(__name__)).modules(request)
+        if path.startswith('/login/verify/') and not path.endswith('/retry'):
+            return SecurityPages(__import__(__name__)).verify_page(request, path.split('/')[-1])
+    except (HTTPException, ValueError, PermissionError):
+        pass
+    return None
+
+
+def failed_routing_form(request, access):
+    path = request.url.path
+    if path == ROUTING_PATH:
+        return routing_page(request)
+    if path.startswith('/device/'):
+        return access.device_routes(request, int(path.split('/')[2]))
+    if path.startswith(ACCOUNT_PREFIX):
+        return access.account_routes(request, path.split('/')[2])
+    return None
+
+
 @app.exception_handler(HTTPException)
 def friendly_http_error(request: Request, exc: HTTPException):
-    location = (exc.headers or {}).get("Location")
+    location = (exc.headers or {}).get('Location')
     if 300 <= exc.status_code < 400 and location:
-        return RedirectResponse(location, status_code=exc.status_code)
-    detail = str(exc.detail or "Не удалось выполнить запрос")
-    if request.url.path.endswith("/status") or request.headers.get("X-Requested-With") == "fetch":
-        return JSONResponse({"detail": detail}, status_code=exc.status_code, headers=exc.headers)
-    if request.url.path.startswith(ADMIN_PATH):
-        back_url, back_text = ADMIN_LOGIN_PATH, "Вернуться ко входу"
-    elif request.url.path.startswith("/device") or request.url.path == CABINET_PATH:
-        back_url, back_text = CABINET_PATH, "Вернуться в кабинет"
-    else:
-        back_url, back_text = "/", "Вернуться на главную"
-    body = f"<section class=card><h1>Не получилось</h1><p>{html.escape(detail)}</p><a class=btn href='{back_url}'>{back_text}</a></section>"
-    response = page("Ошибка", body)
+        response = RedirectResponse(location, status_code=exc.status_code)
+        if location == '/security/confirm':
+            response.set_cookie('__Host-aas_return', return_signer().dumps(return_path(request)),
+                                secure=True, httponly=True, samesite='lax', max_age=600, path='/')
+        return response
+    detail = str(exc.detail or 'Не удалось выполнить запрос')
+    if request.url.path.endswith('/status') or request.headers.get('X-Requested-With') == 'fetch':
+        return JSONResponse({'detail': detail}, status_code=exc.status_code, headers=exc.headers)
+    response = failed_form(request, detail) if exc.status_code in {400, 409, 422} else None
+    if response is None:
+        request.state.form_error = ''
+        response = message('Не получилось', detail, back_url=return_path(request), back_label='Вернуться к странице', error=True)
     response.status_code = exc.status_code
+    for key, value in (exc.headers or {}).items():
+        response.headers[key] = value
     return response
 
 
 @app.exception_handler(404)
 def not_found_page(request: Request, exc):
-    body = """<section class='card not-found'><div class=glitch data-text=404>404</div><h1>Страница не найдена</h1><p class=muted>Такого адреса нет или страница была перемещена.</p><a class=btn href=/>На главную</a></section>"""
-    response = page("404", body)
+    response = message('Страница не найдена', 'Такого адреса нет или страница была перемещена.', not_found=True)
     response.status_code = 404
     return response
 
@@ -484,15 +447,13 @@ def cabinet(request: Request, phone: str = ""):
     if not user:
         raise HTTPException(403)
     rows = device_routing_forms(devices, user, is_admin, request)
-    create = "" if len(devices) >= user["device_limit"] else "<form class=device-form method=post action=/device><label>Название устройства<input name=name maxlength=40 placeholder='Телефон' required></label><button>Добавить устройство</button></form>"
-    if not identities.allowed(current_account(request)["account_id"], "devices.create", user["account_id"]):
-        create = ""
-    if is_admin:
-        create = create.replace("action=/device>", f"action=/device><input type=hidden name=phone value=\"{html.escape(phone)}\">")
-    guide = """<details class='card guide'><summary>Как подключиться</summary><h3>Скачать AmneziaWG</h3><div class=app-links><a href='https://play.google.com/store/apps/details?id=org.amnezia.awg' target=_blank rel=noopener>Android</a><a href='https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>iPhone / iPad</a><a href='https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>macOS</a><a href='https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest' target=_blank rel=noopener>Windows</a></div><h3>На сайте</h3><ul><li>Под этой инструкцией найдите поле <b>«Название устройства»</b>.</li><li>Напишите любое понятное название, например <b>Телефон</b>, и нажмите <b>«Добавить устройство»</b>.</li><li>Ниже появится карточка устройства с кнопками.</li></ul><h3>Если сайт открыт на телефоне или компьютере, на который нужно установить VPN</h3><ul><li>Установите <b>AmneziaWG</b> по подходящей ссылке выше.</li><li>В карточке устройства на этом сайте нажмите <b>«Файл»</b>.</li><li>Откройте AmneziaWG и нажмите кнопку добавления подключения.</li><li>Выберите импорт из файла, найдите скачанный файл настроек и откройте его.</li><li>Либо нажмите <b>«Поделиться QR»</b>, отправьте картинку на другое устройство и следуйте инструкции ниже.</li></ul><h3>Если сайт или отправленный QR открыт на другом устройстве</h3><ul><li>Установите и откройте <b>AmneziaWG</b> на подключаемом устройстве.</li><li>Нажмите в приложении кнопку добавления подключения и выберите сканирование QR-кода.</li><li>На другом устройстве откройте полученную картинку. Если там открыт сайт, нажмите <b>«QR»</b> в карточке устройства.</li><li>Отсканируйте появившийся код.</li></ul></details>"""
-    guide = guide.replace("https://apps.apple.com/app/amneziawg/id6478942365' target=_blank rel=noopener>macOS", "macappstore://apps.apple.com/app/id6478942365'>macOS")
-    guide = guide.replace("https://github.com/amnezia-vpn/amneziawg-windows-client/releases/latest' target=_blank rel=noopener>Windows", "/download/amneziawg/windows'>Windows")
-    return page(f"Устройства: {user['name']}" if is_admin else f"Привет, {user['name']}", f"{admin_nav() if is_admin else '<p class=app-links><a href=/security>Безопасность профиля</a></p>'}<p class=app-links><a href='/accounts/{user['account_id']}/routing'>Маршрутизация аккаунта</a></p>{guide}{create}<p>Устройств: {len(devices)} из {user['device_limit']}</p><div class=devices>{rows or '<div class=muted>Устройств пока нет.</div>'}</div>", show_header=True)
+    actor = current_account(request)
+    can_create = len(devices) < user['device_limit'] and identities.allowed(actor['account_id'], 'devices.create', user['account_id'])
+    managed = account_navigation(request, user['account_id'])
+    return page(f"Устройства: {user['name']}" if managed else "Мои устройства",
+                render('cabinet.html', user=user, is_admin=is_admin, managed=managed, can_create=can_create,
+                       can_route=identities.allowed(actor['account_id'], 'account.routing.view', user['account_id']),
+                       count=len(devices), cards=rows), show_header=True)
 
 
 @app.get("/admin/users/{phone}/devices", responses=HTTP_RESPONSES)
@@ -607,7 +568,9 @@ def owned_device(request, device_id, action='devices.view'):
 
 
 def device_redirect(request, phone):
-    return RedirectResponse(f"/accounts/{account_for_phone(phone)}" if admin_ok(request) else CABINET_PATH, 303)
+    account_id = account_for_phone(phone)
+    own_account = current_account(request)['account_id'] == account_id
+    return RedirectResponse(CABINET_PATH if own_account else f"/accounts/{account_id}", 303)
 
 
 @app.post("/device/{device_id}/rename", responses=HTTP_RESPONSES)
@@ -628,9 +591,9 @@ def assignment_author(administrator):
 def validate_exit_assignment(con, phone, administrator, exit_id):
     permission = con.execute("SELECT can_change_ru_exit FROM users WHERE phone=?", (phone,)).fetchone()
     if not administrator and not permission[0]:
-        raise HTTPException(403, "Смена RU-выхода запрещена администратором")
+        raise HTTPException(403, "Смена альтернативного выхода запрещена администратором")
     if exit_id and not con.execute("SELECT 1 FROM ru_exits WHERE id=?", (exit_id,)).fetchone():
-        raise HTTPException(400, "RU-выход не найден")
+        raise HTTPException(400, "Альтернативный выход не найден")
 
 
 def save_exit_assignment(con, device_id, exit_id, administrator):
@@ -695,16 +658,29 @@ async def config(request: Request, device_id: int):
     return Response(data, media_type="application/x-wireguard-profile", headers={"Content-Disposition": disposition, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
-@app.get("/device/{device_id}/qr", responses=HTTP_RESPONSES)
-async def qr(request: Request, device_id: int):
+async def device_connection(request, device_id):
     row = owned_device(request, device_id, DEVICE_CONFIG)
     if row['operation'] != 'applied':
         raise HTTPException(409, 'Изменения устройства ещё применяются')
     async with wg_session() as client:
         response = await client.get(f"/clients/{row['client_id']}/configuration")
         response.raise_for_status()
-        config = response.text
-    image = qrcode.make(config)
+        return connection_url(response.text, row['name'])
+
+
+@app.get("/device/{device_id}/connect", responses=HTTP_RESPONSES)
+async def connect(request: Request, device_id: int):
+    return JSONResponse({'url': await device_connection(request, device_id)}, headers={'Cache-Control': 'no-store'})
+
+
+@app.get("/device/{device_id}/qr", responses=HTTP_RESPONSES)
+async def qr(request: Request, device_id: int):
+    url = await device_connection(request, device_id)
+    try:
+        # The in-app QR reader accepts compressed Base64 data without the URI scheme.
+        image = qrcode.make(url.removeprefix('vpn://'))
+    except qrcode.exceptions.DataOverflowError:
+        raise HTTPException(400, 'Настройки не помещаются в QR-код. Используйте кнопку «Установить».') from None
     out = io.BytesIO(); image.save(out, format="PNG")
     return Response(out.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
 
@@ -750,6 +726,7 @@ def validation_error(request: Request, exc: RequestValidationError):
     errors = [{"loc": x["loc"], "msg": messages.get(x["type"], x["msg"])} for x in exc.errors()]
     if request.headers.get('X-Requested-With') == 'fetch':
         return JSONResponse({'detail': errors}, 422)
+    request.state.field_errors = {str(item['loc'][-1]): item['msg'] for item in errors}
     return friendly_http_error(request, HTTPException(422, '; '.join(f"{'.'.join(map(str, x['loc'][1:]))}: {x['msg']}" for x in errors)))
 
 
@@ -758,11 +735,33 @@ def upstream_error(request: Request, exc):
     return friendly_http_error(request, HTTPException(502, 'Сервис VPN временно недоступен'))
 
 
+def navigation_model(actor):
+    key = actor['account_id']
+    with identities.transaction() as con:
+        targets = [row[0] for row in con.execute('SELECT id FROM accounts')]
+        accounts_visible = any(identity.allowed(con, key, 'accounts.view', target) for target in targets)
+    links = [(CABINET_PATH, 'Мои устройства')]
+    if accounts_visible:
+        links.append((ADMIN_PATH, 'Пользователи'))
+    for path, label, permission in [(RU_EXITS_PATH, 'Альтернативные выходы', VIEW_EXITS), (ROUTING_PATH, 'Маршрутизация', GLOBAL_ROUTING)]:
+        if identities.allowed(key, permission):
+            links.append((path, label))
+    if identities.owner(key):
+        links.extend([('/admin/roles', 'Роли и доступ'), ('/admin/login-methods', 'Способы входа')])
+    return links
+
+
 def admin_nav(active=ADMIN_PATH):
-    links = [(ADMIN_PATH, 'Пользователи'), (RU_EXITS_PATH, 'RU-выходы'), (ROUTING_PATH, 'Маршрутизация'), ('/admin/roles', 'Роли и доступ'), ('/admin/login-methods', 'Способы входа'), (SECURITY_PATH, 'Безопасность профиля')]
-    return '<nav class="app-links admin-nav" aria-label="Администрирование">' + ''.join(
-        f'<a href="{path}"' + (' aria-current="page"' if path == active else '') + f'>{label}</a>'
-        for path, label in links) + '</nav>'
+    request = request_context.get()
+    if request:
+        request.state.active_section = active
+
+
+def account_navigation(request, account_id):
+    """Resource ownership determines the section, independently of actor privileges."""
+    managed = current_account(request)['account_id'] != account_id
+    admin_nav(ADMIN_PATH if managed else CABINET_PATH)
+    return managed
 
 
 def routing_status():
@@ -772,37 +771,27 @@ def routing_status():
             return {'state': 'stale', 'message': 'Контроллер не отвечает'}
         return status
     except (OSError, ValueError):
-        return {'state': 'pending', 'message': 'Ожидание контроллера'}
+        return {'state': 'pending', 'message': 'Нет данных о маршрутизации'}
 
 
 def status_text(status):
     with db() as con:
         revision = int(con.execute("SELECT value FROM settings WHERE key='routing_revision'").fetchone()[0])
     if status.get('applied_revision') != revision and status.get('state') == 'applied':
-        return 'Ожидает применения'
-    return {'applied': 'Применено', 'error': 'Ошибка применения; сохранена рабочая конфигурация',
-            'pending': 'Ожидание контроллера', 'stale': 'Контроллер не отвечает'}.get(status.get('state'), 'Ожидает применения')
+        return 'Настройки сохранены. Ожидается применение на VPN-сервере.'
+    return {'applied': 'Настройки применены на VPN-сервере.',
+            'error': 'Не удалось применить изменения. VPN использует предыдущие настройки.',
+            'pending': 'Не удалось получить состояние VPN-сервера. Применение маршрутов пока не подтверждено.',
+            'stale': 'Данные о маршрутизации устарели: VPN-сервер не обновлял состояние более 45 секунд.'}.get(
+                status.get('state'), 'Настройки сохранены. Ожидается применение на VPN-сервере.')
 
 
 def device_actions(device, request=None):
-    device_id = device['id']
-    if device['operation'] != 'applied':
-        return '<p class=muted>Создание или удаление ожидает применения</p>'
-    name = html.escape(device['name'], quote=True)
     actor = current_account(request) if request else None
     def allowed(action):
         return actor is None or identities.allowed(actor['account_id'], action, device['account_id'])
-    result = '<div class=device-actions>'
-    if allowed(DEVICE_CONFIG):
-        result += f"""<button type=button class='secondary qr-button' data-qr-url='/device/{device_id}/qr'>QR</button>
-      <a class='btn secondary' href='/device/{device_id}/config'>Файл</a>
-      <button type=button class='secondary share-button' data-device-id='{device_id}' data-device-name='{name}'>Поделиться QR</button>"""
-    if allowed('devices.delete'):
-        result += f"<button type=button class='danger-soft delete-device' data-delete-url='/device/{device_id}/delete' data-device-name='{name}'>Удалить</button>"
-    result += '</div>'
-    if request and allowed('device.routing.view'):
-        result += f"<a class='btn secondary' href='/device/{device_id}/routing'>Маршрутизация</a>"
-    return result
+    return render('components/device_actions.html', device=device, config=allowed(DEVICE_CONFIG),
+                  routing=bool(request) and allowed('device.routing.view'), delete=allowed('devices.delete'))
 
 
 def device_routing_forms(devices, user, administrator, request=None):
@@ -811,25 +800,8 @@ def device_routing_forms(devices, user, administrator, request=None):
         default = user['ru_exit_id'] or int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
     names = {x['id']: x['name'] for x in exits}
     status = routing_status()
-    result = f'<p class=muted data-routing-state>{html.escape(status_text(status))}</p>' if devices else ''
-    for device in devices:
-        result += device_card(device, names, default, status, request)
-        result += permitted_device_form(device, exits, user, administrator, request)
-        result += '</section>'
-    return result
-
-
-def device_card(device, names, default, status, request):
-    actual = status.get('devices', {}).get(str(device['id']), {})
-    effective = names.get(actual.get('effective'), UNAVAILABLE_LABEL) if status.get('state') not in {'stale', 'pending'} else 'Неизвестно'
-    assigned = names.get(device['ru_exit_id'], 'По умолчанию: ' + names.get(default, '—'))
-    fallback = ' · резервный режим' if actual.get('fallback') else ''
-    result = f"<section class='card device-card'><div class=device-head><h2>{html.escape(device['name'])}</h2>{device_actions(device, request)}</div><p data-device-state='{device['id']}'>Назначен: {html.escape(assigned)} · Используется: {html.escape(effective)}{fallback}</p>"
-    if not device['vpn_ip']:
-        result += '<p class=muted>Ожидает сопоставления VPN-IP</p>'
-    if not device['native_enabled']:
-        result += '<p class=muted>Устройство отключено или срок действия истёк</p>'
-    return result
+    cards = [{'device': device, 'state': device_state_labels(device, names, default, status), 'actions': device_actions(device, request), 'form': permitted_device_form(device, exits, user, administrator, request)} for device in devices]
+    return render('components/devices.html', cards=cards, status=status_text(status))
 
 
 def permitted_device_form(device, exits, user, administrator, request):
@@ -839,21 +811,20 @@ def permitted_device_form(device, exits, user, administrator, request):
         actor = current_account(request)
         can_rename = identities.allowed(actor['account_id'], RENAME_DEVICE, device['account_id'])
         can_exit = identities.allowed(actor['account_id'], DEVICE_EXIT, device['account_id'])
-    return device_edit_form(device, exits, can_exit, can_rename) if can_rename or can_exit else ''
+    return device_edit_form(device, exits, can_exit, can_rename, device_actions(device, request)) if can_rename or can_exit else ''
 
 
-def device_edit_form(device, exits, can_change_exit, can_rename=True):
-    form = f"<form class='device-form {'device-edit' if can_change_exit else ''}' method=post action='/device/{device['id']}/update'><label>Название<input name=name maxlength=40 value='{html.escape(device['name'], quote=True)}' {'readonly' if not can_rename else ''} required></label>"
-    if can_change_exit:
-        options = '<option value="0">По умолчанию</option>' + ''.join(f"<option value='{node['id']}' {'selected' if node['id'] == device['ru_exit_id'] else ''}>{html.escape(node['name'])}</option>" for node in exits)
-        form += f'<label>RU-выход<select name=ru_exit_id>{options}</select></label>'
-    return form + '<button>Сохранить</button></form>'
+def device_edit_form(device, exits, can_change_exit, can_rename=True, actions=''):
+    return render('components/device_form.html', form_action=f"/device/{device['id']}/update", device=device, exits=exits,
+                  can_change_exit=can_change_exit, can_rename=can_rename, actions=actions)
 
 
 def exit_health_label(status, node_id):
     state = status.get('exits', {}).get(str(node_id), {})
-    if status.get('state') in {'pending', 'stale'} or not state:
-        return 'Проверяется'
+    if status.get('state') == 'stale':
+        return 'Данные о доступности устарели'
+    if status.get('state') == 'pending' or not state:
+        return 'Доступность неизвестна'
     return 'Доступен' if state.get('healthy') else UNAVAILABLE_LABEL
 
 
@@ -868,23 +839,27 @@ def device_state_labels(device, names, default, status):
 
 @app.get(RU_EXITS_PATH, responses=HTTP_RESPONSES)
 def ru_exits_page(request: Request):
-    require_admin(request, 'exits.view')
+    require_admin(request, VIEW_EXITS)
     with db() as con:
         exits = con.execute('SELECT id,name,legacy,config_file FROM ru_exits ORDER BY id').fetchall()
         default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
     status = routing_status()
-    body = admin_nav(RU_EXITS_PATH) + f'<p data-routing-state>{html.escape(status_text(status))}</p>'
-    for node in exits:
-        available = exit_health_label(status, node['id'])
-        body += f"<section class=card><h2>{html.escape(node['name'])}{' · По умолчанию' if node['id'] == default else ''}</h2><p data-exit-state='{node['id']}'>{available}</p>"
-        body += f"<form class=stack method=post enctype=multipart/form-data action='/admin/ru-exits/{node['id']}'><label>Название<input name=name maxlength=80 value='{html.escape(node['name'], quote=True)}' required></label>"
-        actor = current_account(request)
-        config = html.escape(stored_config_text(RU_CONFIG_DIR, node['config_file'])) if identities.allowed(actor['account_id'], 'exits.private') else ''
-        body += f'<label>Заменить конфиг<input type=file name=config_upload accept=.conf></label><label>Конфиг<textarea name=config_text rows=8 autocomplete=off spellcheck=false placeholder="Загрузите файл или вставьте новый конфиг">{config}</textarea></label><p class="muted config-file-status" role=status>Редактируйте текст и нажмите «Сохранить». Настройки DNS применяются централизованно.</p>'
-        body += f"<div class=exit-actions><button class=danger-soft formaction='/admin/ru-exits/{node['id']}/delete' formnovalidate>Удалить</button>"
-        body += f"<button class=secondary formaction='/admin/ru-exits/{node['id']}/default' formnovalidate {'disabled' if node['id'] == default else ''}>По умолчанию</button><button>Сохранить</button></div></form></section>"
-    body += '''<section class=card><h2>Добавить RU-выход</h2><form class=stack method=post enctype=multipart/form-data action=/admin/ru-exits><label>Название<input name=name maxlength=80 required></label><label>WireGuard .conf<input type=file name=config_upload accept=.conf></label><label>Конфиг<textarea name=config_text rows=8 autocomplete=off spellcheck=false></textarea></label><p class="muted config-file-status" role=status></p><p class=muted>Загрузите файл .conf или вставьте его текст. Настройки DNS применяются централизованно.</p><div class=form-submit><button>Добавить выход</button></div></form></section>'''
-    return page('RU-выходы', body, show_header=True)
+    admin_nav(RU_EXITS_PATH)
+    actor = current_account(request)
+    can_edit = identities.allowed(actor['account_id'], EDIT_EXITS)
+    can_default = identities.allowed(actor['account_id'], DEFAULT_EXIT_ACTION)
+    can_private = identities.allowed(actor['account_id'], 'exits.private')
+    nodes = []
+    for row in exits:
+        node = dict(row)
+        config = stored_config_text(RU_CONFIG_DIR, node['config_file']) if can_private else ''
+        node.update(health=exit_health_label(status, node['id']), config=config,
+                    editor=render('components/exit_form.html', node=node, config=config,
+                                  can_default=can_default, default=default) if can_edit else '')
+        nodes.append(node)
+    return page('Альтернативные выходы', render('exits.html', nodes=nodes, default=default, can_edit=can_edit,
+                can_default=can_default, routing_status=status_text(status),
+                new_editor=render('components/exit_form.html', node=None, config='', can_default=False, default=default)), show_header=True)
 
 
 async def uploaded_endpoint(config_text, config_upload):
@@ -928,7 +903,7 @@ async def save_ru_exit(request: Request, exit_id: int = 0, name: str = Form(...)
         con.execute(BEGIN_WRITE)
         old = con.execute('SELECT * FROM ru_exits WHERE id=?', (exit_id,)).fetchone() if exit_id else None
         if exit_id and not old:
-            raise HTTPException(404, 'RU-выход не найден')
+            raise HTTPException(404, 'Альтернативный выход не найден')
         if not old and not endpoint:
             raise HTTPException(400, 'Загрузите или вставьте WireGuard-конфиг')
         if not old and con.execute('SELECT count(*) FROM ru_exits').fetchone()[0] >= 64:
@@ -949,7 +924,7 @@ def default_ru_exit(request: Request, exit_id: int):
     with db() as con:
         con.execute(BEGIN_WRITE)
         if not con.execute('SELECT 1 FROM ru_exits WHERE id=?', (exit_id,)).fetchone():
-            raise HTTPException(404, 'RU-выход не найден')
+            raise HTTPException(404, 'Альтернативный выход не найден')
         con.execute("UPDATE settings SET value=? WHERE key='ru_default'", (str(exit_id),))
         changed(con)
     audit_change(request, DEFAULT_EXIT_ACTION, exit_id)
@@ -974,12 +949,12 @@ def routing_page(request: Request):
     require_admin(request, GLOBAL_ROUTING)
     with db() as con:
         rules = con.execute('SELECT * FROM routing_rules ORDER BY value').fetchall()
-    body = admin_nav(ROUTING_PATH) + f'<p data-routing-state>{html.escape(status_text(routing_status()))}</p><form class="stack routing-form" method=post action=/admin/routing>'
-    for target, title in [('ru', 'Через RU'), ('direct', 'Через обычный выход')]:
-        values = '\n'.join(('.' if x['kind'] == 'suffix' else '') + x['value'] for x in rules if x['target'] == target)
-        body += f'<label class=card>{title}<textarea name={target} rows=12>{html.escape(values)}</textarea></label>'
-    body += '<p class="muted routing-help">По одному правилу на строку: example.ru — точный домен; .example.ru — домен и поддомены; IPv4 или CIDR. Сначала проверяются домены от точного к общему, затем IP от узкой подсети к широкой. При равной точности побеждает обычный выход.</p><button>Сохранить правила</button></form>'
-    return page('Маршрутизация', body, show_header=True)
+    from access_pages import rules_text
+    admin_nav(ROUTING_PATH)
+    editor = render('components/routing_editor.html', path=ROUTING_PATH, values={target: rules_text(rules, target) for target in ('ru', 'direct')},
+                    editable=True, can_exit=False, exits=[], selected_exit=None)
+    return page('Маршрутизация', render('routing.html', level='Глобальные правила', owner='', status=status_text(routing_status()),
+                crumbs=[], editor=editor, inheritance=[], chain='', actual=''), show_header=True)
 
 
 @app.post(ROUTING_PATH, responses=HTTP_RESPONSES)
@@ -1021,7 +996,7 @@ def live_routing_status(request: Request, admin_view: bool = False):
     actor = current_account(request)
     devices = [device for device in devices if identities.allowed(actor['account_id'], 'devices.view', device['account_id'])]
     device_states = {str(device['id']): device_state_labels(device, names, device['account_default'] or default, status) for device in devices}
-    exits = {str(node_id): exit_health_label(status, node_id) for node_id in names} if identities.allowed(actor['account_id'], 'exits.view') else {}
+    exits = {str(node_id): exit_health_label(status, node_id) for node_id in names} if identities.allowed(actor['account_id'], VIEW_EXITS) else {}
     return JSONResponse({'message': status_text(status), 'devices': device_states, 'exits': exits})
 
 

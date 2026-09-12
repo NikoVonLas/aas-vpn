@@ -1,0 +1,2 @@
+{% from 'components/forms.html' import multiselect with context %}
+<div class="account-roles"><input type="hidden" name="roles_present" value="1">{{ multiselect('roles-' ~ account_id, 'roles', 'Роли', roles, selected) }}</div>

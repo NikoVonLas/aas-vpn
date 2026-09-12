@@ -38,6 +38,12 @@ def portal(tmp_path, monkeypatch):
             con.executemany('INSERT INTO users(phone,name,device_limit,enabled,created_at) VALUES(?,?,3,1,0)', [('+79990000001', 'Первый'), ('+79990000002', 'Второй')])
             con.executemany('INSERT INTO devices(phone,name,client_id,created_at,vpn_ip) VALUES(?,?,?,0,?)', [('+79990000001', 'phone1', '41', '10.8.0.2'), ('+79990000002', 'phone2', '42', '10.8.0.3')])
         app.identities.migrate()
+        with app.auth_store.db() as con:
+            con.execute("UPDATE roles SET require_2fa=0 WHERE id='administrator'")
+            con.execute("UPDATE roles SET primary_methods='[\"phone\"]' WHERE id='user'")
+            con.execute("INSERT OR IGNORE INTO roles VALUES('exit-choice','Тест выбора выхода','[\"device.exit\"]','[]','[]',0,0)")
+            con.execute("INSERT OR IGNORE INTO roles VALUES('operator','Оператор',?,'[\"password\"]','[\"totp\"]',0,0)", (json.dumps(sorted(app.identity.ACCOUNT_ACTIONS)),))
+            con.execute("INSERT OR IGNORE INTO roles VALUES('observer','Наблюдатель','[\"accounts.view\",\"devices.view\",\"account.routing.view\",\"device.routing.view\"]','[\"password\"]','[\"totp\"]',0,0)")
         client.get('/admin/login')
         yield app, client
 
@@ -45,7 +51,7 @@ def portal(tmp_path, monkeypatch):
 def admin_login(app, client):
     with app.auth_store.db() as con:
         key = con.execute('SELECT id FROM accounts WHERE admin_id=1').fetchone()[0]
-        token = app.identities.new_session(con, key, ['password'])
+        token = app.identities.new_session(con, key, ['password', 'totp'])
     client.cookies.set(app.auth.COOKIE, token, domain='portal.example.test')
 
 

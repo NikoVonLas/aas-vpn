@@ -49,8 +49,8 @@ def test_logout_cookies_and_form_js(portal, tmp_path):
     assert post(client, '/admin/login', {'username': 'admin', 'password': 'test-password'}).status_code == 303
     response = client.get('/admin')
     assert response.status_code == 200
-    assert 'action=/admin/logout' in response.text
-    assert "hasAttribute('formaction')" in response.text
+    assert 'action="/admin/logout"' in response.text
+    assert "/assets/js/forms.js" in response.text
     for n, script in enumerate(re.findall(r'<script>(.*?)</script>', response.text, re.S)):
         path = tmp_path / f'script{n}.js'; path.write_text(script)
         subprocess.run(['node', '--check', str(path)], check=True, capture_output=True)
@@ -85,7 +85,7 @@ def test_permissions_and_assignment_lifecycle(portal):
     assert post(client, '/admin/ru-exits', {'name': 'Second', 'config_text': WG}).status_code == 303
     assert post(client, '/device/1/ru-exit', {'ru_exit_id': '2'}).status_code == 303
     phone_login(app, client)
-    for suffix in ['config', 'qr']:
+    for suffix in ['config', 'qr', 'connect']:
         assert client.get('/device/2/' + suffix).status_code == 404
     for suffix, data in [('rename', {'name':'stolen'}), ('delete', {}), ('ru-exit', {'ru_exit_id':'2'})]:
         assert post(client, '/device/2/' + suffix, data).status_code == 404
@@ -184,53 +184,17 @@ def test_admin_device_crud_and_client_id(portal, monkeypatch):
     assert ('DELETE', '/clients/' + row['client_id']) in calls
 
 
-def test_admin_javascript_submit_routing(portal, tmp_path):
+def test_recovery_uses_native_post_response(portal):
     app, client = portal
     admin_login(app, client)
-    scripts = re.findall(r'<script>(.*?)</script>', client.get('/admin').text, re.S)
-    script = next(s for s in scripts if 'let adminSaving' in s)
-    # Browser-shaped DOM stubs reproduce the default button.formAction trap,
-    # successful AJAX replacement, explicit formaction, validation and expiry.
-    harness = r'''
-const assert=require('node:assert/strict');
-const handlers={}; let requests=[], alerts=[], redirects=[], replaced=0, mode='ok';
-global.location={href:'https://portal.example.test/admin',origin:'https://portal.example.test',pathname:'/admin',assign:x=>redirects.push(x)};
-global.document={querySelectorAll:()=>[],addEventListener:(n,f)=>{handlers[n]=f},querySelector:()=>({replaceWith:()=>{replaced++}})};
-global.window={}; global.FormData=class {}; global.DOMParser=class {parseFromString(){return {querySelector:()=>({})}}};
-global.alert=x=>alerts.push(x);
-global.fetch=async url=>{
- requests.push(String(url));
- if(mode==='expired')return {ok:true,redirected:true,url:'https://portal.example.test/admin/login'};
- if(mode==='invalid')return {ok:false,status:422,json:async()=>({detail:[{loc:['body','device_limit'],msg:'Укажите число'}]})};
- return {ok:true,redirected:false,text:async()=>'<main></main>'};
-};
-'''
-    checks = r'''
-async function submit(action, own){
- let prevented=false;
- await handlers.submit({target:{action,method:'post'},submitter:{formAction:own||location.href,hasAttribute:()=>!!own,setAttribute(){},removeAttribute(){}},preventDefault(){prevented=true}});
- return prevented;
-}
-(async()=>{
- assert.equal(await submit('https://portal.example.test/admin/logout'),false);
- assert.equal(requests.length,0);
- assert.equal(await submit('https://portal.example.test/admin/user'),true);
- assert.equal(requests[0],'https://portal.example.test/admin/user');
- assert.equal(replaced,1);
- requests=[];
- assert.equal(await submit('https://portal.example.test/admin/logout'),false);
- assert.equal(requests.length,0);
- await submit('https://portal.example.test/admin/user','https://portal.example.test/admin/toggle/+79990000001');
- assert.equal(requests[0],'https://portal.example.test/admin/toggle/+79990000001');
- mode='invalid'; await submit('https://portal.example.test/admin/user');
- assert.equal(alerts[0],'Лимит устройств: Укажите число');
- assert.equal(formError({unrecognized:true},500),'Ошибка HTTP 500');
- mode='expired'; await submit('https://portal.example.test/admin/user');
- assert.equal(redirects[0],'/admin/login');
-})().catch(e=>{console.error(e);process.exit(1)});
-'''
-    path=tmp_path/'submit.js'; path.write_text(harness+script+checks)
-    subprocess.run(['node', str(path)], check=True, capture_output=True)
+    key = accounts(app)[1]
+    body = client.get('/accounts/' + key + '/edit').text
+    assert 'form="recovery-' + key + '"' in body
+    assert 'action="/admin/accounts/' + key + '/recovery"' in body
+    response = post(client, '/admin/accounts/' + key + '/recovery')
+    assert response.status_code == 200
+    assert 'Одноразовое восстановление' in response.text
+    assert '<pre>' in response.text
 
 
 def test_live_status_exposes_only_owned_devices(portal):
@@ -284,7 +248,7 @@ def test_combined_device_save_is_atomic_and_permission_checked(portal):
     assert post(client, '/device/2/update', {'name': 'Must not save', 'ru_exit_id': '999'}).status_code == 400
     phone_login(app, client, '+79990000002')
     page = client.get('/cabinet').text
-    assert 'action=\'/device/2/update\'' in page
+    assert 'action="/device/2/update"' in page
     assert '<select name=ru_exit_id>' not in page
     assert post(client, '/device/2/update', {'name': 'Forbidden', 'ru_exit_id': '0'}).status_code == 404
     assert post(client, '/device/1/update', {'name': 'Stolen'}).status_code == 404

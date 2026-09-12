@@ -6,12 +6,13 @@ async function login(page) {
   await page.locator('[name=identifier]').fill('admin');
   await page.locator('[name=password]').fill('visual-test-password');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
+  if (new URL(page.url()).pathname === '/security') await page.goto('/fixture/complete-login');
   await expect(page).toHaveURL(/\/admin$/);
 }
 
 for (const [name, path, active] of [
   ['users', '/admin', 'Пользователи'],
-  ['exits', '/admin/ru-exits', 'RU-выходы'],
+  ['exits', '/admin/ru-exits', 'Альтернативные выходы'],
   ['routing', '/admin/routing', 'Маршрутизация'],
   ['roles', '/admin/roles', 'Роли и доступ'],
   ['login-methods', '/admin/login-methods', 'Способы входа'],
@@ -24,7 +25,8 @@ for (const [name, path, active] of [
     await expect(page.getByRole('link', { name: 'Без владельца', exact: true })).toHaveCount(0);
     await expect(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    const current = page.locator('nav [aria-current=page]');
+    if (page.viewportSize().width < 768) await page.getByRole('button', { name: /^Меню/ }).click();
+    const current = page.locator('[aria-current=page]');
     await expect(current).toHaveText(active);
     await expect(current).toHaveCSS('background-color', 'rgb(185, 28, 28)');
   });
@@ -37,18 +39,20 @@ for (const [name, path] of [['login', '/admin/login'], ['not-found', '/missing-p
   });
 }
 
-test('account saves name, limit and state together', async ({ page }) => {
+test('account saves name and limit together', async ({ page }) => {
   await login(page);
-  const form = page.locator('form[action^="/accounts/"][action$="/save"]').last();
+  await page.locator('.account-row').last().click();
+  const form = page.locator('.account-list > details[open] form[id^=account-form-]');
   const response = page.waitForResponse(r => /\/accounts\/[^/]+\/save$/.test(r.url()) && r.request().method() === 'POST');
   await form.getByRole('button', { name: 'Сохранить', exact: true }).click();
   expect((await response).status()).toBe(303);
-  await expect(page).toHaveURL(/\/admin$/);
+  await expect(page).toHaveURL(/\/accounts\/[^/]+\/edit$/);
 });
 
-test('logout after AJAX save uses its own action', async ({ page }) => {
+test('logout after native save uses its own action', async ({ page }) => {
   await login(page);
-  const row = page.locator('form[action^="/accounts/"][action$="/save"]').first();
+  await page.locator('.account-row').first().click();
+  const row = page.locator('.account-list > details[open] form[id^=account-form-]');
   const response = page.waitForResponse(r => /\/accounts\/[^/]+\/save$/.test(r.url()) && r.request().method() === 'POST');
   await row.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await response;
@@ -63,35 +67,40 @@ test('logout after AJAX save uses its own action', async ({ page }) => {
 
 test('RU file import is editable and save is the last action', async ({ page }) => {
   await login(page);
-  await expect(page.locator('form[action^="/accounts/"][action$="/save"]').first().getByRole('button').last()).toHaveText('Сохранить');
+  await page.locator('.account-row').first().click();
+  await expect(page.locator('.account-list > details[open] form[id^=account-form-] button').last()).toHaveText('Сохранить');
   await page.goto('/admin/ru-exits');
   const legacy = page.locator('form[action="/admin/ru-exits/1"]');
+  await page.locator('#exit-1 > summary').click();
   await expect(legacy.locator('textarea')).toHaveValue(/\[Interface\]/);
   await expect(legacy.locator('.exit-actions button')).toHaveText(['Удалить', 'По умолчанию', 'Сохранить']);
   const boxes = await legacy.locator('.exit-actions button').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().top));
   expect(new Set(boxes).size).toBe(1);
   const form = page.locator('form[action="/admin/ru-exits"]');
+  await page.locator('#exit-new > summary').click();
   const key = Buffer.alloc(32, 1).toString('base64');
   const imported = `[Interface]\nPrivateKey = ${key}\nAddress = 10.55.0.2/32\n[Peer]\nPublicKey = ${key}\nAllowedIPs = 0.0.0.0/0\nEndpoint = 192.0.2.10:51820\n`;
   await form.locator('[name=config_upload]').setInputFiles({ name: 'test.conf', mimeType: 'text/plain', buffer: Buffer.from(imported) });
   await expect(form.locator('textarea')).toHaveValue(imported);
-  await expect(form.locator('[role=status]')).toContainText('Текст можно изменить');
+  await expect(form.getByRole('status')).toContainText('Текст можно изменить');
   const edited = imported.replace('10.55.0.2', '10.55.0.3');
   await form.locator('textarea').fill(edited);
   await form.locator('[name=name]').fill('Проверка импорта');
   const sent = page.waitForRequest(request => request.url().endsWith('/admin/ru-exits') && request.method() === 'POST');
   await form.getByRole('button', { name: 'Добавить выход', exact: true }).click();
   expect((await sent).postData()).toContain('10.55.0.3/32');
-  const card = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Проверка импорта', exact: true }) });
+  const card = page.locator('details.entity-editor').filter({ has: page.getByRole('heading', { name: 'Проверка импорта', exact: true }) });
   await expect(card).toBeVisible();
   await page.reload();
   await expect(card.locator('textarea')).toHaveValue(edited);
+  await card.locator('summary').click();
   const revised = edited.replace('10.55.0.3', '10.55.0.4');
   await card.locator('textarea').fill(revised);
   await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await expect(card.locator('textarea')).toHaveValue(revised);
   await page.reload();
   await expect(card.locator('textarea')).toHaveValue(revised);
+  await card.locator('summary').click();
   await card.getByRole('button', { name: 'Удалить', exact: true }).click();
   await expect(card).toHaveCount(0);
 });
@@ -103,15 +112,18 @@ test('device has one save action for both fields', async ({ page }) => {
   const name = form.locator('[name=name]');
   const exit = form.locator('select');
   const save = form.getByRole('button', { name: 'Сохранить', exact: true });
-  await expect(form.getByRole('button')).toHaveCount(1);
-  const controls = await form.locator('input[name=name],select,button').evaluateAll(elements => elements.map(element => {
+  await expect(form.locator('.btn-primary')).toHaveCount(1);
+  const controls = await form.locator('input[name=name],select,button.btn-primary').evaluateAll(elements => elements.map(element => {
     const rect = element.getBoundingClientRect();
     return { x: rect.x, top: rect.top, bottom: rect.bottom, height: rect.height };
   }));
   if (page.viewportSize().width > 720) {
-    expect(new Set(controls.map(rect => rect.bottom)).size).toBe(1);
+    expect(controls[0].bottom).toBe(controls[1].bottom);
+    expect(controls[1].bottom).toBeLessThan(controls[2].top);
     expect(controls[0].x).toBeLessThan(controls[1].x);
-    expect(controls[1].x).toBeLessThan(controls[2].x);
+    const actions = await form.locator('.device-actions').boundingBox();
+    expect(actions.x).toBeLessThan(controls[2].x);
+    expect(Math.abs(actions.y - controls[2].top)).toBeLessThan(2);
   } else {
     expect(controls[0].bottom).toBeLessThan(controls[1].top);
     expect(controls[1].bottom).toBeLessThan(controls[2].top);
@@ -143,35 +155,32 @@ for (const [phone, allowed] of [['+79990000001', true], ['+79990000002', false]]
     await expect(page).toHaveURL(/\/cabinet$/);
     await expect(page).toHaveScreenshot(`cabinet-${allowed ? 'exit' : 'name'}.png`, { fullPage: true });
     const form = page.locator('.device-card form').first();
-    await expect(form.getByRole('button')).toHaveText('Сохранить');
+    await expect(form.locator('.btn-primary')).toHaveText('Сохранить');
     await expect(form.locator('select')).toHaveCount(allowed ? 1 : 0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }
 
-test('roles are assigned and revoked inside a user card', async ({ page }) => {
+test('roles are selected together inside a user card', async ({ page }) => {
   await login(page);
-  await page.goto('/admin/administrators');
-  await expect(page).toHaveURL(/\/admin$/);
-  await expect(page.getByRole('link', { name: 'Администраторы', exact: true })).toHaveCount(0);
-  const card = page.locator('section.card').filter({ has: page.getByRole('heading', { name: 'Александр Константинопольский', exact: true }) });
-  await card.locator('.account-roles > summary').click();
-  const form = card.locator('.account-roles > form.stack');
-  await form.getByRole('combobox', { name: 'Роль', exact: true }).selectOption('observer');
-  await form.getByRole('combobox', { name: 'Область', exact: true }).selectOption('selected');
-  await form.getByText('Выбранные аккаунты — только для этой области', { exact: true }).click();
-  await form.getByRole('checkbox', { name: /^Мария ·/ }).check();
-  await expect(card).toHaveScreenshot('user-role-assignment.png');
-  await form.getByRole('button', { name: 'Добавить роль', exact: true }).click();
-  await expect(page).toHaveURL(/\/admin#account-/);
-  await expect(card.locator('.account-roles > summary')).toContainText('Наблюдатель');
-  await card.locator('.account-roles > summary').click();
-  const grant = card.locator('form').filter({ hasText: 'Наблюдатель · Выбранные аккаунты Мария' });
-  await grant.getByRole('button', { name: 'Отозвать назначение', exact: true }).click();
-  await expect(card.locator('.account-roles > summary')).not.toContainText('Наблюдатель');
-  await page.goto('/admin/roles');
-  await expect(page.getByRole('button', { name: 'Добавить роль', exact: true })).toHaveCount(0);
-  await expect(page.locator('form[action="/admin/roles/assign"]')).toHaveCount(0);
+  await page.locator('.account-row').filter({ hasText: 'Александр Константинопольский' }).click();
+  const card = page.locator('.account-list > details[open]');
+  const roles = card.locator('.account-roles');
+  await expect(roles).toBeVisible();
+  await expect(roles.locator('summary, [name=scope]')).toHaveCount(0);
+  await roles.getByRole('button', { name: /^Роли/ }).click();
+  await roles.getByRole('checkbox', { name: 'Администратор', exact: true }).check();
+  await expect(page).toHaveScreenshot('user-role-assignment.png', { fullPage: true });
+  await page.keyboard.press('Escape');
+  await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(page).toHaveURL(/\/accounts\/[^/]+\/edit$/);
+  await expect(roles.getByRole('button', { name: /^Роли/ })).toContainText('Администратор, Пользователь');
+  await roles.getByRole('button', { name: /^Роли/ }).click();
+  await roles.getByRole('checkbox', { name: 'Администратор', exact: true }).uncheck();
+  await page.keyboard.press('Escape');
+  await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(roles.getByRole('button', { name: /^Роли/ })).toHaveText('Пользователь');
+  await expect(card.getByRole('button', { name: /Добавить роль|Отозвать назначение/ })).toHaveCount(0);
 });
 
 
@@ -181,7 +190,7 @@ test('profile layout', async ({ page }) => {
   await page.locator('section').filter({ has: page.getByRole('heading', { name: 'Сессии', exact: true }) }).locator('p').evaluateAll(nodes => nodes.forEach(node => { node.textContent = 'Текущая сессия'; }));
   await expect(page).toHaveScreenshot('security.png', { fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await expect(page.locator('nav [aria-current=page]')).toHaveText('Безопасность профиля');
+  await expect(page.locator('[aria-current=page]')).toHaveText('Безопасность профиля');
 });
 
 test('scoped routing layout and transactional save', async ({ page }) => {
@@ -255,11 +264,10 @@ test('virtual FIDO2 registration, authentication, replay and deletion', async ({
   expect(accepted.status()).toBe(200);
   const replay = await page.request.post('/security/passkeys/finish', { form: payload });
   expect(replay.status()).toBe(400);
-  await page.goto('/admin/roles');
-  const owner = page.locator('form[action="/admin/roles/save"]').filter({ has: page.locator('[name=role_id][value=owner]') });
-  await owner.locator('..').locator('summary').first().click();
+  await page.goto('/admin/roles/administrator/edit');
+  const owner = page.locator('form[action="/admin/roles/save"]').filter({ has: page.locator('[name=role_id][value=administrator]') });
   await owner.locator('[name=primary][value=webauthn]').check();
-  await owner.locator('[name=required]').check();
+  await expect(owner.locator('input[type=checkbox][name=required]')).toBeChecked();
   await owner.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await page.goto('/');
   await page.locator('[name=password]').fill('unused-password');
@@ -282,7 +290,11 @@ test('virtual FIDO2 registration, authentication, replay and deletion', async ({
   await login(page);
   await page.goto('/security');
   await page.getByRole('button', { name: 'Удалить ключ', exact: true }).click();
+  await expect(page.getByRole('alert')).toBeVisible();
+  await page.goto('/fixture/state/required');
+  await page.getByRole('button', { name: 'Удалить ключ', exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
+  await page.request.get('/fixture/state/reset');
   await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId });
 });
 
@@ -299,13 +311,18 @@ test('one login form serves every entry URL', async ({ page }) => {
   }
 });
 
-test('Enter in the common form signs in with the password', async ({ page }) => {
+test('Enter in the common form starts the mandatory administrator confirmation', async ({ page }) => {
+  await page.request.get('/fixture/state/reset');
   await page.request.get('/fixture/reset-sessions');
   await page.goto('/');
   await page.getByLabel('Логин или телефон').fill('admin');
   await page.getByLabel('Пароль', { exact: true }).fill('visual-test-password');
   await page.getByLabel('Пароль', { exact: true }).press('Enter');
-  await expect(page).toHaveURL(/\/admin$/);
+  await expect(page).toHaveURL(/\/security$/);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Настройте второй фактор');
+  await expect(page.getByRole('navigation')).toHaveCount(0);
+  await expect(page.locator('.profile-link')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Приложение-аутентификатор (TOTP)', exact: true })).toBeVisible();
 });
 
 

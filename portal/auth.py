@@ -170,9 +170,8 @@ class Auth:
             self.identity.migrate()
             with self.db() as con:
                 account = con.execute('SELECT a.id FROM accounts a JOIN admins c ON c.id=a.admin_id WHERE c.username=?', (username,)).fetchone()[0]
-                has_owner = con.execute("SELECT 1 FROM grants WHERE role_id='owner'").fetchone()
                 con.execute('DELETE FROM grants WHERE account_id=?', (account,))
-                identity.grant(con, account, 'administrator' if has_owner else 'owner', 'global')
+                identity.grant(con, account, 'administrator', 'global')
 
     def change(self, actor_id, target_id, action, password, code, new_password=''):
         if action in {'password', 'reset'}:
