@@ -2,7 +2,8 @@
 {% from 'components/editor.html' import editor with context %}
 {% call editor('method-' ~ provider.id, label, 'Встроенный способ · не требует подключения' if builtin else '', 'Включён' if provider.enabled else 'Выключен', not provider.enabled, opened=failed) %}
 <form class="stack" method="post" action="/admin/login-methods/{{ provider.id }}">{{ csrf() }}{{ check('enabled', 'Разрешить для всего сервиса', checked=provider.enabled) }}
-<p class="muted">{% if provider.id == 'totp' %}Коды из приложения используются как второй фактор.{% else %}Способ доступен для входа и подтверждения, если разрешён ролью.{% endif %} Отключение сохраняет реквизиты и ключи пользователей, но запрещает их использование.</p>
+<p class="muted">{% if provider.id == 'totp' %}Коды из приложения используются как второй фактор.{% elif provider.id == 'oidc' %}Вход через внешний провайдер, например Keycloak. Второй фактор проверяется здесь по политике роли.{% else %}Способ доступен для входа и подтверждения, если разрешён ролью.{% endif %} Отключение сохраняет реквизиты и ключи пользователей, но запрещает их использование.</p>
 {% for item in fields %}{{ field(item.key, item.caption, item.value, type='password' if item.secret else 'text', hint='Настроено. Оставьте пустым, чтобы сохранить.' if item.saved else '') }}{% endfor %}
+{% if provider.id == 'oidc' %}<p class="muted">В провайдере разрешите Authorization Code, PKCE S256 и подпись RS256. Адрес возврата: <code>{{ callback_uri }}</code>. После включения разрешите способ в роли и привяжите аккаунт в безопасности профиля.</p>{% endif %}
 {% if provider.id == 'email' %}<label>TLS<select class="form-select" name="tls"><option value="starttls">STARTTLS</option><option value="implicit" {% if tls == 'implicit' %}selected{% endif %}>TLS при подключении</option></select></label>{% endif %}
 <div class="form-actions">{{ button() }}</div></form>{% endcall %}

@@ -10,4 +10,4 @@ RUN mkdir -p /data /ru-configs /auth && chown 65532:65532 /data /ru-configs /aut
     chmod 0770 /data && chmod 0700 /ru-configs /auth
 USER 65532:65532
 EXPOSE 8080
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--no-access-log"]

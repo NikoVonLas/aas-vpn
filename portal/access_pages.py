@@ -27,6 +27,7 @@ METHODS = {method.value: label for method, label in (
     (identity.LoginMethod.EMAIL, 'Почта'),
     (identity.LoginMethod.WEBAUTHN, 'Ключ / passkey'),
     (identity.LoginMethod.TOTP, 'Приложение-аутентификатор (TOTP)'),
+    (identity.LoginMethod.OIDC, 'OpenID Connect · Keycloak'),
 )}
 
 def parse_rules(ru, direct):
@@ -61,7 +62,7 @@ class AccessPages:
         self.p.admin_nav(ROLES_PATH)
         with self.p.auth_store.db() as con:
             rows = [self.role_model(row) for row in con.execute('SELECT * FROM roles ORDER BY protected DESC,name')]
-            disabled = [METHODS[key] for key in sorted(identity.SECONDARY - identity.enabled_methods(con))]
+            disabled = [METHODS[key] for key in sorted((identity.PRIMARY | identity.SECONDARY) - identity.enabled_methods(con))]
         for row in rows:
             row['editor'] = self.role_editor(request, row, disabled)
         new = {'id': '', 'name': '', 'permissions': [], 'primary_methods': ['password'], 'secondary_methods': ['totp', 'webauthn'], 'require_2fa': 0, 'protected': 0}
@@ -98,7 +99,7 @@ class AccessPages:
         submitted = getattr(request.state, 'form_draft', {}).get('role_id', [''])[0]
         action = '/admin/roles/save' if submitted == role['id'] else '/admin/roles/other'
         return render('components/role_form.html', form_action=action, role=role, groups=groups,
-                      primary={key: METHODS[key] for key in sorted(identity.PRIMARY)}, methods=METHODS, disabled_methods=disabled)
+                      primary={key: METHODS[key] for key in sorted(identity.PRIMARY)}, methods={key: METHODS[key] for key in sorted(identity.SECONDARY)}, disabled_methods=disabled)
 
     def save_role(self, request: Request, name: str=Form(...), role_id: str=Form(''), permissions: list[str]=Form([]), primary: list[str]=Form([]), secondary: list[str]=Form([]), required: str=Form(''), copy_role: str=Form('', alias='copy')):
         actor = self.p.require_owner(request, fresh=True)

@@ -145,3 +145,13 @@ test('screen connection key copy fallback', async ({ page }) => {
   await stable(page);
   await expect(page).toHaveScreenshot('connect-copy-fallback.png');
 });
+
+test('screen OIDC only login', async ({ page }) => {
+  try {
+    await page.request.get('/fixture/login-options/oidc');
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: 'Войти через OpenID Connect' })).toBeVisible();
+    await expect(page.locator('[name=identifier]')).toHaveCount(0);
+    await expect(page).toHaveScreenshot('oidc-only-login.png', { fullPage: true });
+  } finally { await page.request.get('/fixture/login-options/restore'); }
+});

@@ -41,12 +41,13 @@ class LoginMethod(Enum):
     EMAIL = 'email'
     WEBAUTHN = 'webauthn'
     TOTP = 'totp'
+    OIDC = 'oidc'
 
 
 PRIMARY = {method.value for method in LoginMethod if method != LoginMethod.TOTP}
-SECONDARY = {method.value for method in LoginMethod}
+SECONDARY = {method.value for method in LoginMethod if method != LoginMethod.OIDC}
 BUILTIN_METHODS = {'password', 'webauthn', 'totp'}
-METHOD_PROVIDERS = {method: ('zvonok' if method == 'phone' else method) for method in SECONDARY}
+METHOD_PROVIDERS = {method: ('zvonok' if method == 'phone' else method) for method in PRIMARY | SECONDARY}
 USER_ACTIONS = {'accounts.view', 'devices.view', 'devices.create', 'devices.rename',
                 'devices.delete', 'devices.config', 'account.routing.view', 'device.routing.view'}
 SCOPES = {'self', 'selected', 'global'}
@@ -93,6 +94,12 @@ CREATE TABLE IF NOT EXISTS passkeys(
 CREATE TABLE IF NOT EXISTS recovery_codes(
  account_id TEXT PRIMARY KEY REFERENCES accounts(id), digest TEXT NOT NULL,
  expires INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS oidc_links(
+ account_id TEXT PRIMARY KEY REFERENCES accounts(id), issuer TEXT NOT NULL,
+ subject TEXT NOT NULL, UNIQUE(issuer,subject));
+CREATE TABLE IF NOT EXISTS oidc_flows(
+ state_hash TEXT PRIMARY KEY, browser_hash TEXT NOT NULL, expires INTEGER NOT NULL,
+ payload TEXT NOT NULL);
 '''
 
 
@@ -108,7 +115,7 @@ def seed_roles(con):
     con.execute("UPDATE grants SET role_based=1 WHERE (role_id='user' AND scope='self') OR (role_id='administrator' AND scope='global')")
     for method in sorted(BUILTIN_METHODS):
         con.execute('INSERT OR IGNORE INTO providers(id,enabled) VALUES(?,1)', (method,))
-    for provider in ('zvonok', 'email'):
+    for provider in ('zvonok', 'email', 'oidc'):
         enabled = provider == 'zvonok' and bool(os.getenv('ZVONOK_PUBLIC_KEY'))
         config = {key: os.getenv('ZVONOK_' + key.upper(), '') for key in ('public_key', 'campaign_id')} if provider == 'zvonok' else {}
         if provider == 'zvonok':
@@ -226,6 +233,10 @@ def ensure_owner(con):
 
 def configured_methods(con, row):
     methods = set()
+    provider = con.execute("SELECT config FROM providers WHERE id='oidc'").fetchone()
+    issuer = json.loads(provider['config']).get('issuer') if provider else None
+    if con.execute('SELECT 1 FROM oidc_links WHERE account_id=? AND issuer=?', (row['id'], issuer)).fetchone():
+        methods.add('oidc')
     credential = con.execute('SELECT password_hash,totp_verified FROM admins WHERE id=?', (row['admin_id'],)).fetchone()
     if credential and credential['password_hash']:
         methods.add('password')

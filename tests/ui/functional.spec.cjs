@@ -307,3 +307,21 @@ test('account role multiselect supports keyboard, draft and one save', async ({ 
   await card.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await expect(control).toHaveText('Пользователь');
 });
+
+test('OIDC browser return preserves linking session and allows later login', async ({ page }) => {
+  await page.request.get('/fixture/state/reset');
+  await page.request.get('/fixture/reset-sessions');
+  await page.goto('/');
+  await page.locator('[name=identifier]').fill('admin');
+  await page.locator('[name=password]').fill('visual-test-password');
+  await page.getByRole('button', { name: 'Войти', exact: true }).click();
+  await page.request.get('/fixture/state/oidc-unlinked');
+  await page.goto('/security');
+  await page.getByRole('button', { name: 'Привязать аккаунт', exact: true }).click();
+  await expect(page).toHaveURL(/\/security$/);
+  await expect(page.getByText('Аккаунт привязан', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Выйти', exact: true }).click();
+  await page.getByRole('button', { name: 'Войти через OpenID Connect', exact: true }).click();
+  await expect(page).toHaveURL(/\/admin$/);
+  await page.request.get('/fixture/state/reset');
+});

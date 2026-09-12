@@ -16,6 +16,7 @@ from webauthn.helpers import options_to_json, base64url_to_bytes
 from webauthn.helpers.structs import AuthenticatorSelectionCriteria, ResidentKeyRequirement, UserVerificationRequirement, PublicKeyCredentialDescriptor
 from webauthn.helpers.exceptions import WebAuthnException
 import identity
+import oidc
 from access_pages import METHODS
 from views import render, local_path, request_context
 from login_methods import Confirmations, totp_check
@@ -275,6 +276,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             role_requires = bool(con.execute('SELECT 1 FROM roles r JOIN grants g ON g.role_id=r.id WHERE g.account_id=? AND r.require_2fa=1', (key,)).fetchone())
             account = con.execute(ACCOUNT_QUERY, (key,)).fetchone()
             configured = identity.configured_methods(con, account)
+            oidc_linked = bool(con.execute('SELECT 1 FROM oidc_links WHERE account_id=?', (key,)).fetchone())
         for item in keys:
             item['used'] = time.strftime('%Y-%m-%d %H:%M', time.localtime(item['last_used'])) if item['last_used'] else 'ещё не использовался'
         for session in sessions:
@@ -297,6 +299,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         return self.p.page(title, render('security.html', actor=actor, role_requires=role_requires,
                            introduction=introduction, home=home, setup_totp='totp' in allowed,
                            limited=limited, recovering=recovering, backup_count=backup_count, second=second,
+                           oidc_allowed='oidc' in allowed, oidc_linked=oidc_linked,
                            credentials=self.credential_forms(actor, allowed), totp=self.totp_form(actor, allowed),
                            passkeys=render('components/passkeys.html', keys=keys) if 'webauthn' in allowed else '', sessions=sessions), show_header=True)
 
@@ -521,6 +524,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             providers = con.execute('SELECT * FROM providers ORDER BY id').fetchall()
         self.p.admin_nav(MODULES_PATH)
         fields = {'email': [('host', 'SMTP-сервер'), ('port', 'Порт'), ('sender', 'Отправитель'), ('username', 'Логин SMTP'), ('password', 'Пароль SMTP')], 'zvonok': [('campaign_id', 'Кампания'), ('public_key', 'Ключ API'), ('success_statuses', 'Успешные статусы')]}
+        fields['oidc'] = oidc.FIELDS
         from markupsafe import Markup
         return self.p.page('Способы входа', render('modules.html', providers=Markup('').join(self.provider_form(provider, fields) for provider in providers)), show_header=True)
 
@@ -528,29 +532,32 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         config = json.loads(provider['config'])
         items = []
         for key, caption in fields.get(provider['id'], []):
-            secret = key in {'password', 'public_key'}
+            secret = key in {'password', 'public_key', 'client_secret'}
             items.append({'key': key, 'caption': caption, 'secret': secret, 'value': '' if secret else config.get(key, ''), 'saved': secret and bool(config.get(key))})
         required = ('host', 'port', 'sender') if provider['id'] == 'email' else ('campaign_id', 'public_key')
         builtin = provider['id'] in identity.BUILTIN_METHODS
         label = METHODS.get(provider['id'], 'Звонок · Zvonok')
         return render('provider.html', form_action=MODULES_PATH + '/' + provider['id'], provider=provider, label=label, builtin=builtin, fields=items,
-                      configured=builtin or all(config.get(key) for key in required), tls=config.get('tls', 'starttls'))
+                      configured=builtin or all(config.get(key) for key in required), tls=config.get('tls', 'starttls'),
+                      callback_uri=oidc.OIDC(self).redirect_uri() if provider['id'] == 'oidc' else '')
 
     async def save_module(self, request: Request, provider_id: str):
         actor = self.p.require_owner(request, fresh=True)
         form = await request.form()
         fields = {'email': {'host', 'port', 'sender', 'username', 'password', 'tls'}, 'zvonok': {'campaign_id', 'public_key', 'success_statuses'}}
+        fields['oidc'] = {key for key, _ in oidc.FIELDS}
         fields.update({method: set() for method in identity.BUILTIN_METHODS})
         if provider_id not in fields:
             raise HTTPException(404)
         with self.p.auth_store.db() as con:
             ready_before = identity.ready_accounts(con)
             config = json.loads(con.execute('SELECT config FROM providers WHERE id=?', (provider_id,)).fetchone()[0])
+            previous = dict(config)
             for key in fields[provider_id]:
                 value = str(form.get(key, ''))
-                if key not in {'password', 'public_key'}:
+                if key not in {'password', 'public_key', 'client_secret'}:
                     value = value.strip()
-                if value or key not in {'password', 'public_key'}:
+                if value or key not in {'password', 'public_key', 'client_secret'}:
                     config[key] = value
             if form.get('enabled'):
                 self.validate_module_config(provider_id, config)
@@ -558,11 +565,15 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             identity.ensure_login_paths(con)
             if ready_before - identity.ready_accounts(con):
                 raise ValueError('Сначала настройте другой разрешённый способ подтверждения: изменение отключит обязательный второй фактор')
+            if provider_id == 'oidc' and (config != previous or not form.get('enabled')):
+                oidc.invalidate_configuration(con, previous, config)
             identity.audit(con, actor['account_id'], 'providers.save', provider_id)
         return RedirectResponse(MODULES_PATH, 303)
 
     @staticmethod
     def validate_module_config(provider_id, config):
+        if provider_id == 'oidc':
+            oidc.validate_config(config)
         if provider_id == 'email':
             if not config.get('host') or not config.get('sender') or config.get('tls') not in {'starttls', 'implicit'} or not 1 <= int(config.get('port', 0)) <= 65535:
                 raise ValueError('Укажите SMTP-сервер, порт, отправителя и TLS')
@@ -596,6 +607,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
 
 def register(portal):
     pages = SecurityPages(portal)
+    oidc.register(pages)
     portal.app.add_api_route('/', pages.login_page, methods=['GET'])
     portal.app.add_api_route('/admin/login', pages.login_page, methods=['GET'])
     portal.app.add_api_route('/login', pages.login, methods=['POST'])

@@ -203,6 +203,25 @@
       "name": "connection-guide",
       "path": "/admin/users/+79990000001/devices",
       "open": "Как подключиться"
+    },
+    {
+      "name": "oidc-editor",
+      "path": "/admin/login-methods",
+      "open": "OpenID Connect"
+    },
+    {
+      "name": "oidc-unlinked",
+      "path": "/security",
+      "state": "oidc-unlinked"
+    },
+    {
+      "name": "oidc-linked",
+      "path": "/security",
+      "state": "oidc-linked"
+    },
+    {
+      "name": "oidc-error",
+      "path": "/login/oidc/callback"
     }
   ]
 }

@@ -107,7 +107,7 @@ def fixture_login_options(methods: str):
             connection.executemany('UPDATE providers SET enabled=? WHERE id=?', login_providers)
         else:
             selected = set() if methods == 'none' else set(methods.split(','))
-            if not selected <= {'password', 'phone', 'email', 'webauthn'}:
+            if not selected <= {'password', 'phone', 'email', 'webauthn', 'oidc'}:
                 raise portal.HTTPException(400)
             connection.execute('UPDATE roles SET primary_methods=?', (json.dumps(sorted(selected)),))
             connection.execute('UPDATE providers SET enabled=1')
@@ -132,6 +132,12 @@ def fixture_state(name: str, request: Request):
         con.execute('UPDATE accounts SET voluntary_2fa=0 WHERE id=?', (owner,))
         con.executemany('UPDATE roles SET primary_methods=?,require_2fa=? WHERE id=?', login_roles)
         con.executemany('UPDATE providers SET enabled=? WHERE id=?', login_providers)
+        con.execute('DELETE FROM oidc_links')
+        if name in {'oidc-unlinked', 'oidc-linked'}:
+            con.execute("UPDATE providers SET enabled=1,config=? WHERE id='oidc'", (json.dumps({'issuer': 'https://sso.example.test/realms/vpn', 'client_id': 'aas-vpn', 'client_secret': 'fixture-only'}),))
+            con.execute("UPDATE roles SET primary_methods='[\"password\",\"oidc\"]' WHERE id='administrator'")
+            if name == 'oidc-linked':
+                con.execute('INSERT INTO oidc_links VALUES(?,?,?)', (owner, 'https://sso.example.test/realms/vpn', 'fixture-person'))
         if name == 'optional-mfa':
             con.execute("UPDATE roles SET require_2fa=0 WHERE id='administrator'")
         if name == 'methods-disabled':
@@ -188,6 +194,30 @@ def fixture_confirmation(method: str, request: Request):
         challenge = pages.confirmations.start(con, key, 'login', method,
                          request.cookies.get('__Host-aas_csrf', ''), {'dial': '+79990000003'}, '123456', 'fixture-link')
     return portal.RedirectResponse('/login/verify/' + challenge, 303)
+
+
+# Browser tests cross a different host; cryptographic verification is covered in test_oidc.py.
+import oidc
+
+
+async def fixture_oidc_discovery(_client, _config):
+    return {'authorization_endpoint': f'https://127.0.0.1:{PORT}/fixture/oidc-authorize'}
+
+
+async def fixture_oidc_exchange(_client, _config, _payload, code):
+    if code != 'fixture-code':
+        raise ValueError('Invalid fixture code')
+    return 'fixture-person'
+
+
+oidc.discovery = fixture_oidc_discovery
+oidc.exchange = fixture_oidc_exchange
+
+
+@portal.app.get('/fixture/oidc-authorize')
+def fixture_oidc_authorize(state: str):
+    from urllib.parse import urlencode
+    return portal.RedirectResponse(f'https://localhost:{PORT}/login/oidc/callback?' + urlencode({'state': state, 'code': 'fixture-code'}), 303)
 
 
 if __name__ == '__main__':
