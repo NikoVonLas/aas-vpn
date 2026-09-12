@@ -35,7 +35,8 @@ def test_account_state_action_is_explicit_scoped_and_revokes_sessions(portal):
     assert app.auth_store.session(token) is None
     with app.db() as con:
         row = con.execute('SELECT name,enabled FROM users WHERE account_id=?', (first,)).fetchone()
-        assert row['name'] != 'Ignored' and row['enabled'] == 0
+        assert row['name'] != 'Ignored'
+        assert row['enabled'] == 0
     assert post(client, path, {'enabled': '1'}).status_code == 303
     assert post(client, f'/accounts/{owner}/state', {'enabled': '0'}).status_code == 400
     with app.auth_store.db() as con:

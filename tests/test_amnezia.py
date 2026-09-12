@@ -34,7 +34,9 @@ def test_amnezia_import_preserves_connection_and_awg_parameters():
     assert last['allowed_ips'] == ['0.0.0.0/0', '::/0']
     assert last['port'] == 443
     assert last['mtu'] == '1320'
-    assert last['Jc'] == '4' and last['S4'] == '12' and last['I1'] == '<b 0x1234>'
+    assert last['Jc'] == '4'
+    assert last['S4'] == '12'
+    assert last['I1'] == '<b 0x1234>'
 
 
 @pytest.mark.parametrize('config', [KEY, WG.replace('Endpoint', 'Missing'), WG.replace(':51820', ':0')])

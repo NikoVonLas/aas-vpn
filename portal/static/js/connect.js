@@ -13,7 +13,7 @@
     controller?.abort();
     const pending = new AbortController();
     controller = pending;
-    ready.hidden = copy.hidden = retry.hidden = manual.hidden = true;
+    ready.hidden = copy.hidden = retry.hidden = manual.hidden = link.hidden = true;
     link.removeAttribute('href');
     key.value = '';
     status.textContent = 'Подготовка подключения…';
@@ -27,7 +27,7 @@
       if (pending.signal.aborted) return;
       if (typeof data.url !== 'string' || !/^vpn:\/\/[A-Za-z0-9_-]+$/.test(data.url)) throw new Error('Invalid connection');
       link.href = data.url;
-      ready.hidden = copy.hidden = false;
+      ready.hidden = copy.hidden = link.hidden = false;
       status.textContent = 'Подключение готово.';
       link.click();
     } catch {
