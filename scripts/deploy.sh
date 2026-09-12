@@ -75,9 +75,16 @@ if [[ "$source_dir" != "$target_dir" ]]; then
     mkdir -p "$target_dir/$directory"
     cp -R "$source_dir/$directory/." "$target_dir/$directory/"
   done
+  # Remove retired application assets without touching deployment-owned files.
+  for obsolete in portal/static/js/intlTelInputWithUtils.min.js portal/static/js/admin-auth.js portal/static/css/intlTelInput.min.css portal/.dockerignore; do
+    rm -f "$target_dir/$obsolete"
+  done
   rm -f "$target_dir/portal/session.mjs" "$target_dir/portal/sync.py" "$target_dir/portal/package.json" "$target_dir/portal/package-lock.json" "$target_dir/awg/start.sh" "$target_dir/awg/prepare.mjs" "$target_dir/tests/test_sync.py"
-  install -m 0644 compose.yml compose.edge.yml .env.example .dockerignore .gitignore .sonarcloud.properties AGENTS.md DESIGN.md README.md "$target_dir/"
+  install -m 0644 compose.yml .env.example .dockerignore .gitignore .sonarcloud.properties AGENTS.md DESIGN.md README.md "$target_dir/"
   [[ -f "$target_dir/.env" ]] || install -m 0600 .env "$target_dir/.env"
+  if [[ -f compose.local.yml && ! -e "$target_dir/compose.local.yml" ]]; then
+    install -m 0600 compose.local.yml "$target_dir/compose.local.yml"
+  fi
   mkdir -p "$target_dir/config/adguard"
   for file in Caddyfile sing-box.json adguard/AdGuardHome.yaml; do
     [[ -f "$target_dir/config/$file" ]] || install -m 0644 "config/$file" "$target_dir/config/$file"

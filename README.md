@@ -18,7 +18,7 @@ docker compose exec portal python auth.py create admin
 
 В `.env` задайте `VPN_DOMAIN` (адрес VPN), `PORTAL_DOMAIN` (портал), соответствующие `*_SITE_ADDRESS` для Caddy и параметры кампании Zvonok. `COOKIE_DOMAIN` нужен только для удаления старых административных cookie. Другой каталог установки: `AAS_INSTALL_DIR`.
 
-За существующим Caddy используйте `COMPOSE_FILE=compose.yml:compose.edge.yml`, локальные адреса публикации портов и существующий `VPN_NETWORK_NAME`. Серверные настройки overlay хранятся в `data/adguard/` и `data/sing-box/config.json`; имена прежних volumes задаются согласно `.env.example`.
+Локальные настройки установки хранятся в `.env` и `compose.local.yml`, исключённых из Git. За внешним прокси скопируйте `examples/compose.external.yml` в `compose.local.yml` и задайте `COMPOSE_FILE=compose.yml:compose.local.yml` в `.env`. Настройте локальные порты, существующую сеть и тома; пример использует конфиги из `data/adguard/` и `data/sing-box/config.json`. При обновлении локальный Compose-файл сохраняется. Прежние установки с `compose.edge.yml` продолжают работать; переименование требует изменения `COMPOSE_FILE`.
 
 AdGuard настраивается через SSH-туннель `ssh -L 3000:127.0.0.1:3000 root@SERVER`: откройте `http://localhost:3000`, задайте DNS `0.0.0.0:53`, upstream `10.42.42.1:5353`–`:5356`, режим `parallel` и timeout `5s`.
 

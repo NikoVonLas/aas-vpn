@@ -14,3 +14,8 @@ playwright-report/
 *.py[cod]
 *.swp
 !examples/*.conf.example
+
+# Deployment-local Compose files, including the former overlay name.
+compose.local.yml
+compose.edge.yml
+compose.rollback.json

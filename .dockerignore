@@ -6,3 +6,8 @@ backups
 **/node_modules
 **/*.db
 **/*.conf
+
+# Deployment-local Compose files, including the former overlay name.
+compose.local.yml
+compose.edge.yml
+compose.rollback.json
