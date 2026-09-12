@@ -3,8 +3,8 @@
 {{ field('name', 'Название', role.name, required=true, readonly=role.protected) }}
 {% if role.protected %}<p class="muted">Администратор имеет полный доступ. Название, права и обязательную 2FA изменить нельзя.</p>{% endif %}
 <h3>Права</h3><div class="permission-groups">{% for label, catalog in groups.items() %}<fieldset><legend>{{ label }}</legend>{{ choices('permissions', catalog, role.permissions, role.protected) }}</fieldset>{% endfor %}</div>
-<p class="muted">Глобально отключённые способы сохраняются в политике, но не действуют: {{ disabled_methods|join(", ") or "нет" }}. <a href="/admin/login-methods">Глобальные настройки входа</a>.</p><div class="permission-groups"><fieldset><legend>Основные способы входа</legend>{{ choices('primary', primary, role.primary_methods) }}</fieldset>
-<fieldset><legend>Второй фактор</legend>{{ choices('secondary', methods, role.secondary_methods) }}</fieldset></div>
+<div class="permission-groups"><fieldset><legend>Основные способы входа</legend>{{ choices('primary', primary, role.primary_methods, disabled_labels=disabled_methods) }}</fieldset>
+<fieldset><legend>Второй фактор</legend>{{ choices('secondary', methods, role.secondary_methods, disabled_labels=disabled_methods) }}</fieldset></div>
 {{ check('required', 'Обязательная 2FA', checked=role.require_2fa, disabled=role.protected) }}
 {% if role.protected %}<input type="hidden" name="required" value="1">{% endif %}
 <p class="muted">При обязательной 2FA нужен другой разрешённый способ после основного. Ключ / passkey с проверкой пользователя может выполнить это требование при входе.</p>

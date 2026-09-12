@@ -30,6 +30,10 @@ for (const state of registry.states) {
     await page.goto(path);
     if (state.name !== 'expired') await expect(page.getByRole('heading', { level: 1 })).not.toHaveText('Не получилось');
     if (state.open) await page.locator('summary:visible').filter({ hasText: state.open }).first().click();
+    if (state.tooltip) {
+      await page.locator(state.tooltip).hover();
+      await expect(page.getByRole('tooltip')).toHaveText('Отключено глобально');
+    }
     await stable(page);
     await expect(page).toHaveScreenshot(state.name + '.png', { fullPage: true });
   });

@@ -95,3 +95,11 @@ if (identifier) {
 document.querySelector('form[action="/admin/logout"]')?.addEventListener('submit', () => {
   try { Object.keys(sessionStorage).filter(key => key.startsWith('aas-draft:')).forEach(key => sessionStorage.removeItem(key)); } catch { /* Optional storage. */ }
 });
+
+for (const element of document.querySelectorAll('[data-bs-toggle=tooltip]')) {
+  bootstrap.Tooltip.getOrCreateInstance(element, { trigger: 'hover focus', container: 'body' });
+}
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  document.querySelectorAll('[data-bs-toggle=tooltip]').forEach(element => bootstrap.Tooltip.getInstance(element)?.hide());
+});

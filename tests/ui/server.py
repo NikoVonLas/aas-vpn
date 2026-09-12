@@ -133,6 +133,8 @@ def fixture_state(name: str, request: Request):
             con.execute("UPDATE roles SET require_2fa=0 WHERE id='administrator'")
         if name == 'methods-disabled':
             con.execute("UPDATE providers SET enabled=0 WHERE id IN ('totp','webauthn')")
+        if name == 'role-disabled-methods':
+            con.execute("UPDATE providers SET enabled=0 WHERE id='webauthn'")
         if name == 'totp':
             con.execute("UPDATE admins SET pending_totp='JBSWY3DPEHPK3PXP',pending_at=? WHERE id=1", (int(time.time()),))
         if name in {'mfa', 'required'}:

@@ -203,3 +203,31 @@ test('role permissions and profile forms are visible with consistent actions', a
   await page.getByRole('link', { name: 'Вернуться к разделам', exact: true }).click();
   await expect(page).toHaveURL(/\/admin$/);
 });
+
+
+test('disabled role methods explain their state and survive saving', async ({ page }) => {
+  await page.request.get('/fixture/state/reset');
+  await login(page);
+  await page.request.get('/fixture/state/role-disabled-methods');
+  try {
+    await page.goto('/admin/roles/user/edit');
+    const role = page.locator('#role-user');
+    const key = role.locator('input[type=checkbox][name=secondary][value=webauthn]');
+    const label = role.locator('label:has(input[name=secondary][value=webauthn])');
+    await expect(key).toBeDisabled();
+    await expect(key).toBeChecked();
+    await expect(role.getByText('Глобально отключённые способы', { exact: false })).toHaveCount(0);
+    await label.hover();
+    await expect(page.getByRole('tooltip')).toHaveText('Отключено глобально');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
+    await label.focus();
+    await expect(page.getByRole('tooltip')).toHaveText('Отключено глобально');
+    await role.getByRole('button', { name: 'Сохранить', exact: true }).click();
+    await expect(page).toHaveURL(/roles\/user\/edit$/);
+    await expect(key).toBeDisabled();
+    await expect(key).toBeChecked();
+    await page.reload();
+    await expect(key).toBeChecked();
+  } finally { await page.request.get('/fixture/state/reset'); }
+});

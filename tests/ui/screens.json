@@ -192,6 +192,12 @@
       "name": "mfa-setup",
       "path": "/security",
       "state": "mfa-setup"
+    },
+    {
+      "name": "role-method-tooltip",
+      "path": "/admin/roles/user/edit",
+      "state": "role-disabled-methods",
+      "tooltip": "#role-user label:has([name=secondary][value=webauthn])"
     }
   ]
 }
