@@ -8,7 +8,7 @@
     "roles.html": "roles layout",
     "modules.html": "login-methods layout",
     "cabinet.html": "cabinet layout",
-    "login.html": "all 16 method sets and error",
+    "login.html": "all 16 method sets and error; telephone country picker in states.spec.cjs",
     "routing.html": "global, account and device routing",
     "security.html": "profile and limited states",
     "message.html": "errors, recovery result and backup codes"
@@ -123,6 +123,7 @@
     },
     {
       "name": "confirm-phone",
+      "coverage": "Automatic waiting, expiry and provider outage in states.spec.cjs; cross-browser polling in functional.spec.cjs",
       "path": "/fixture/confirmation/phone"
     },
     {
@@ -203,6 +204,26 @@
       "name": "connection-guide",
       "path": "/admin/users/+79990000001/devices",
       "open": "Как подключиться"
+    },
+    {
+      "name": "oidc-editor",
+      "path": "/admin/login-methods",
+      "open": "OpenID Connect",
+      "state": "oidc-configured"
+    },
+    {
+      "name": "oidc-unlinked",
+      "path": "/security",
+      "state": "oidc-unlinked"
+    },
+    {
+      "name": "oidc-linked",
+      "path": "/security",
+      "state": "oidc-linked"
+    },
+    {
+      "name": "oidc-error",
+      "path": "/login/oidc/callback"
     }
   ]
 }

@@ -1,5 +1,6 @@
 """Autoescaped HTML components and request-local presentation context."""
 from contextvars import ContextVar
+from itertools import count
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -23,8 +24,17 @@ def local_path(value, fallback='/cabinet'):
     return parsed.path + ('?' + parsed.query if parsed.query else '')
 
 
+def field_ids(request):
+    if request is None:
+        return count()
+    if not hasattr(request.state, 'field_ids'):
+        request.state.field_ids = count()
+    return request.state.field_ids
+
+
 def render(template, *, form_action='', **values):
     request = request_context.get()
+    ids = field_ids(request)
     token = getattr(request.state, 'csrf_token', '') if request else ''
     draft = getattr(request.state, 'form_draft', {}) if request else {}
     errors = getattr(request.state, 'field_errors', {}) if request else {}
@@ -37,7 +47,7 @@ def render(template, *, form_action='', **values):
     def form_checked(name, value, default=False):
         return str(value) in draft.get(name, []) if failed and name in DRAFT_FIELDS else default
     return Markup(environment.get_template(template).render(csrf_token=token, failed=failed, form_value=form_value,
-                  form_checked=form_checked, field_errors=errors, form_error=getattr(request.state, 'form_error', '') if request else '', **values))
+                  form_checked=form_checked, field_id=lambda: 'phone-field-' + str(next(ids)), field_errors=errors, form_error=getattr(request.state, 'form_error', '') if request else '', **values))
 
 
 def component_catalog(portal):

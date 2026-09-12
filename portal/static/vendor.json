@@ -11,5 +11,27 @@
         "sha384": "sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI"
       }
     }
+  },
+  "intl-tel-input": {
+    "version": "29.2.3",
+    "source": "https://www.npmjs.com/package/intl-tel-input/v/29.2.3",
+    "license": "vendor/intl-tel-input/29.2.3/LICENSE",
+    "files": {
+      "vendor/intl-tel-input/29.2.3/css/intlTelInput.min.css": {
+        "sha384": "sha384-ruvLdWaS29qgQGLHa/gi6V/P9MwCbrkXvxho56yVUG0jK7dbAw14X15Bs4ck4mji"
+      },
+      "vendor/intl-tel-input/29.2.3/js/intlTelInputWithUtils.min.js": {
+        "sha384": "sha384-93hWm2TFsMO02u5ah7ei/BLy5FX/nVzF2TDVfDDlXrb2VWecCH1tjRMgUe5nJlne"
+      },
+      "vendor/intl-tel-input/29.2.3/js/locale/ru.js": {
+        "sha384": "sha384-yvtDNW16/nUstpQh3e6QFzgYBz/hm7tA51MN3ySQZn2SJyPf1GG8FXIejCx9B5eg"
+      },
+      "vendor/intl-tel-input/29.2.3/img/flags.webp": {
+        "sha384": "sha384-oAV2j0ImqtNYG4sZ9SCV1/UTFUlcNkGyKnuoPkS4QwhLzxzkKSumNUZkcpBE/1CL"
+      },
+      "vendor/intl-tel-input/29.2.3/img/flags@2x.webp": {
+        "sha384": "sha384-uyA9ZTKRe6LyQcspaMlFTYtJKU/o43TJz7RkKGBETdaGmn5Yjx2plEG93Ei0lFUc"
+      }
+    }
   }
 }

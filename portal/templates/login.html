@@ -1,9 +1,10 @@
 {% from 'components/forms.html' import csrf, field, button, link with context %}
-<section class="card">{% if not methods %}<p>Способы входа пока не настроены. Обратитесь к владельцу сервиса.</p>{% else %}<form class="stack" method="post" action="/login" data-passkey="login" data-login-methods="{{ methods|sort|join(',') }}">{{ csrf() }}
+<section class="card">{% if not methods %}<p>Способы входа пока не настроены. Обратитесь к владельцу сервиса.</p>{% endif %}{% set oidc_enabled = 'oidc' in methods %}{% set methods = methods|reject('equalto', 'oidc')|list %}{% if methods %}<form class="stack" method="post" action="/login" data-passkey="login" data-login-methods="{{ methods|sort|join(',') }}">{{ csrf() }}
 {{ field('identifier', label, identifier, type=input_type, required=true, error=error, autocomplete='tel' if input_type == 'tel' else 'email' if input_type == 'email' else 'username', maxlength=254) }}
 {% if 'password' in methods %}<label>Пароль<input class="form-control" name="password" type="password" autocomplete="current-password" aria-describedby="login-hint" {% if methods == ['password'] %}required{% endif %}></label>{% endif %}
 <p class="muted" id="login-hint" aria-live="polite">{{ hint }}</p>
 {% if 'webauthn' in methods %}<button class="btn {% if methods|length > 1 %}secondary{% else %}btn-primary{% endif %}" type="{{ 'submit' if methods|length == 1 else 'button' }}" data-passkey-submit>Войти с ключом / passkey</button>{% endif %}
 {% if methods|reject('equalto', 'webauthn')|list %}{{ button('Войти' if 'password' in methods else 'Продолжить') }}{% endif %}</form>{% endif %}
+{% if oidc_enabled %}<form method="post" action="/login/oidc/start" class="stack">{{ csrf() }}{{ button('Войти через OpenID Connect', 'secondary' if methods else 'primary') }}</form>{% endif %}
 <p class="muted auth-help"><a href="/login/recovery">Восстановление доступа</a></p></section>
 {% if 'webauthn' in methods %}<script src="/assets/js/passkeys.js" defer></script>{% endif %}

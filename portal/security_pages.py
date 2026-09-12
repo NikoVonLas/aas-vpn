@@ -16,6 +16,7 @@ from webauthn.helpers import options_to_json, base64url_to_bytes
 from webauthn.helpers.structs import AuthenticatorSelectionCriteria, ResidentKeyRequirement, UserVerificationRequirement, PublicKeyCredentialDescriptor
 from webauthn.helpers.exceptions import WebAuthnException
 import identity
+import oidc
 from access_pages import METHODS
 from views import render, local_path, request_context
 from login_methods import Confirmations, totp_check
@@ -52,9 +53,9 @@ def login_hint(methods):
 def login_form(methods, identifier='', error=''):
     labels = [label for key, label in [('password', 'логин'), ('phone', 'телефон'), ('email', 'почта')] if key in methods]
     input_type = 'text'
-    if methods == {'phone'}:
+    if methods - {'oidc'} == {'phone'}:
         input_type = 'tel'
-    elif methods == {'email'}:
+    elif methods - {'oidc'} == {'email'}:
         input_type = 'email'
     return render('login.html', methods=sorted(methods), label=join_choices(labels).capitalize() if labels else 'Аккаунт',
                   input_type=input_type,
@@ -186,6 +187,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             else:
                 address = self.enrollment_address(method, identifier)
                 payload['address'] = address
+                payload['session'] = actor['token_hash']
         if not address:
             raise ValueError('Сначала настройте реквизит в профиле')
         payload['recipient'] = address
@@ -216,10 +218,49 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
 
     def verify_page(self, request: Request, key: str):
         with self.p.auth_store.db() as con:
-            row = con.execute('SELECT * FROM challenges WHERE id=? AND browser_hash=? AND expires>?', (key, self.p.auth_store.digest(self.browser(request)), int(time.time()))).fetchone()
-        if not row:
+            row = con.execute('SELECT * FROM challenges WHERE id=? AND browser_hash=?', (key, self.p.auth_store.digest(self.browser(request)))).fetchone()
+        if not row or row['method'] != 'phone' and row['expires'] <= time.time():
             raise HTTPException(410, 'Подтверждение устарело')
-        return self.p.page('Подтверждение', render('confirmation.html', key=key, method=row['method'], dial=json.loads(row['payload']).get('dial', '')))
+        return self.p.page('Подтверждение', render('confirmation.html', key=key, method=row['method'],
+                          dial=json.loads(row['payload']).get('dial', ''), expires=row['expires'], expired=row['expires'] <= time.time()))
+
+    def phone_poll(self, request, key):
+        actor = self.p.identities.session(request.cookies.get(self.p.auth.COOKIE, ''), limited=True)
+        with self.p.auth_store.db() as con:
+            row = con.execute('SELECT * FROM challenges WHERE id=? AND browser_hash=? AND method=? AND expires>?',
+                              (key, self.p.auth_store.digest(self.browser(request)), 'phone', int(time.time()))).fetchone()
+            if not row:
+                raise HTTPException(410, 'Время подтверждения истекло. Начните заново.')
+            self.confirmations.validate_policy(con, row)
+            payload = json.loads(row['payload'])
+            if row['purpose'].startswith('enroll-'):
+                if not actor or actor['account_id'] != row['account_id'] or actor['token_hash'] != payload.get('session'):
+                    raise HTTPException(403, 'Войдите заново для изменения номера')
+            if time.time() < payload.get('next_poll', 0):
+                return None
+            payload['next_poll'] = time.time() + 3
+            con.execute('UPDATE challenges SET payload=? WHERE id=?', (json.dumps(payload), key))
+            return dict(row)
+
+    def json_finish(self, token):
+        response = self.finish(token) if token else RedirectResponse(SECURITY_PATH, 303)
+        result = JSONResponse({'location': response.headers['location']})
+        for cookie in response.headers.getlist('set-cookie'):
+            result.headers.append('set-cookie', cookie)
+        return result
+
+    async def phone_status(self, request: Request, key: str):
+        row = self.phone_poll(request, key)
+        if row is None:
+            return JSONResponse({'state': 'pending'})
+        provider, config = self.confirmations.provider('phone')
+        try:
+            confirmed = await provider.verify(config, json.loads(row['payload']))
+        except (httpx.HTTPError, ValueError):
+            raise HTTPException(503, 'Проверка звонка временно недоступна. Повторяем автоматически.') from None
+        if not confirmed:
+            return JSONResponse({'state': 'pending'})
+        return self.json_finish(self.confirmations.consume(row, external=True))
 
     async def retry_confirmation(self, request: Request, key: str):
         with self.p.auth_store.db() as con:
@@ -275,6 +316,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             role_requires = bool(con.execute('SELECT 1 FROM roles r JOIN grants g ON g.role_id=r.id WHERE g.account_id=? AND r.require_2fa=1', (key,)).fetchone())
             account = con.execute(ACCOUNT_QUERY, (key,)).fetchone()
             configured = identity.configured_methods(con, account)
+            oidc_linked = bool(con.execute('SELECT 1 FROM oidc_links WHERE account_id=?', (key,)).fetchone())
         for item in keys:
             item['used'] = time.strftime('%Y-%m-%d %H:%M', time.localtime(item['last_used'])) if item['last_used'] else 'ещё не использовался'
         for session in sessions:
@@ -297,6 +339,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         return self.p.page(title, render('security.html', actor=actor, role_requires=role_requires,
                            introduction=introduction, home=home, setup_totp='totp' in allowed,
                            limited=limited, recovering=recovering, backup_count=backup_count, second=second,
+                           oidc_allowed='oidc' in allowed, oidc_linked=oidc_linked,
                            credentials=self.credential_forms(actor, allowed), totp=self.totp_form(actor, allowed),
                            passkeys=render('components/passkeys.html', keys=keys) if 'webauthn' in allowed else '', sessions=sessions), show_header=True)
 
@@ -502,11 +545,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             token = self.confirmations.consume(row, external=True, verified=verified.user_verified, credential_id=stored['id'])
         except (ValueError, KeyError, TypeError, WebAuthnException):
             raise ValueError('Ключ не подтвердил запрос. Начните заново') from None
-        response = self.finish(token)
-        result = JSONResponse({'location': response.headers['location']})
-        for cookie in response.headers.getlist('set-cookie'):
-            result.headers.append('set-cookie', cookie)
-        return result
+        return self.json_finish(token)
 
     def delete_key(self, request: Request, key: str=Form(...)):
         actor = self.profile_actor(request)
@@ -521,6 +560,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             providers = con.execute('SELECT * FROM providers ORDER BY id').fetchall()
         self.p.admin_nav(MODULES_PATH)
         fields = {'email': [('host', 'SMTP-сервер'), ('port', 'Порт'), ('sender', 'Отправитель'), ('username', 'Логин SMTP'), ('password', 'Пароль SMTP')], 'zvonok': [('campaign_id', 'Кампания'), ('public_key', 'Ключ API'), ('success_statuses', 'Успешные статусы')]}
+        fields['oidc'] = oidc.FIELDS
         from markupsafe import Markup
         return self.p.page('Способы входа', render('modules.html', providers=Markup('').join(self.provider_form(provider, fields) for provider in providers)), show_header=True)
 
@@ -528,29 +568,32 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         config = json.loads(provider['config'])
         items = []
         for key, caption in fields.get(provider['id'], []):
-            secret = key in {'password', 'public_key'}
+            secret = key in {'password', 'public_key', 'client_secret'}
             items.append({'key': key, 'caption': caption, 'secret': secret, 'value': '' if secret else config.get(key, ''), 'saved': secret and bool(config.get(key))})
         required = ('host', 'port', 'sender') if provider['id'] == 'email' else ('campaign_id', 'public_key')
         builtin = provider['id'] in identity.BUILTIN_METHODS
         label = METHODS.get(provider['id'], 'Звонок · Zvonok')
         return render('provider.html', form_action=MODULES_PATH + '/' + provider['id'], provider=provider, label=label, builtin=builtin, fields=items,
-                      configured=builtin or all(config.get(key) for key in required), tls=config.get('tls', 'starttls'))
+                      configured=builtin or all(config.get(key) for key in required), tls=config.get('tls', 'starttls'),
+                      callback_uri=oidc.OIDC(self).redirect_uri() if provider['id'] == 'oidc' else '')
 
     async def save_module(self, request: Request, provider_id: str):
         actor = self.p.require_owner(request, fresh=True)
         form = await request.form()
         fields = {'email': {'host', 'port', 'sender', 'username', 'password', 'tls'}, 'zvonok': {'campaign_id', 'public_key', 'success_statuses'}}
+        fields['oidc'] = {key for key, _ in oidc.FIELDS}
         fields.update({method: set() for method in identity.BUILTIN_METHODS})
         if provider_id not in fields:
             raise HTTPException(404)
         with self.p.auth_store.db() as con:
             ready_before = identity.ready_accounts(con)
             config = json.loads(con.execute('SELECT config FROM providers WHERE id=?', (provider_id,)).fetchone()[0])
+            previous = dict(config)
             for key in fields[provider_id]:
                 value = str(form.get(key, ''))
-                if key not in {'password', 'public_key'}:
+                if key not in {'password', 'public_key', 'client_secret'}:
                     value = value.strip()
-                if value or key not in {'password', 'public_key'}:
+                if value or key not in {'password', 'public_key', 'client_secret'}:
                     config[key] = value
             if form.get('enabled'):
                 self.validate_module_config(provider_id, config)
@@ -558,11 +601,15 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             identity.ensure_login_paths(con)
             if ready_before - identity.ready_accounts(con):
                 raise ValueError('Сначала настройте другой разрешённый способ подтверждения: изменение отключит обязательный второй фактор')
+            if provider_id == 'oidc' and (config != previous or not form.get('enabled')):
+                oidc.invalidate_configuration(con, previous, config)
             identity.audit(con, actor['account_id'], 'providers.save', provider_id)
         return RedirectResponse(MODULES_PATH, 303)
 
     @staticmethod
     def validate_module_config(provider_id, config):
+        if provider_id == 'oidc':
+            oidc.validate_config(config)
         if provider_id == 'email':
             if not config.get('host') or not config.get('sender') or config.get('tls') not in {'starttls', 'implicit'} or not 1 <= int(config.get('port', 0)) <= 65535:
                 raise ValueError('Укажите SMTP-сервер, порт, отправителя и TLS')
@@ -596,6 +643,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
 
 def register(portal):
     pages = SecurityPages(portal)
+    oidc.register(pages)
     portal.app.add_api_route('/', pages.login_page, methods=['GET'])
     portal.app.add_api_route('/admin/login', pages.login_page, methods=['GET'])
     portal.app.add_api_route('/login', pages.login, methods=['POST'])
@@ -603,6 +651,7 @@ def register(portal):
     portal.app.add_api_route('/admin/login', pages.password_login, methods=['POST'])
     portal.app.add_api_route('/login/start', pages.login_start, methods=['POST'])
     portal.app.add_api_route('/login/verify/{key}', pages.verify_page, methods=['GET'])
+    portal.app.add_api_route('/login/verify/{key}/status', pages.phone_status, methods=['POST'])
     portal.app.add_api_route('/login/verify/{key}/retry', pages.retry_confirmation, methods=['POST'])
     portal.app.add_api_route('/login/verify/{key}', pages.verify_confirmation, methods=['POST'])
     portal.app.add_api_route('/login/link', pages.email_link_page, methods=['GET'])
