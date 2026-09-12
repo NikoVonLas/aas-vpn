@@ -40,4 +40,4 @@ fieldset{min-width:0;border:1px solid var(--line);border-radius:8px;padding:16px
 
 @media(max-width:720px){.device-edit:has(>.form-actions){grid-template-columns:minmax(0,1fr)}.form-actions>.device-actions{display:flex;justify-content:flex-start}}
 
-.check-label[data-bs-toggle=tooltip]{color:var(--muted)}.check-label[data-bs-toggle=tooltip] input{pointer-events:none}
+.check-label[data-bs-toggle=tooltip]{color:var(--muted);width:fit-content;max-width:100%}.check-label[data-bs-toggle=tooltip] input{pointer-events:none}
