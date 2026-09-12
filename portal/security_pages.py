@@ -312,7 +312,6 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
         with self.p.auth_store.db() as con:
             keys = [dict(row) for row in con.execute('SELECT id,name,last_used FROM passkeys WHERE account_id=?', (key,))]
             sessions = [dict(row) for row in con.execute('SELECT token_hash,created,expires FROM identity_sessions WHERE account_id=?', (key,))]
-            backup_count = con.execute('SELECT count(*) FROM backup_codes WHERE account_id=?', (key,)).fetchone()[0]
             role_requires = bool(con.execute('SELECT 1 FROM roles r JOIN grants g ON g.role_id=r.id WHERE g.account_id=? AND r.require_2fa=1', (key,)).fetchone())
             account = con.execute(ACCOUNT_QUERY, (key,)).fetchone()
             configured = identity.configured_methods(con, account)
@@ -335,10 +334,9 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             allowed = set()
         second = render('second_factor.html', remaining=remaining, methods=METHODS) if confirmation_only else ''
         title, introduction = security_stage(actor, recovering, confirmation_only, allowed)
-        home = '/admin' if self.p.identities.owner(key) else '/cabinet'
         return self.p.page(title, render('security.html', actor=actor, role_requires=role_requires,
-                           introduction=introduction, home=home, setup_totp='totp' in allowed,
-                           limited=limited, recovering=recovering, backup_count=backup_count, second=second,
+                           introduction=introduction, setup_totp='totp' in allowed,
+                           limited=limited, recovering=recovering, second=second,
                            oidc_allowed='oidc' in allowed, oidc_linked=oidc_linked,
                            credentials=self.credential_forms(actor, allowed), totp=self.totp_form(actor, allowed),
                            passkeys=render('components/passkeys.html', keys=keys) if 'webauthn' in allowed else '', sessions=sessions), show_header=True)

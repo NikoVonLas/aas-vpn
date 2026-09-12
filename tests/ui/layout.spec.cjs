@@ -207,6 +207,26 @@ test('scoped routing layout and transactional save', async ({ page }) => {
   await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
 });
 
+test('virtual FIDO2 enrollment expires during the browser prompt', async ({ page, context }) => {
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('WebAuthn.enable');
+  await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: { protocol: 'ctap2', transport: 'usb', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true }
+  });
+  await login(page);
+  await page.goto('/security');
+  await page.route('**/security/passkeys/finish', async route => {
+    await page.request.get('/fixture/state/reauth');
+    await route.continue();
+  });
+  const enroll = page.locator('form[data-passkey=enroll]');
+  await enroll.getByLabel('Название', { exact: true }).fill('Expired enrollment');
+  await enroll.getByRole('button').click();
+  await expect(page).toHaveURL(/\/security\/confirm$/);
+  await page.goto('/security');
+  await expect(page.getByText('Expired enrollment · ещё не использовался', { exact: true })).toHaveCount(0);
+});
+
 test('virtual FIDO2 registration, authentication, replay and deletion', async ({ page, context }) => {
   const cdp = await context.newCDPSession(page);
   await cdp.send('WebAuthn.enable');

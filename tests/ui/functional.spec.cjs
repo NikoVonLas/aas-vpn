@@ -116,6 +116,45 @@ test('role draft resumes after confirmation without repeating POST', async ({ pa
   await expect(page.getByRole('heading', { name: 'Черновик роли', exact: true })).toHaveCount(0);
 });
 
+test('passkey enrollment asks for fresh login and returns without replaying', async ({ page }) => {
+  await login(page);
+  await page.goto('/security');
+  const enroll = page.locator('form[data-passkey=enroll]');
+  await enroll.getByLabel('Название', { exact: true }).fill('Personal key');
+  await page.request.get('/fixture/state/reauth');
+  let starts = 0;
+  let finishes = 0;
+  page.on('request', request => {
+    if (request.url().endsWith('/security/passkeys/start')) starts++;
+    if (request.url().endsWith('/security/passkeys/finish')) finishes++;
+  });
+  await enroll.getByRole('button').click();
+  await expect(page).toHaveURL(/\/security\/confirm$/);
+  await expect(page.getByRole('heading', { name: 'Повторный вход для защиты аккаунта' })).toBeVisible();
+  await page.getByRole('link', { name: 'Перейти ко входу' }).click();
+  await page.locator('[name=identifier]').fill('admin');
+  await page.locator('[name=password]').fill('visual-test-password');
+  await page.getByRole('button', { name: 'Войти', exact: true }).click();
+  if (new URL(page.url()).pathname === '/security') await page.goto('/fixture/complete-login');
+  await expect(page).toHaveURL(/\/security\?resume=1$/);
+  await expect(enroll.getByRole('button')).toBeEnabled();
+  expect(starts).toBe(1);
+  expect(finishes).toBe(0);
+});
+
+test('passkey enrollment explains an HTML service error', async ({ page }) => {
+  await login(page);
+  await page.goto('/security');
+  await page.route('**/security/passkeys/start', route => route.fulfill({
+    status: 503, contentType: 'text/html', body: '<!doctype html><title>Unavailable</title>'
+  }));
+  const enroll = page.locator('form[data-passkey=enroll]');
+  await enroll.getByLabel('Название', { exact: true }).fill('Personal key');
+  await enroll.getByRole('button').click();
+  await expect(enroll.getByRole('status')).toHaveText('Не удалось подтвердить ключ. Обновите страницу и повторите.');
+  await expect(enroll.getByRole('button')).toBeEnabled();
+});
+
 test('theme tokens meet text and focus contrast', async ({ page }) => {
   await page.goto('/fixture/components');
   const colors = await page.evaluate(() => {
@@ -238,7 +277,10 @@ test('role permissions and profile forms are visible with consistent actions', a
   await expect(page.locator('.admin-nav a[href="/security"]')).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Подтвердить вход заново' })).toHaveCount(0);
   await expect(page.locator('.profile-link')).toHaveAttribute('aria-current', 'page');
-  await page.getByRole('link', { name: 'Вернуться к разделам', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Вернуться к разделам', exact: true })).toHaveCount(0);
+  await expect(page.getByText(/резервных кодов:/)).toHaveCount(0);
+  await openNavigation(page);
+  await page.getByRole('link', { name: 'Пользователи', exact: true }).click();
   await expect(page).toHaveURL(/\/admin$/);
 });
 
