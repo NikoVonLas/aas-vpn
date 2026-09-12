@@ -38,11 +38,16 @@ for (const state of registry.states) {
     await expect(page).toHaveScreenshot(state.name + '.png', { fullPage: true });
   });
 }
-for (const name of ['qr', 'delete']) {
+for (const name of ['qr', 'delete', 'connect', 'connect-error', 'connect-loading']) {
   test(`screen ${name} dialog`, async ({ page }) => {
     await login(page);
     await page.goto('/admin/users/+79990000001/devices');
-    await page.getByRole('button', { name: name === 'qr' ? 'QR' : 'Удалить', exact: true }).first().click();
+    await page.evaluate(() => document.addEventListener('click', event => { if (event.target.id === 'connect-link') event.preventDefault(); }));
+    if (name === 'connect-error') await page.route('**/device/1/connect', route => route.fulfill({ status: 503, body: '{}' }));
+    if (name === 'connect-loading') await page.route('**/device/1/connect', () => {});
+    await page.getByRole('button', { name: name.startsWith('connect') ? 'В AmneziaVPN' : (name === 'qr' ? 'QR' : 'Удалить'), exact: true }).first().click();
+    if (name === 'connect') await expect(page.locator('#connect-ready')).toBeVisible();
+    if (name === 'connect-error') await expect(page.locator('#connect-retry')).toBeVisible();
     if (name === 'qr') await expect(page.locator('#qr-image')).toHaveJSProperty('complete', true);
     await expect(page).toHaveScreenshot(name + '-dialog.png');
   });

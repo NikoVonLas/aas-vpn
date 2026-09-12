@@ -338,8 +338,25 @@ class AccessPages:
         con.execute('UPDATE accounts SET enabled=? WHERE id=?', (int(enabled), account_id))
         con.execute('UPDATE admins SET enabled=? WHERE id=?', (int(enabled), target['admin_id']))
         identity.ensure_owner(con)
+        if enabled:
+            identity.ensure_login_paths(con)
         if bool(target['enabled']) != enabled:
             con.execute('DELETE FROM identity_sessions WHERE account_id=?', (account_id,))
+
+    def set_account_state(self, request: Request, account_id: str, enabled: str=Form(...)):
+        actor = self.p.current_account(request)
+        self.p.require_permission(request, ACCOUNT_STATE, account_id)
+        if enabled not in {'0', '1'}:
+            raise ValueError('Неизвестное состояние аккаунта')
+        with self.p.identities.transaction() as con:
+            target = con.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
+            if not target:
+                raise HTTPException(404)
+            if identity.privileged(con, account_id) and not identity.owner(con, actor['account_id']):
+                raise PermissionError('Только администратор управляет административными аккаунтами')
+            self.save_account_state(con, target, enabled == '1')
+            identity.audit(con, actor['account_id'], 'accounts.state', account_id)
+        return RedirectResponse(f'/accounts/{account_id}/edit', 303)
 
     def save_account_roles(self, con, actor, account_id, roles):
         current = {r['role_id'] for r in con.execute('SELECT role_id FROM grants WHERE account_id=?', (account_id,))}
@@ -368,3 +385,4 @@ def register(portal):
     portal.app.add_api_route('/admin/accounts', pages.create_account, methods=['POST'])
     portal.app.add_api_route('/accounts/{account_id}/roles', pages.assign_account, methods=['POST'])
     portal.app.add_api_route('/accounts/{account_id}/save', pages.save_account, methods=['POST'])
+    portal.app.add_api_route('/accounts/{account_id}/state', pages.set_account_state, methods=['POST'])

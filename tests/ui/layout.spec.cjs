@@ -39,7 +39,7 @@ for (const [name, path] of [['login', '/admin/login'], ['not-found', '/missing-p
   });
 }
 
-test('account saves name, limit and state together', async ({ page }) => {
+test('account saves name and limit together', async ({ page }) => {
   await login(page);
   await page.locator('.account-row').last().click();
   const form = page.locator('.account-list > details[open] form[id^=account-form-]');

@@ -27,14 +27,17 @@ import app as portal  # noqa: E402
 
 def fixture_awg(request):
     if request.url.path.endswith('/configuration'):
-        return httpx.Response(200, text=config)
+        return httpx.Response(200, text=device_config)
     return httpx.Response(200, json=[])
 
 portal.wg_session = lambda: httpx.AsyncClient(transport=httpx.MockTransport(fixture_awg), base_url='http://fixture')
 portal.startup()
 portal.app.router.on_startup = [handler for handler in portal.app.router.on_startup if handler != portal.start_device_worker]
 key = base64.b64encode(b'a' * 32).decode()
-config = f'[Interface]\nPrivateKey = {key}\nAddress = 10.55.0.2/32\nListenPort = 51820\n\n[Peer]\nPublicKey = {key}\nAllowedIPs = 0.0.0.0/0\n'
+config = f'[Interface]\nPrivateKey = {key}\nAddress = 10.55.0.2/32\nListenPort = 51820\nDNS = 10.19.0.1\nJc = 4\nJmin = 40\nJmax = 70\nS1 = 100\nS2 = 120\n\n[Peer]\nPublicKey = {key}\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.test:51820\n'
+device_config = config
+config = ''.join(line for line in config.splitlines(keepends=True) if not line.startswith(('Jc =', 'Jmin =', 'Jmax =', 'S1 =', 'S2 =')))
+
 portal.store_config(portal.RU_CONFIG_DIR, 'fixture.json', portal.parse_wireguard(config), config)
 portal.auth_store.add('admin', 'visual-test-password', must_change=False)
 with portal.db() as connection:

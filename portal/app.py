@@ -14,6 +14,7 @@ import httpx
 import auth
 import identity
 import qrcode
+from amnezia import connection_url
 from views import render, request_context, local_path, DRAFT_FIELDS
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.exceptions import RequestValidationError
@@ -657,16 +658,28 @@ async def config(request: Request, device_id: int):
     return Response(data, media_type="application/x-wireguard-profile", headers={"Content-Disposition": disposition, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
-@app.get("/device/{device_id}/qr", responses=HTTP_RESPONSES)
-async def qr(request: Request, device_id: int):
+async def device_connection(request, device_id):
     row = owned_device(request, device_id, DEVICE_CONFIG)
     if row['operation'] != 'applied':
         raise HTTPException(409, 'Изменения устройства ещё применяются')
     async with wg_session() as client:
         response = await client.get(f"/clients/{row['client_id']}/configuration")
         response.raise_for_status()
-        config = response.text
-    image = qrcode.make(config)
+        return connection_url(response.text, row['name'])
+
+
+@app.get("/device/{device_id}/connect", responses=HTTP_RESPONSES)
+async def connect(request: Request, device_id: int):
+    return JSONResponse({'url': await device_connection(request, device_id)}, headers={'Cache-Control': 'no-store'})
+
+
+@app.get("/device/{device_id}/qr", responses=HTTP_RESPONSES)
+async def qr(request: Request, device_id: int):
+    url = await device_connection(request, device_id)
+    try:
+        image = qrcode.make(url)
+    except qrcode.exceptions.DataOverflowError:
+        raise HTTPException(400, 'Настройки не помещаются в QR-код. Используйте кнопку «В AmneziaVPN».') from None
     out = io.BytesIO(); image.save(out, format="PNG")
     return Response(out.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
 

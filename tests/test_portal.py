@@ -85,7 +85,7 @@ def test_permissions_and_assignment_lifecycle(portal):
     assert post(client, '/admin/ru-exits', {'name': 'Second', 'config_text': WG}).status_code == 303
     assert post(client, '/device/1/ru-exit', {'ru_exit_id': '2'}).status_code == 303
     phone_login(app, client)
-    for suffix in ['config', 'qr']:
+    for suffix in ['config', 'qr', 'connect']:
         assert client.get('/device/2/' + suffix).status_code == 404
     for suffix, data in [('rename', {'name':'stolen'}), ('delete', {}), ('ru-exit', {'ru_exit_id':'2'})]:
         assert post(client, '/device/2/' + suffix, data).status_code == 404

@@ -1,4 +1,42 @@
 const { test, expect } = require('@playwright/test');
+
+test('account pause and enable do not submit editor fields', async ({ page }) => {
+  await login(page);
+  await page.locator('.account-row').filter({ hasText: 'Александр Константинопольский' }).click();
+  let editor = page.locator('.account-list > details[open]');
+  const name = await editor.getByLabel('Имя', { exact: true }).inputValue();
+  await editor.getByLabel('Имя', { exact: true }).fill('Несохранённое имя');
+  await editor.getByRole('button', { name: 'Приостановить', exact: true }).click();
+  editor = page.locator('.account-list > details[open]');
+  await expect(editor.getByLabel('Имя', { exact: true })).toHaveValue(name);
+  await editor.getByRole('button', { name: 'Включить', exact: true }).click();
+  await expect(page.locator('.account-list > details[open]').getByRole('button', { name: 'Приостановить', exact: true })).toBeVisible();
+});
+
+test('AmneziaVPN handoff, clipboard fallback, retry and cleanup', async ({ page }) => {
+  await login(page);
+  await page.goto('/admin/users/+79990000001/devices');
+  await page.evaluate(() => {
+    document.addEventListener('click', event => {
+      if (event.target.id === 'connect-link') { event.preventDefault(); window.handoff = event.target.href; }
+    });
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => { throw new Error('Denied'); } } });
+  });
+  const button = page.getByRole('button', { name: 'В AmneziaVPN', exact: true }).first();
+  await page.route('**/device/1/connect', route => route.fulfill({ status: 503, body: '{}' }));
+  await button.click();
+  await expect(page.locator('#connect-retry')).toBeVisible();
+  await page.unroute('**/device/1/connect');
+  await page.getByRole('button', { name: 'Повторить', exact: true }).click();
+  await expect(page.locator('#connect-link')).toHaveAttribute('href', /^vpn:\/\/[A-Za-z0-9_-]+$/);
+  expect(await page.evaluate(() => window.handoff)).toMatch(/^vpn:\/\//);
+  await page.getByRole('button', { name: 'Скопировать ключ' }).click();
+  await expect(page.locator('#connect-key')).toHaveValue(/^vpn:\/\//);
+  await page.keyboard.press('Escape');
+  await expect(button).toBeFocused();
+  await expect(page.locator('#connect-link')).not.toHaveAttribute('href');
+  await expect(page.locator('#connect-key')).toHaveValue('');
+});
 async function login(page) {
   await page.request.get('/fixture/reset-sessions');
   await page.goto('/');
