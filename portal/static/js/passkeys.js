@@ -1,6 +1,21 @@
 'use strict';
 const decode = value => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/')), c => c.codePointAt(0));
 const encode = value => btoa(String.fromCodePoint(...new Uint8Array(value))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+async function sendPasskey(url, body) {
+  const response = await fetch(url, { method: 'POST', body, headers: { 'X-Requested-With': 'fetch' } });
+  if (response.redirected) {
+    const destination = new URL(response.url);
+    if (destination.origin !== location.origin) throw new Error('Не удалось подтвердить ключ. Обновите страницу и повторите.');
+    location.assign(destination.href);
+    return null;
+  }
+  if (!response.headers.get('content-type')?.includes('application/json')) {
+    throw new Error('Не удалось подтвердить ключ. Обновите страницу и повторите.');
+  }
+  const result = await response.json();
+  if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Не удалось подтвердить ключ');
+  return result;
+}
 document.querySelectorAll('form[data-passkey]').forEach(form => {
   const keyButton = form.querySelector('[data-passkey-submit]');
   const trigger = keyButton?.type === 'button' ? keyButton : form;
@@ -15,13 +30,8 @@ document.querySelectorAll('form[data-passkey]').forEach(form => {
       const data = new FormData(form);
       data.delete('password');
       data.set('purpose', form.dataset.passkey);
-      const send = async (url, body) => {
-        const response = await fetch(url, { method: 'POST', body, headers: { 'X-Requested-With': 'fetch' } });
-        const result = await response.json();
-        if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Не удалось подтвердить ключ');
-        return result;
-      };
-      const started = await send('/security/passkeys/start', data);
+      const started = await sendPasskey('/security/passkeys/start', data);
+      if (!started) return;
       const options = started.options;
       options.challenge = decode(options.challenge);
       if (options.user) options.user.id = decode(options.user.id);
@@ -37,8 +47,8 @@ document.querySelectorAll('form[data-passkey]').forEach(form => {
       proof.set('csrf_token', data.get('csrf_token'));
       proof.set('key', started.key);
       proof.set('credential', JSON.stringify({ id: key.id, rawId: encode(key.rawId), type: key.type, response, clientExtensionResults: key.getClientExtensionResults() }));
-      const result = await send('/security/passkeys/finish', proof);
-      location.assign(result.location);
+      const result = await sendPasskey('/security/passkeys/finish', proof);
+      if (result) location.assign(result.location);
     } catch (error) {
       status.textContent = error.name === 'NotAllowedError' ? 'Подтверждение отменено. Можно повторить.' : error.message;
     } finally { button.disabled = false; }
