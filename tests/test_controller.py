@@ -102,7 +102,7 @@ def test_endpoint_mtu_uses_link_and_preserves_explicit_value(monkeypatch):
 def test_supervisor_only_recompiles_changed_model_or_health(tmp_path, monkeypatch):
     monkeypatch.setattr(controller, 'WORK', tmp_path)
     monkeypatch.setattr(controller, 'process', SimpleNamespace(poll=lambda: None))
-    monkeypatch.setattr(controller, 'bind_endpoint_interfaces', lambda config: None)
+    monkeypatch.setattr(controller, 'bind_endpoint_interfaces', lambda *args: None)
     monkeypatch.setattr(controller, 'apply', lambda config: None)
     builds = []
     def compile(*args):
@@ -119,3 +119,69 @@ def test_supervisor_only_recompiles_changed_model_or_health(tmp_path, monkeypatc
     model['revision'] = 2
     supervisor.install({}, model, {'1': {'healthy': False}})
     assert len(builds) == 3
+
+
+def test_dns_change_reconnects_with_same_underlay_and_retains_address_on_failure(tmp_path, monkeypatch):
+    controller.endpoint_transport.cache_clear()
+    monkeypatch.setattr(controller, 'WORK', tmp_path)
+    monkeypatch.setattr(controller, 'process', SimpleNamespace(poll=lambda: None))
+    clock = [0]
+    answer = ['192.0.2.1']
+    queries, applied = [], []
+    monkeypatch.setattr(controller.time, 'monotonic', lambda: clock[0])
+
+    def resolve(*args, **kwargs):
+        queries.append(args)
+        if answer[0] is None:
+            raise subprocess.TimeoutExpired('getent', 2)
+        return SimpleNamespace(stdout=answer[0] + ' exit.example\n')
+
+    monkeypatch.setattr(controller.subprocess, 'run', resolve)
+    monkeypatch.setattr(controller, 'run', lambda *a, **k: SimpleNamespace(
+        stdout=b'[{"dev":"eth0","metrics":[{"mtu":1500}]}]'))
+    compiled = {'endpoints': [{'peers': [{'address': 'exit.example', 'port': 41495}]}]}
+    monkeypatch.setattr(controller, 'compile_config', lambda *args: compiled)
+    monkeypatch.setattr(controller, 'apply', lambda config: applied.append(config))
+    supervisor = controller.Supervisor('br-test')
+    model = {'revision': 1, 'exits': [], 'devices': [], 'rules': [], 'default': 1}
+    try:
+        supervisor.install({}, model, {})
+        assert applied[0]['endpoints'][0]['peers'][0]['address'] == '192.0.2.1'
+        answer[0] = '192.0.2.2'
+        clock[0] = 59
+        supervisor.install({}, model, {})
+        assert len(queries) == 1
+        assert len(applied) == 1
+
+        clock[0] = 60
+        supervisor.install({}, model, {})
+        assert len(applied) == 2
+        assert applied[1]['endpoints'][0]['peers'][0] == {'address': '192.0.2.2', 'port': 41495}
+        assert applied[1]['endpoints'][0]['bind_interface'] == 'eth0'
+        assert compiled['endpoints'][0]['peers'][0]['address'] == 'exit.example'
+
+        for timestamp, value in [(120, '192.0.2.2'), (180, None), (240, '192.0.2.2')]:
+            clock[0], answer[0] = timestamp, value
+            supervisor.install({}, model, {})
+        assert len(applied) == 2
+        assert len(queries) == 5
+
+        clock[0], answer[0] = 300, '192.0.2.3'
+        supervisor.install({}, model, {})
+        assert len(applied) == 3
+        assert applied[-1]['endpoints'][0]['peers'][0]['address'] == '192.0.2.3'
+    finally:
+        controller.endpoint_transport.cache_clear()
+
+
+def test_failed_initial_dns_resolution_recovers_and_removed_peers_are_discarded(monkeypatch):
+    path = {'address': '192.0.2.8', 'interface': 'eth0', 'mtu': 1408}
+    bindings = {'removed.example': path}
+    monkeypatch.setattr(controller, 'endpoint_transport', lambda *args: None)
+    config = {'endpoints': [{'peers': [{'address': 'exit.example'}]}]}
+    controller.bind_endpoint_interfaces(config, bindings)
+    assert config['endpoints'][0]['peers'][0]['address'] == 'exit.example'
+    assert 'removed.example' not in bindings
+    monkeypatch.setattr(controller, 'endpoint_transport', lambda *args: path)
+    controller.bind_endpoint_interfaces(config, bindings)
+    assert config['endpoints'][0]['peers'][0]['address'] == '192.0.2.8'
