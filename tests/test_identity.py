@@ -27,6 +27,7 @@ def test_account_state_action_is_explicit_scoped_and_revokes_sessions(portal):
     admin_login(app, client)
     with app.auth_store.db() as con:
         token = app.identities.new_session(con, first, ['phone'])
+    assert app.auth_store.session(token) is not None
     path = f'/accounts/{first}/state'
     assert client.post(path, data={'enabled': '0'}).status_code == 403
     assert post(client, path, {'enabled': 'false'}).status_code == 400
@@ -41,6 +42,21 @@ def test_account_state_action_is_explicit_scoped_and_revokes_sessions(portal):
     assert post(client, f'/accounts/{owner}/state', {'enabled': '0'}).status_code == 400
     with app.auth_store.db() as con:
         assert con.execute('SELECT enabled FROM accounts WHERE id=?', (owner,)).fetchone()[0] == 1
+
+
+def test_account_cannot_be_enabled_without_a_login_method(portal):
+    app, client = portal
+    admin_login(app, client)
+    first = accounts(app)[1]
+    path = f'/accounts/{first}/state'
+    assert post(client, path, {'enabled': '0'}).status_code == 303
+    with app.auth_store.db() as con:
+        con.execute('UPDATE accounts SET phone=NULL WHERE id=?', (first,))
+    assert post(client, path, {'enabled': '1'}).status_code == 400
+    with app.db() as con:
+        assert con.execute('SELECT enabled FROM users WHERE account_id=?', (first,)).fetchone()[0] == 0
+    with app.auth_store.db() as con:
+        assert con.execute('SELECT enabled FROM accounts WHERE id=?', (first,)).fetchone()[0] == 0
 
 
 def give(app, actor, role, scope='self', targets=()):

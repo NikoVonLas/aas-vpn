@@ -63,7 +63,8 @@ def test_connect_and_qr_share_authorized_non_cached_key(portal, monkeypatch):
         return make(value)
     monkeypatch.setattr(app.qrcode, 'make', capture)
     assert client.get('/device/1/qr').headers['content-type'] == 'image/png'
-    assert captured == [url]
+    assert captured == [url.removeprefix('vpn://')]
+    assert decode(captured[0]) == decode(url)
     with app.db() as con:
         con.execute("UPDATE devices SET operation='create' WHERE id=1")
     assert client.get('/device/1/connect').status_code == 409

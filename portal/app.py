@@ -677,7 +677,8 @@ async def connect(request: Request, device_id: int):
 async def qr(request: Request, device_id: int):
     url = await device_connection(request, device_id)
     try:
-        image = qrcode.make(url)
+        # The in-app QR reader accepts compressed Base64 data without the URI scheme.
+        image = qrcode.make(url.removeprefix('vpn://'))
     except qrcode.exceptions.DataOverflowError:
         raise HTTPException(400, 'Настройки не помещаются в QR-код. Используйте кнопку «В AmneziaVPN».') from None
     out = io.BytesIO(); image.save(out, format="PNG")

@@ -119,3 +119,29 @@ test('screen login and account field errors', async ({ page }) => {
   await expect(page.locator('form[action="/device/2/update"] [name=name]')).toHaveValue('Телефон с длинным названием устройства');
   await expect(page).toHaveScreenshot('device-error.png', { fullPage: true });
 });
+
+test('screen paused account', async ({ page }) => {
+  await login(page);
+  await page.locator('.account-row').filter({ hasText: 'Александр Константинопольский' }).click();
+  await page.locator('.account-list > details[open]').getByRole('button', { name: 'Приостановить', exact: true }).click();
+  const enable = page.locator('.account-list > details[open]').getByRole('button', { name: 'Включить', exact: true });
+  try {
+    await expect(enable).toBeVisible();
+    await stable(page);
+    await expect(page).toHaveScreenshot('account-paused.png', { fullPage: true });
+  } finally { await enable.click(); }
+});
+
+test('screen connection key copy fallback', async ({ page }) => {
+  await login(page);
+  await page.goto('/admin/users/+79990000001/devices');
+  await page.evaluate(() => {
+    document.addEventListener('click', event => { if (event.target.id === 'connect-link') event.preventDefault(); });
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => { throw new Error('Denied'); } } });
+  });
+  await page.getByRole('button', { name: 'В AmneziaVPN', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Скопировать ключ' }).click();
+  await expect(page.locator('#connect-manual')).toBeVisible();
+  await stable(page);
+  await expect(page).toHaveScreenshot('connect-copy-fallback.png');
+});

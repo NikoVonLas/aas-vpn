@@ -1,6 +1,6 @@
 {
   "shared": {
-    "base.html": "Every screenshot; QR, delete and AmneziaVPN ready/loading/error dialogs in states.spec.cjs"
+    "base.html": "Every screenshot; QR, delete and AmneziaVPN ready/loading/error/copy fallback dialogs; paused account in states.spec.cjs"
   },
   "existing": {
     "accounts.html": "users layout",
