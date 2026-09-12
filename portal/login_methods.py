@@ -152,6 +152,9 @@ class Confirmations:
                 field = {'enroll-email': 'email', 'enroll-phone': 'phone'}.get(row['purpose'])
                 if not field:
                     raise ValueError('Неизвестная цель подтверждения')
+                if payload.get('session') and not con.execute('SELECT 1 FROM identity_sessions WHERE token_hash=? AND account_id=? AND expires>?',
+                        (payload['session'], row['account_id'], int(time.time()))).fetchone():
+                    raise ValueError('Войдите заново для изменения реквизита')
                 con.execute(f'UPDATE accounts SET {field}=? WHERE id=?', (payload['address'], row['account_id']))
                 identity.audit(con, row['account_id'], row['purpose'], row['account_id'])
                 return None

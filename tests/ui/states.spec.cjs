@@ -110,7 +110,7 @@ test('screen login and account field errors', async ({ page }) => {
   await page.getByRole('button', { name: 'Добавить аккаунт' }).click();
   await expect(page.getByRole('alert')).toBeVisible();
   await expect(page.locator('#account-new [name=name]')).toHaveValue('Новый пользователь');
-  await expect(page.locator('#account-new [name=phone]')).toHaveValue('+79990000001');
+  expect(await page.locator('#account-new [name=phone]').evaluate(node => new FormData(node.form).get('phone'))).toBe('+79990000001');
   await expect(page).toHaveScreenshot('account-error.png', { fullPage: true });
   await page.goto('/admin/users/+79990000001/devices');
   const device = page.locator('form[action="/device/1/update"]');
@@ -156,3 +156,25 @@ test('screen OIDC only login', async ({ page }) => {
     await expect(page).toHaveScreenshot('oidc-only-login.png', { fullPage: true });
   } finally { await page.request.get('/fixture/login-options/restore'); }
 });
+
+for (const state of ['waiting', 'expired', 'unavailable', 'country-picker']) {
+  test(`screen phone ${state}`, async ({ page }) => {
+    await page.request.get('/fixture/state/reset');
+    await page.goto('/');
+    if (state === 'country-picker') {
+      await page.request.get('/fixture/login-options/phone');
+      await page.goto('/');
+      await page.locator('.iti__selected-country').click();
+      await expect(page.locator('.iti__search-input')).toBeFocused();
+    } else {
+      const code = { waiting: 200, expired: 410, unavailable: 503 }[state];
+      await page.route('**/login/verify/*/status', route => route.fulfill({ status: code, contentType: 'application/json', body: '{}' }));
+      await page.goto('/fixture/confirmation/phone');
+      const text = { waiting: 'Ждём звонка…', expired: 'Время подтверждения истекло', unavailable: 'Проверка звонка временно недоступна' }[state];
+      await expect(page.getByRole('status')).toContainText(text);
+    }
+    await stable(page);
+    await expect(page).toHaveScreenshot('phone-' + state + '.png', { fullPage: true });
+    await page.request.get('/fixture/login-options/restore');
+  });
+}

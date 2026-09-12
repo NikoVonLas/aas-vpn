@@ -53,9 +53,9 @@ def login_hint(methods):
 def login_form(methods, identifier='', error=''):
     labels = [label for key, label in [('password', 'логин'), ('phone', 'телефон'), ('email', 'почта')] if key in methods]
     input_type = 'text'
-    if methods == {'phone'}:
+    if methods - {'oidc'} == {'phone'}:
         input_type = 'tel'
-    elif methods == {'email'}:
+    elif methods - {'oidc'} == {'email'}:
         input_type = 'email'
     return render('login.html', methods=sorted(methods), label=join_choices(labels).capitalize() if labels else 'Аккаунт',
                   input_type=input_type,
@@ -187,6 +187,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             else:
                 address = self.enrollment_address(method, identifier)
                 payload['address'] = address
+                payload['session'] = actor['token_hash']
         if not address:
             raise ValueError('Сначала настройте реквизит в профиле')
         payload['recipient'] = address
@@ -217,10 +218,49 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
 
     def verify_page(self, request: Request, key: str):
         with self.p.auth_store.db() as con:
-            row = con.execute('SELECT * FROM challenges WHERE id=? AND browser_hash=? AND expires>?', (key, self.p.auth_store.digest(self.browser(request)), int(time.time()))).fetchone()
-        if not row:
+            row = con.execute('SELECT * FROM challenges WHERE id=? AND browser_hash=?', (key, self.p.auth_store.digest(self.browser(request)))).fetchone()
+        if not row or row['method'] != 'phone' and row['expires'] <= time.time():
             raise HTTPException(410, 'Подтверждение устарело')
-        return self.p.page('Подтверждение', render('confirmation.html', key=key, method=row['method'], dial=json.loads(row['payload']).get('dial', '')))
+        return self.p.page('Подтверждение', render('confirmation.html', key=key, method=row['method'],
+                          dial=json.loads(row['payload']).get('dial', ''), expires=row['expires'], expired=row['expires'] <= time.time()))
+
+    def phone_poll(self, request, key):
+        actor = self.p.identities.session(request.cookies.get(self.p.auth.COOKIE, ''), limited=True)
+        with self.p.auth_store.db() as con:
+            row = con.execute('SELECT * FROM challenges WHERE id=? AND browser_hash=? AND method=? AND expires>?',
+                              (key, self.p.auth_store.digest(self.browser(request)), 'phone', int(time.time()))).fetchone()
+            if not row:
+                raise HTTPException(410, 'Время подтверждения истекло. Начните заново.')
+            self.confirmations.validate_policy(con, row)
+            payload = json.loads(row['payload'])
+            if row['purpose'].startswith('enroll-'):
+                if not actor or actor['account_id'] != row['account_id'] or actor['token_hash'] != payload.get('session'):
+                    raise HTTPException(403, 'Войдите заново для изменения номера')
+            if time.time() < payload.get('next_poll', 0):
+                return None
+            payload['next_poll'] = time.time() + 3
+            con.execute('UPDATE challenges SET payload=? WHERE id=?', (json.dumps(payload), key))
+            return dict(row)
+
+    def json_finish(self, token):
+        response = self.finish(token) if token else RedirectResponse(SECURITY_PATH, 303)
+        result = JSONResponse({'location': response.headers['location']})
+        for cookie in response.headers.getlist('set-cookie'):
+            result.headers.append('set-cookie', cookie)
+        return result
+
+    async def phone_status(self, request: Request, key: str):
+        row = self.phone_poll(request, key)
+        if row is None:
+            return JSONResponse({'state': 'pending'})
+        provider, config = self.confirmations.provider('phone')
+        try:
+            confirmed = await provider.verify(config, json.loads(row['payload']))
+        except (httpx.HTTPError, ValueError):
+            raise HTTPException(503, 'Проверка звонка временно недоступна. Повторяем автоматически.') from None
+        if not confirmed:
+            return JSONResponse({'state': 'pending'})
+        return self.json_finish(self.confirmations.consume(row, external=True))
 
     async def retry_confirmation(self, request: Request, key: str):
         with self.p.auth_store.db() as con:
@@ -505,11 +545,7 @@ LEFT JOIN admins c ON c.id=a.admin_id WHERE a.enabled=1 AND (c.id IS NULL OR c.e
             token = self.confirmations.consume(row, external=True, verified=verified.user_verified, credential_id=stored['id'])
         except (ValueError, KeyError, TypeError, WebAuthnException):
             raise ValueError('Ключ не подтвердил запрос. Начните заново') from None
-        response = self.finish(token)
-        result = JSONResponse({'location': response.headers['location']})
-        for cookie in response.headers.getlist('set-cookie'):
-            result.headers.append('set-cookie', cookie)
-        return result
+        return self.json_finish(token)
 
     def delete_key(self, request: Request, key: str=Form(...)):
         actor = self.profile_actor(request)
@@ -615,6 +651,7 @@ def register(portal):
     portal.app.add_api_route('/admin/login', pages.password_login, methods=['POST'])
     portal.app.add_api_route('/login/start', pages.login_start, methods=['POST'])
     portal.app.add_api_route('/login/verify/{key}', pages.verify_page, methods=['GET'])
+    portal.app.add_api_route('/login/verify/{key}/status', pages.phone_status, methods=['POST'])
     portal.app.add_api_route('/login/verify/{key}/retry', pages.retry_confirmation, methods=['POST'])
     portal.app.add_api_route('/login/verify/{key}', pages.verify_confirmation, methods=['POST'])
     portal.app.add_api_route('/login/link', pages.email_link_page, methods=['GET'])

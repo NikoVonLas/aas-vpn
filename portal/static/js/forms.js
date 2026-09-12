@@ -21,7 +21,7 @@ if (loginForm) {
   const update = () => {
     const identifier = loginForm.elements.identifier.value.trim();
     if (loginForm.elements.password?.value) hint.textContent = 'Вход с паролем.';
-    else if (identifier.startsWith('+') && methods.has('phone')) hint.textContent = 'Следующий шаг — подтверждение звонком.';
+    else if ((identifier.startsWith('+') || loginForm.elements.identifier.type === 'tel') && methods.has('phone')) hint.textContent = 'Следующий шаг — подтверждение звонком.';
     else if (identifier.includes('@') && methods.has('email')) hint.textContent = 'Отправим код и ссылку на почту.';
     else hint.textContent = initial;
   };
@@ -52,10 +52,11 @@ for (const form of draftForms) {
     sessionStorage.removeItem(storageKey);
     const saveDraft = () => {
       const values = {};
+      const data = new FormData(form);
       for (const input of form.elements) {
         if (!draftNames.has(input.name) || input.type === 'password') continue;
         values[input.name] ??= [];
-        if (input.type !== 'checkbox' || input.checked) values[input.name].push(input.value);
+        if (input.type !== 'checkbox' || input.checked) values[input.name].push(input.type === 'tel' ? String(data.get(input.name) ?? input.value) : input.value);
       }
       sessionStorage.setItem(storageKey, JSON.stringify({ at: Date.now(), values }));
     };

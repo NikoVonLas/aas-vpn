@@ -127,15 +127,17 @@ def test_first_admin_login_explains_setup_and_keeps_access_locked(portal):
     assert client.get('/admin', follow_redirects=False).headers['location'] == '/security'
 
 
-def test_vendored_bootstrap_matches_pinned_integrity():
+def test_vendored_dependencies_match_pinned_integrity():
     import base64
     import hashlib
     static = Path(__file__).resolve().parents[1] / 'portal/static'
-    package = json.loads((static / 'vendor.json').read_text())['bootstrap']
-    assert package['version'] == '5.3.8'
-    for path, expected in package['files'].items():
-        actual = 'sha384-' + base64.b64encode(hashlib.sha384((static / path).read_bytes()).digest()).decode()
-        assert actual == expected['sha384']
+    packages = json.loads((static / 'vendor.json').read_text())
+    assert {key: package['version'] for key, package in packages.items()} == {'bootstrap': '5.3.8', 'intl-tel-input': '29.2.3'}
+    for package in packages.values():
+        assert (static / package['license']).is_file()
+        for path, expected in package['files'].items():
+            actual = 'sha384-' + base64.b64encode(hashlib.sha384((static / path).read_bytes()).digest()).decode()
+            assert actual == expected['sha384']
 
 
 def test_field_validation_keeps_public_values_without_partial_save(portal):

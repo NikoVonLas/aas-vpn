@@ -195,8 +195,22 @@ def fixture_confirmation(method: str, request: Request):
             con.execute("UPDATE roles SET primary_methods='[\"phone\",\"email\"]' WHERE id='user'")
             con.execute("UPDATE providers SET enabled=1 WHERE id='email'")
         challenge = pages.confirmations.start(con, key, 'login', method,
-                         request.cookies.get('__Host-aas_csrf', ''), {'dial': '+79990000003'}, '123456', 'fixture-link')
+                         request.cookies.get('__Host-aas_csrf', ''), {'dial': '+79990000003', 'call_id': 'ui-fixture'}, '123456', 'fixture-link')
     return portal.RedirectResponse('/login/verify/' + challenge, 303)
+
+
+# Never contact the call provider from deterministic browser fixtures.
+from login_methods import ZvonokProvider
+real_phone_verify = ZvonokProvider.verify
+
+
+async def fixture_phone_verify(config, payload):
+    if payload.get('call_id') == 'ui-fixture':
+        return False
+    return await real_phone_verify(config, payload)
+
+
+ZvonokProvider.verify = staticmethod(fixture_phone_verify)
 
 
 # Browser tests cross a different host; cryptographic verification is covered in test_oidc.py.

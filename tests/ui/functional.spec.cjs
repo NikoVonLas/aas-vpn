@@ -324,3 +324,78 @@ test('OIDC browser return preserves linking session and allows later login', asy
   await expect(page).toHaveURL(/\/admin$/);
   await page.request.get('/fixture/state/reset');
 });
+
+test('call confirmation polls automatically and recovers without starting another call', async ({ page }) => {
+  await page.request.get('/fixture/state/reset');
+  await page.goto('/');
+  let checks = 0;
+  let retries = 0;
+  page.on('request', request => { if (request.url().endsWith('/retry')) retries++; });
+  await page.route('**/login/verify/*/status', route => {
+    checks++;
+    return route.fulfill({ status: checks === 1 ? 503 : 200, contentType: 'application/json',
+      body: JSON.stringify(checks < 3 ? { state: 'pending' } : { location: '/fixture/phone-login/+79990000001' }) });
+  });
+  await page.goto('/fixture/confirmation/phone');
+  await expect(page.getByRole('button', { name: 'Подтвердить', exact: true })).toHaveCount(0);
+  await expect(page.locator('[data-call-retry]')).toBeHidden();
+  await expect(page).toHaveURL(/\/cabinet$/, { timeout: 15000 });
+  expect(checks).toBe(3);
+  expect(retries).toBe(0);
+});
+
+test('expired call offers a new attempt without repeating a POST automatically', async ({ page }) => {
+  await page.request.get('/fixture/state/reset');
+  await page.goto('/');
+  await page.route('**/login/verify/*/status', route => route.fulfill({ status: 410, contentType: 'application/json', body: '{}' }));
+  await page.goto('/fixture/confirmation/phone');
+  await expect(page.getByRole('status')).toContainText('Время подтверждения истекло');
+  await expect(page.getByRole('button', { name: 'Начать заново' })).toBeVisible();
+});
+
+test('telephone fields submit international numbers and country search keeps keyboard focus', async ({ page }) => {
+  await page.request.get('/fixture/login-options/phone');
+  try {
+    await page.goto('/');
+    const input = page.getByLabel('Телефон', { exact: true });
+    await expect(page.locator('.iti')).toHaveCount(1);
+    await input.fill('9990000001');
+    expect(await input.evaluate(node => new FormData(node.form).get('identifier'))).toBe('+79990000001');
+    const country = page.locator('.iti__selected-country');
+    await country.click();
+    await expect(page.locator('.iti__search-input')).toBeFocused();
+    await page.locator('.iti__search-input').fill('Германия');
+    await expect(page.locator('.iti__country:visible')).toHaveCount(1);
+    await page.keyboard.press('Enter');
+    await input.fill('15123456789');
+    expect(await input.evaluate(node => new FormData(node.form).get('identifier'))).toBe('+4915123456789');
+    await country.click();
+    await page.keyboard.press('Escape');
+    await expect(country).toBeFocused();
+    await page.route('**/login', route => {
+      expect(new URLSearchParams(route.request().postData()).get('identifier')).toBe('+79990000001');
+      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<p>Phone accepted</p>' });
+    });
+    await input.fill('+79990000001');
+    await input.press('Enter');
+    await expect(page.getByText('Phone accepted')).toBeVisible();
+    await page.unroute('**/login');
+  } finally { await page.request.get('/fixture/login-options/restore'); }
+  await login(page);
+  for (const path of ['/accounts/new', '/fixture/phone-login/+79990000001']) {
+    await page.goto(path);
+    if (path.includes('phone-login')) await page.goto('/security');
+    const phones = page.locator('input[type=tel]');
+    expect(await phones.count()).toBeGreaterThan(0);
+    for (const phone of await phones.all()) {
+      await expect(phone.locator('..')).toHaveClass(/iti/);
+      expect(await phone.getAttribute('autocomplete')).toBe('tel');
+    }
+    if (path === '/accounts/new') {
+      await phones.first().fill('+4915123456789');
+      await page.goto('/accounts/new?resume=1');
+      expect(await page.locator('input[type=tel]').evaluate(node => new FormData(node.form).get('phone'))).toBe('+4915123456789');
+      await expect(page.locator('.iti__selected-country')).toHaveAccessibleName(/Германия/);
+    }
+  }
+});
