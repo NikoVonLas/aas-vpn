@@ -11,6 +11,7 @@ async function login(page) {
   await expect(page).toHaveURL(/\/admin$/);
 }
 async function stable(page) {
+  await page.locator('code').filter({ hasText: '/login/oidc/callback' }).evaluateAll(nodes => nodes.forEach(node => { node.textContent = 'https://vpn.example.test/login/oidc/callback'; }));
   await page.locator('form[action="/security/sessions/revoke"] p').evaluateAll(nodes => nodes.forEach(node => { node.textContent = 'Текущая сессия'; }));
   await page.evaluate(() => document.fonts.ready);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

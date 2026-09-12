@@ -207,7 +207,8 @@
     {
       "name": "oidc-editor",
       "path": "/admin/login-methods",
-      "open": "OpenID Connect"
+      "open": "OpenID Connect",
+      "state": "oidc-configured"
     },
     {
       "name": "oidc-unlinked",

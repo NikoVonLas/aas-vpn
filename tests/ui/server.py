@@ -133,9 +133,12 @@ def fixture_state(name: str, request: Request):
         con.executemany('UPDATE roles SET primary_methods=?,require_2fa=? WHERE id=?', login_roles)
         con.executemany('UPDATE providers SET enabled=? WHERE id=?', login_providers)
         con.execute('DELETE FROM oidc_links')
-        if name in {'oidc-unlinked', 'oidc-linked'}:
+        con.execute("UPDATE providers SET config='{}' WHERE id='oidc'")
+        if name in {'oidc-configured', 'oidc-unlinked', 'oidc-linked'}:
             con.execute("UPDATE providers SET enabled=1,config=? WHERE id='oidc'", (json.dumps({'issuer': 'https://sso.example.test/realms/vpn', 'client_id': 'aas-vpn', 'client_secret': 'fixture-only'}),))
             con.execute("UPDATE roles SET primary_methods='[\"password\",\"oidc\"]' WHERE id='administrator'")
+            if name == 'oidc-configured':
+                con.execute("UPDATE providers SET enabled=0 WHERE id='oidc'")
             if name == 'oidc-linked':
                 con.execute('INSERT INTO oidc_links VALUES(?,?,?)', (owner, 'https://sso.example.test/realms/vpn', 'fixture-person'))
         if name == 'optional-mfa':
@@ -198,13 +201,19 @@ def fixture_confirmation(method: str, request: Request):
 
 # Browser tests cross a different host; cryptographic verification is covered in test_oidc.py.
 import oidc
+real_oidc_discovery = oidc.discovery
+real_oidc_exchange = oidc.exchange
 
 
-async def fixture_oidc_discovery(_client, _config):
+async def fixture_oidc_discovery(client, config):
+    if config['issuer'] != 'https://sso.example.test/realms/vpn':
+        return await real_oidc_discovery(client, config)
     return {'authorization_endpoint': f'https://127.0.0.1:{PORT}/fixture/oidc-authorize'}
 
 
-async def fixture_oidc_exchange(_client, _config, _payload, code):
+async def fixture_oidc_exchange(client, config, payload, code):
+    if config['issuer'] != 'https://sso.example.test/realms/vpn':
+        return await real_oidc_exchange(client, config, payload, code)
     if code != 'fixture-code':
         raise ValueError('Invalid fixture code')
     return 'fixture-person'

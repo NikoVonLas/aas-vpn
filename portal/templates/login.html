@@ -5,6 +5,6 @@
 <p class="muted" id="login-hint" aria-live="polite">{{ hint }}</p>
 {% if 'webauthn' in methods %}<button class="btn {% if methods|length > 1 %}secondary{% else %}btn-primary{% endif %}" type="{{ 'submit' if methods|length == 1 else 'button' }}" data-passkey-submit>Войти с ключом / passkey</button>{% endif %}
 {% if methods|reject('equalto', 'webauthn')|list %}{{ button('Войти' if 'password' in methods else 'Продолжить') }}{% endif %}</form>{% endif %}
-{% if oidc_enabled %}<form method="post" action="/login/oidc/start" class="stack">{{ csrf() }}{{ button('Войти через OpenID Connect', 'secondary') }}</form>{% endif %}
+{% if oidc_enabled %}<form method="post" action="/login/oidc/start" class="stack">{{ csrf() }}{{ button('Войти через OpenID Connect', 'secondary' if methods else 'primary') }}</form>{% endif %}
 <p class="muted auth-help"><a href="/login/recovery">Восстановление доступа</a></p></section>
 {% if 'webauthn' in methods %}<script src="/assets/js/passkeys.js" defer></script>{% endif %}

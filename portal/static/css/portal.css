@@ -45,3 +45,5 @@ fieldset{min-width:0;border:1px solid var(--line);border-radius:8px;padding:16px
 .multiselect{min-width:0;display:grid;gap:6px}.multiselect>.form-select{text-align:left;height:auto;min-height:var(--control-height);white-space:normal;overflow-wrap:anywhere}.multiselect .dropdown-menu{width:100%;max-height:260px;overflow-y:auto;padding:8px;background:var(--input);border-color:var(--line);border-radius:var(--control-radius)}.multiselect .check-label{padding:10px 8px;border-radius:4px}.multiselect .check-label:hover{background:var(--soft)}
 
 .guide{margin-top:20px}.guide[open]>summary{margin-bottom:0}.guide-content{padding-top:20px}.guide-content>h3:first-child{margin-top:0}.guide-content h3{margin-top:24px}.guide-content li+li{margin-top:8px}.guide-content>p:last-child{margin-bottom:0}
+
+code{color:var(--text);overflow-wrap:anywhere}
