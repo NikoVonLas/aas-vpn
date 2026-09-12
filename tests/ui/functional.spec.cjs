@@ -22,7 +22,7 @@ test('AmneziaVPN handoff, clipboard fallback, retry and cleanup', async ({ page 
     });
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => { throw new Error('Denied'); } } });
   });
-  const button = page.getByRole('button', { name: 'В AmneziaVPN', exact: true }).first();
+  const button = page.getByRole('button', { name: 'Установить', exact: true }).first();
   await page.route('**/device/1/connect', route => route.fulfill({ status: 503, body: '{}' }));
   await button.click();
   await expect(page.locator('#connect-retry')).toBeVisible();

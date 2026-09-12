@@ -45,7 +45,7 @@ for (const name of ['qr', 'delete', 'connect', 'connect-error', 'connect-loading
     await page.evaluate(() => document.addEventListener('click', event => { if (event.target.id === 'connect-link') event.preventDefault(); }));
     if (name === 'connect-error') await page.route('**/device/1/connect', route => route.fulfill({ status: 503, body: '{}' }));
     if (name === 'connect-loading') await page.route('**/device/1/connect', () => {});
-    await page.getByRole('button', { name: name.startsWith('connect') ? 'В AmneziaVPN' : (name === 'qr' ? 'QR' : 'Удалить'), exact: true }).first().click();
+    await page.getByRole('button', { name: name.startsWith('connect') ? 'Установить' : (name === 'qr' ? 'QR' : 'Удалить'), exact: true }).first().click();
     if (name === 'connect') await expect(page.locator('#connect-ready')).toBeVisible();
     if (name === 'connect-error') await expect(page.locator('#connect-retry')).toBeVisible();
     if (name === 'qr') await expect(page.locator('#qr-image')).toHaveJSProperty('complete', true);
@@ -139,7 +139,7 @@ test('screen connection key copy fallback', async ({ page }) => {
     document.addEventListener('click', event => { if (event.target.id === 'connect-link') event.preventDefault(); });
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => { throw new Error('Denied'); } } });
   });
-  await page.getByRole('button', { name: 'В AmneziaVPN', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Установить', exact: true }).first().click();
   await page.getByRole('button', { name: 'Скопировать ключ' }).click();
   await expect(page.locator('#connect-manual')).toBeVisible();
   await stable(page);
