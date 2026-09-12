@@ -307,11 +307,7 @@ class AccessPages:
 
     def save_account(self, request: Request, account_id: str, name: str | None=Form(None), device_limit: int | None=Form(None), enabled: str=Form(''), state_present: str=Form(''), roles: list[str]=Form([]), roles_present: str=Form('')):
         actor = self.p.require_owner(request) if roles_present or roles else self.p.current_account(request)
-        for (present, action) in [(name is not None, EDIT_ACCOUNT), (device_limit is not None, ACCOUNT_LIMITS), (bool(state_present), ACCOUNT_STATE)]:
-            if present:
-                self.p.require_permission(request, action, account_id)
-        if name is not None and (not name.strip()) or (device_limit is not None and (not 1 <= device_limit <= 20)):
-            raise ValueError('Проверьте имя и лимит')
+        self.validate_account_changes(request, account_id, name, device_limit, state_present)
         with self.p.identities.transaction() as con:
             target = con.execute('SELECT * FROM accounts WHERE id=?', (account_id,)).fetchone()
             if not target:
@@ -328,6 +324,13 @@ class AccessPages:
                 self.save_account_roles(con, actor, account_id, roles)
             identity.audit(con, actor['account_id'], 'accounts.save', account_id)
         return RedirectResponse(f'/accounts/{account_id}/edit', 303)
+
+    def validate_account_changes(self, request, account_id, name, device_limit, state_present):
+        for (present, action) in [(name is not None, EDIT_ACCOUNT), (device_limit is not None, ACCOUNT_LIMITS), (bool(state_present), ACCOUNT_STATE)]:
+            if present:
+                self.p.require_permission(request, action, account_id)
+        if name is not None and (not name.strip()) or (device_limit is not None and (not 1 <= device_limit <= 20)):
+            raise ValueError('Проверьте имя и лимит')
 
     def save_account_state(self, con, target, enabled):
         account_id = target['id']
