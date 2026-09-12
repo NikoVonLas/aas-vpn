@@ -11,6 +11,21 @@ if (callForm) {
     status.textContent = 'Время подтверждения истекло. Начните заново.';
     retry.hidden = false;
   };
+  const handleResponse = (response, data) => {
+    if (response.status === 410) { expire(); return; }
+    if (response.ok && data.location) {
+      const target = new URL(data.location, location.origin);
+      if (target.origin !== location.origin) throw new Error('Invalid destination');
+      stopped = true;
+      location.assign(target.href);
+    } else if (response.status >= 400 && response.status < 500) {
+      stopped = true;
+      status.textContent = data.detail || 'Подтверждение недоступно. Начните заново.';
+      retry.hidden = false;
+    } else {
+      status.textContent = response.ok ? 'Ждём звонка…' : 'Проверка звонка временно недоступна. Повторяем автоматически.';
+    }
+  };
   const poll = async () => {
     if (stopped) return;
     if (Date.now() >= expires) { expire(); return; }
@@ -23,19 +38,7 @@ if (callForm) {
         headers: { 'X-Requested-With': 'fetch' }, signal: controller.signal,
       });
       const data = await response.json();
-      if (response.status === 410) { expire(); return; }
-      if (response.ok && data.location) {
-        const target = new URL(data.location, location.origin);
-        if (target.origin !== location.origin) throw new Error('Invalid destination');
-        stopped = true;
-        location.assign(target.href);
-      } else if (response.status >= 400 && response.status < 500) {
-        stopped = true;
-        status.textContent = data.detail || 'Подтверждение недоступно. Начните заново.';
-        retry.hidden = false;
-      } else {
-        status.textContent = response.ok ? 'Ждём звонка…' : 'Проверка звонка временно недоступна. Повторяем автоматически.';
-      }
+      handleResponse(response, data);
     } catch {
       if (!stopped) status.textContent = 'Не удалось проверить звонок. Повторяем автоматически.';
     } finally {
@@ -51,5 +54,5 @@ if (callForm) {
   window.addEventListener('pageshow', event => {
     if (event.persisted) { stopped = false; poll(); }
   });
-  poll();
+  await poll();
 }

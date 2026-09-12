@@ -24,11 +24,17 @@ def local_path(value, fallback='/cabinet'):
     return parsed.path + ('?' + parsed.query if parsed.query else '')
 
 
+def field_ids(request):
+    if request is None:
+        return count()
+    if not hasattr(request.state, 'field_ids'):
+        request.state.field_ids = count()
+    return request.state.field_ids
+
+
 def render(template, *, form_action='', **values):
     request = request_context.get()
-    if request and not hasattr(request.state, 'field_ids'):
-        request.state.field_ids = count()
-    ids = request.state.field_ids if request else count()
+    ids = field_ids(request)
     token = getattr(request.state, 'csrf_token', '') if request else ''
     draft = getattr(request.state, 'form_draft', {}) if request else {}
     errors = getattr(request.state, 'field_errors', {}) if request else {}

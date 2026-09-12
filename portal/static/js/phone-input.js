@@ -1,4 +1,4 @@
-import ru from '/assets/vendor/intl-tel-input/29.2.3/js/locale/ru.js';
+import ru from '../vendor/intl-tel-input/29.2.3/js/locale/ru.js';
 
 // The widget formats telephone fields; forms keep their normal POST action.
 for (const input of document.querySelectorAll('input[type=tel]')) {
