@@ -166,19 +166,28 @@ def endpoint_transport(host, _minute):
         metrics = [metric['mtu'] for metric in route.get('metrics', []) if 'mtu' in metric]
         mtu = min(metrics) if metrics else json.loads(run('ip', '-j', 'link', 'show', 'dev', route['dev']).stdout)[0]['mtu']
         # Leave room for outer IP, UDP and WireGuard, including nested tunnels.
-        return {'interface': route['dev'], 'mtu': max(576, min(1408, mtu - 80))}
+        return {'address': address, 'interface': route['dev'], 'mtu': max(576, min(1408, mtu - 80))}
     except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
         return None
 
 
-def bind_endpoint_interfaces(config):
+def bind_endpoint_interfaces(config, previous=None):
+    """Pin resolved peers so DNS changes participate in the applied signature."""
     hosts = {peer['address'] for endpoint in config.get('endpoints', [])
              for peer in endpoint.get('peers', []) if peer.get('address')}
     minute = int(time.monotonic() // 60)
     with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
         bindings = dict(zip(hosts, pool.map(lambda host: endpoint_transport(host, minute), hosts)))
+    if previous is not None:
+        bindings = {host: path or previous.get(host) for host, path in bindings.items()}
+        previous.clear()
+        previous.update(bindings)
     for endpoint in config.get('endpoints', []):
         paths = [bindings[peer['address']] for peer in endpoint.get('peers', []) if bindings.get(peer.get('address'))]
+        for peer in endpoint.get('peers', []):
+            path = bindings.get(peer.get('address'))
+            if path:
+                peer['address'] = path['address']
         interfaces = {path['interface'] for path in paths}
         if len(interfaces) == 1:
             endpoint['bind_interface'] = interfaces.pop()
@@ -201,6 +210,7 @@ class Supervisor:
         self.active = None
         self.active_base = None
         self.installed_health = {}
+        self.endpoint_bindings = {}
         self.model_path = WORK / 'working-model.json'
         self.last_probe = 0
         try:
@@ -241,7 +251,7 @@ class Supervisor:
             self.compiled = compile_config(base, model['exits'], model['devices'], model['rules'], model['default'], healthy, self.bridge, CONFIGS)
             self.compiled_key = key
         config = json.loads(json.dumps(self.compiled))
-        bind_endpoint_interfaces(config)
+        bind_endpoint_interfaces(config, self.endpoint_bindings)
         digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
         if digest != self.signature or not process or process.poll() is not None:
             apply(config)
