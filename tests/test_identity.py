@@ -59,6 +59,18 @@ def test_account_cannot_be_enabled_without_a_login_method(portal):
         assert con.execute('SELECT enabled FROM accounts WHERE id=?', (first,)).fetchone()[0] == 0
 
 
+def test_state_only_editor_has_no_empty_save_action(portal):
+    app, client = portal
+    owner, first, second = accounts(app)
+    app.identities.save_role(owner, 'state-manager', 'State manager', ['accounts.view', 'accounts.state'], [], [], False)
+    give(app, first, 'state-manager', 'selected', [second])
+    phone_login(app, client)
+    response = client.get(f'/accounts/{second}/edit')
+    assert response.status_code == 200
+    assert 'Приостановить' in response.text
+    assert '>Сохранить</button>' not in response.text
+
+
 def give(app, actor, role, scope='self', targets=()):
     with app.auth_store.db() as con:
         return identity.grant(con, actor, role, scope, targets)

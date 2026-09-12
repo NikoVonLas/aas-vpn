@@ -257,7 +257,7 @@ class AccessPages:
                        for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE, 'devices.view', 'account.routing.view')}
         return render('components/account_form.html', form_action=f'/accounts/{account_id}/save', row=row, permissions=permissions,
                       access=self.account_roles(account_id, access) if access else None,
-                      can_save=any(permissions[action] for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS, ACCOUNT_STATE)))
+                      can_save=bool(access) or any(permissions[action] for action in (EDIT_ACCOUNT, ACCOUNT_LIMITS)))
 
     def account_access_model(self):
         with self.p.auth_store.db() as con:
