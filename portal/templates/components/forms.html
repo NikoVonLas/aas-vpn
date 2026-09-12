@@ -8,7 +8,7 @@
 {%- endmacro %}
 {% macro link(label, url, variant='secondary') -%}<a class="btn {{ variant }}" href="{{ url }}">{{ label }}</a>{%- endmacro %}
 {% macro check(name, label, value='1', checked=false, disabled=false, tooltip='') -%}
-<label class="check-label" {% if tooltip %}tabindex="0" data-bs-toggle="tooltip" title="{{ tooltip }}"{% endif %}><input class="form-check-input" type="checkbox" name="{{ name }}" value="{{ value }}" {% if form_checked(name, value, checked) %}checked{% endif %} {% if disabled %}disabled{% endif %} {% if tooltip %}aria-description="{{ tooltip }}"{% endif %}>{{ label }}</label>
+<label class="check-label" {% if tooltip %}data-bs-toggle="tooltip" title="{{ tooltip }}"{% endif %}><input class="form-check-input" type="checkbox" name="{{ name }}" value="{{ value }}" {% if form_checked(name, value, checked) %}checked{% endif %} {% if disabled %}disabled{% endif %} {% if tooltip %}title="{{ tooltip }}"{% endif %}>{{ label }}</label>
 {%- endmacro %}
 {% macro choices(name, catalog, selected, readonly=false, disabled_labels=[]) -%}
 {% for key, label in catalog.items() %}{% set disabled = readonly or label in disabled_labels %}{{ check(name, label, key, key in selected, disabled, 'Отключено глобально' if label in disabled_labels else '') }}{% if disabled and key in selected %}<input type="hidden" name="{{ name }}" value="{{ key }}">{% endif %}{% endfor %}

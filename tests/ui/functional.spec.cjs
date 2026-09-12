@@ -221,8 +221,7 @@ test('disabled role methods explain their state and survive saving', async ({ pa
     await expect(page.getByRole('tooltip')).toHaveText('Отключено глобально');
     await page.keyboard.press('Escape');
     await expect(page.getByRole('tooltip')).toHaveCount(0);
-    await label.focus();
-    await expect(page.getByRole('tooltip')).toHaveText('Отключено глобально');
+    await expect(key).toHaveAccessibleDescription('Отключено глобально');
     await role.getByRole('button', { name: 'Сохранить', exact: true }).click();
     await expect(page).toHaveURL(/roles\/user\/edit$/);
     await expect(key).toBeDisabled();
