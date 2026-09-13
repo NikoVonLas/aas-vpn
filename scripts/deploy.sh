@@ -31,16 +31,44 @@ fi
 for dependency in jq python3; do
   command -v "$dependency" >/dev/null || { apt-get update; apt-get install -y "$dependency"; }
 done
-# Build before stopping the live stack. Backup records actual running image IDs.
 server_env="$source_dir/.env"
 [[ ! -f "$target_dir/.env" ]] || server_env="$target_dir/.env"
-if [[ "${AAS_USE_PREBUILT_IMAGES:-}" != 1 ]]; then
-  docker compose --env-file "$server_env" -f compose.yml build --pull
-fi
 migration_required=0
 backup_result=$(mktemp)
 backup_dir=
 reference_path=$(mktemp)
+declare -a image_pins=()
+declare -a image_references=()
+
+pin_running_images() {
+  local container image reference pin index=0
+  [[ -f "$target_dir/.env" && -f "$target_dir/compose.yml" ]] || return
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    image=$(docker inspect --format '{{.Image}}' "$container")
+    reference=$(docker inspect --format '{{.Config.Image}}' "$container")
+    pin="aas-vpn-deploy-pin:${BASHPID}-${index}"
+    docker image tag "$image" "$pin"
+    image_pins+=("$pin")
+    image_references+=("$reference")
+    ((index += 1))
+  done < <(cd "$target_dir" && docker compose ps -q)
+}
+
+restore_image_tags() {
+  local index
+  for index in "${!image_pins[@]}"; do
+    docker image tag "${image_pins[$index]}" "${image_references[$index]}"
+  done
+}
+
+cleanup_image_pins() {
+  local pin
+  for pin in "${image_pins[@]}"; do
+    docker image rm "$pin" >/dev/null 2>&1 || true
+  done
+}
+
 restore_on_error() {
   local code=$?
   trap - ERR
@@ -48,11 +76,19 @@ restore_on_error() {
     echo 'Deployment failed; restoring the saved image/data pair.' >&2
     bash "$target_dir/scripts/rollback.sh" "$backup_dir"
   elif [[ -f "$target_dir/compose.yml" ]]; then
+    restore_image_tags
     (cd "$target_dir" && docker compose up -d --pull never --no-build)
   fi
   exit "$code"
 }
 trap restore_on_error ERR
+trap cleanup_image_pins EXIT
+pin_running_images
+# Build before stopping the live stack. Pins keep the actual running image IDs
+# addressable while Compose replaces their ordinary tags.
+if [[ "${AAS_USE_PREBUILT_IMAGES:-}" != 1 ]]; then
+  docker compose --env-file "$server_env" -f compose.yml build --pull
+fi
 if [[ -f "$target_dir/.env" && -f "$target_dir/compose.yml" ]]; then
   cd "$target_dir"
   if docker compose config --services | grep -qx auth-sync; then
