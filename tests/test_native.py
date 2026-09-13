@@ -9,7 +9,7 @@ import pytest
 from conftest import admin_login, phone_login, post
 from auth import Auth
 from migrate_native import migration, read_source, validate_source
-from awg.model import Store, active, client_config, server_config
+from awg.model import Store, active, client_config, server_config, wireguard_stats
 import awg.model as model
 
 
@@ -115,7 +115,13 @@ def test_native_retries_reserve_keys_and_addresses(tmp_path, portal, monkeypatch
         store.create('new-client', 'Do not resurrect')
     next_client = store.create('another', 'Tablet')
     assert next_client['ipv4Address'] == '10.8.0.5'
-    assert key(101) not in json.dumps(store.list_clients())
+    public_key = store.snapshot()[2][-1]['public_key']
+    listed = store.list_clients({public_key: {'connected': True, 'latestHandshakeAt': 1000,
+                                              'transferRx': 2048, 'transferTx': 4096}})
+    assert listed[-1]['connected'] is True
+    assert listed[-1]['transferTx'] == 4096
+    assert public_key not in json.dumps(listed)
+    assert key(101) not in json.dumps(listed)
 
 
 def test_config_uses_exact_legacy_values_and_expiry(tmp_path, portal):
@@ -133,6 +139,17 @@ def test_config_uses_exact_legacy_values_and_expiry(tmp_path, portal):
     assert peers[0]['public_key'] not in server_config(server, peers)
     peers[1]['enabled'] = 0
     assert '[Peer]' not in server_config(server, peers)
+
+
+def test_wireguard_stats_report_connection_and_public_counters():
+    dump = '\n'.join([
+        '\t'.join([key(1), key(2), '443', 'off']),
+        '\t'.join([key(3), key(4), '198.51.100.4:1234', '10.8.0.2/32', '1000', '2048', '4096', '25']),
+        '\t'.join([key(5), key(6), '(none)', '10.8.0.3/32', '0', 'bad', '8192', 'off']),
+    ])
+    result = wireguard_stats(dump, 1100)
+    assert result[key(3)] == {'connected': True, 'latestHandshakeAt': 1000, 'transferRx': 2048, 'transferTx': 4096}
+    assert key(5) not in result
 
 
 def test_admin_management_reauth_last_admin_and_revocation(portal):

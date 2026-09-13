@@ -504,7 +504,7 @@ async def process_device_operations():
 
 async def reconcile_native_clients():
     async with wg_session() as client:
-        response = await client.get('/clients')
+        response = await client.get(WG_CLIENT_PATH)
         response.raise_for_status()
     records = response.json()
     if not isinstance(records, list):
@@ -797,10 +797,9 @@ def device_actions(device, request=None):
 def device_routing_forms(devices, user, administrator, request=None):
     with db() as con:
         exits = con.execute('SELECT id,name FROM ru_exits ORDER BY id').fetchall()
-        default = user['ru_exit_id'] or int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
-    names = {x['id']: x['name'] for x in exits}
     status = routing_status()
-    cards = [{'device': device, 'state': device_state_labels(device, names, default, status), 'actions': device_actions(device, request), 'form': permitted_device_form(device, exits, user, administrator, request)} for device in devices]
+    cards = [{'device': device, 'live': device_live_state(device), 'actions': device_actions(device, request),
+              'form': permitted_device_form(device, exits, user, administrator, request)} for device in devices]
     return render('components/devices.html', cards=cards, status=status_text(status))
 
 
@@ -828,13 +827,42 @@ def exit_health_label(status, node_id):
     return 'Доступен' if state.get('healthy') else UNAVAILABLE_LABEL
 
 
-def device_state_labels(device, names, default, status):
-    actual = status.get('devices', {}).get(str(device['id']), {})
-    unknown = status.get('state') in {'stale', 'pending'}
-    assigned = names.get(device['ru_exit_id'], 'По умолчанию: ' + names.get(default, '—'))
-    effective = 'Неизвестно' if unknown else names.get(actual.get('effective'), UNAVAILABLE_LABEL)
-    fallback = ' · резервный режим' if not unknown and actual.get('fallback') else ''
-    return f'Назначен: {assigned} · Используется: {effective}{fallback}'
+def device_live_state(device, clients=None, observed_at=None):
+    """Return only non-secret runtime state for a device card."""
+    connected = None
+    download = upload = None
+    if not device['native_enabled'] or device['operation'] != 'applied':
+        connected, download, upload = False, 0, 0
+    elif clients is not None:
+        peer = clients.get(str(device['client_id']))
+        if peer is None:
+            connected, download, upload = False, 0, 0
+        elif 'connected' in peer:
+            connected = peer.get('connected') is True
+            download = safe_counter(peer.get('transferTx'))
+            upload = safe_counter(peer.get('transferRx'))
+    connection = 'Нет данных'
+    if connected is not None:
+        connection = 'Подключён' if connected else 'Не подключён'
+    return {'connected': connected, 'connection': connection,
+            'download': download, 'upload': upload, 'observed_at': observed_at}
+
+
+def safe_counter(value):
+    return max(0, value) if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+async def native_client_states():
+    try:
+        async with wg_session() as client:
+            response = await client.get(WG_CLIENT_PATH)
+            response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise ValueError('Invalid controller snapshot')
+        return {str(row['id']): row for row in rows if isinstance(row, dict) and 'id' in row}
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return None
 
 
 @app.get(RU_EXITS_PATH, responses=HTTP_RESPONSES)
@@ -981,7 +1009,7 @@ def save_routing(request: Request, ru: str = Form(''), direct: str = Form('')):
 
 
 @app.get('/routing/status', responses=HTTP_RESPONSES)
-def live_routing_status(request: Request, admin_view: bool = False):
+async def live_routing_status(request: Request, admin_view: bool = False):
     if admin_view:
         require_admin(request)
     administrator = admin_ok(request)
@@ -989,13 +1017,14 @@ def live_routing_status(request: Request, admin_view: bool = False):
     status = routing_status()
     with db() as con:
         names = {r['id']: r['name'] for r in con.execute('SELECT id,name FROM ru_exits')}
-        default = int(con.execute(DEFAULT_EXIT_QUERY).fetchone()[0])
-        devices = con.execute('''SELECT d.id,d.ru_exit_id,d.account_id,u.ru_exit_id account_default
-            FROM devices d LEFT JOIN users u ON u.account_id=d.account_id''' +
+        devices = con.execute('''SELECT d.id,d.client_id,d.native_enabled,d.operation,d.account_id
+            FROM devices d''' +
             ('' if administrator else ' WHERE d.phone=?'), () if administrator else (phone,)).fetchall()
     actor = current_account(request)
     devices = [device for device in devices if identities.allowed(actor['account_id'], 'devices.view', device['account_id'])]
-    device_states = {str(device['id']): device_state_labels(device, names, device['account_default'] or default, status) for device in devices}
+    observed_at = int(time.time())
+    clients = await native_client_states()
+    device_states = {str(device['id']): device_live_state(device, clients, observed_at) for device in devices}
     exits = {str(node_id): exit_health_label(status, node_id) for node_id in names} if identities.allowed(actor['account_id'], VIEW_EXITS) else {}
     return JSONResponse({'message': status_text(status), 'devices': device_states, 'exits': exits})
 

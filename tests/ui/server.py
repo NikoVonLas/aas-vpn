@@ -28,6 +28,12 @@ import app as portal  # noqa: E402
 def fixture_awg(request):
     if request.url.path.endswith('/configuration'):
         return httpx.Response(200, text=device_config)
+    if request.url.path == '/clients':
+        return httpx.Response(200, json=[
+            {'id': '41', 'ipv4Address': '10.19.0.2', 'connected': True, 'transferRx': 2_097_152, 'transferTx': 8_388_608},
+            {'id': '42', 'ipv4Address': '10.19.0.3', 'connected': False, 'transferRx': 0, 'transferTx': 0},
+            {'id': '43', 'ipv4Address': '10.19.0.4', 'connected': True, 'transferRx': 524_288, 'transferTx': 1_048_576},
+        ])
     return httpx.Response(200, json=[])
 
 portal.wg_session = lambda: httpx.AsyncClient(transport=httpx.MockTransport(fixture_awg), base_url='http://fixture')

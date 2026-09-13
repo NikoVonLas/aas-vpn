@@ -1,6 +1,10 @@
 {% if cards %}<p class="muted" data-routing-state>{{ status }}</p>{% endif %}
 {% for card in cards %}<section class="card device-card"><div class="device-head"><h2>{{ card.device.name }}</h2></div>
-<p data-device-state="{{ card.device.id }}">{{ card.state }}</p>
+<div class="device-live" data-device-state="{{ card.device.id }}" data-connected="{{ 'true' if card.live.connected else ('false' if card.live.connected is sameas false else 'unknown') }}">
+<span class="device-connection"><span class="device-status-dot" aria-hidden="true"></span><span data-device-connection>{{ card.live.connection }}</span></span>
+<span class="device-transfer"><span class="visually-hidden">Скачивание:</span><span aria-hidden="true">↓</span> <span data-device-download>{{ '0 Б/с' if card.live.connected is sameas false else '—' }}</span></span>
+<span class="device-transfer"><span class="visually-hidden">Отправка:</span><span aria-hidden="true">↑</span> <span data-device-upload>{{ '0 Б/с' if card.live.connected is sameas false else '—' }}</span></span>
+</div>
 {% if not card.device.vpn_ip %}<p class="muted">Ожидает назначения адреса подключения</p>{% endif %}
 {% if not card.device.native_enabled %}<p class="muted">Устройство отключено или срок действия истёк</p>{% endif %}
 {% if card.form %}{{ card.form }}{% else %}{{ card.actions }}{% endif %}</section>{% endfor %}

@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import time
 
-from model import Store, run, server_config
+from model import Store, run, server_config, wireguard_stats
 import ipaddress
 
 STORE = Store(os.getenv('AWG_DATA', '/awg-data'))
@@ -102,6 +102,12 @@ def reconcile():
         STOP.wait(1)
 
 
+def client_stats():
+    if 'wg0' not in run('awg', 'show', 'interfaces').split():
+        raise RuntimeError('AWG interface is unavailable')
+    return wireguard_stats(run('awg', 'show', 'wg0', 'dump'), int(time.time()))
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # No request bodies, configurations, credentials or peer identities in logs.
@@ -140,12 +146,19 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError('Invalid name')
         return name
 
+    def list_clients(self):
+        try:
+            stats = client_stats()
+        except RuntimeError:
+            stats = None
+        self.respond(200, STORE.list_clients(stats))
+
     def route(self):
         if self.path == '/health' and self.command == 'GET':
             self.respond(200, {key: value for key, value in STATE.items() if key != 'digest'})
             return
         if self.path == '/clients' and self.command == 'GET':
-            self.respond(200, STORE.list_clients())
+            self.list_clients()
             return
         match = re.fullmatch(r'/clients/([a-zA-Z0-9-]{1,64})(/configuration)?', self.path)
         if not match:

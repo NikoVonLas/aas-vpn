@@ -173,6 +173,27 @@ test('theme tokens meet text and focus contrast', async ({ page }) => {
   expect(contrast('#ffffff', colors['--red'])).toBeGreaterThanOrEqual(4.5);
 });
 
+test('device cards show live connection and transfer speed without routing summary', async ({ page }) => {
+  await login(page);
+  let sample = 0;
+  await page.route('**/routing/status*', route => {
+    sample += 1;
+    return route.fulfill({ json: {
+      message: 'Настройки применены на VPN-сервере.',
+      exits: {},
+      devices: {'1': {connected: true, download: 1_048_576 + sample * 307_200, upload: 524_288 + sample * 61_440, observed_at: 1000 + sample}},
+    }});
+  });
+  await page.goto('/admin/users/+79990000001/devices');
+  await page.evaluate(() => refreshRoutingStatus());
+  await page.evaluate(() => refreshRoutingStatus());
+  const live = page.locator('[data-device-state="1"]');
+  await expect(live.locator('[data-device-connection]')).toHaveText('Подключён');
+  await expect(live.locator('[data-device-download]')).toHaveText('300 КБ/с');
+  await expect(live.locator('[data-device-upload]')).toHaveText('60,0 КБ/с');
+  await expect(page.getByText(/Назначен:|Используется:/)).toHaveCount(0);
+});
+
 async function openNavigation(page) {
   const menu = page.getByRole('button', { name: /^Меню/ });
   if (await menu.isVisible()) await menu.click();

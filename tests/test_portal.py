@@ -197,17 +197,32 @@ def test_recovery_uses_native_post_response(portal):
     assert '<pre>' in response.text
 
 
-def test_live_status_exposes_only_owned_devices(portal):
+def test_live_status_exposes_only_owned_device_traffic(portal, monkeypatch):
     app, client = portal
+    rows = [
+        {'id': '41', 'connected': True, 'transferRx': 1024, 'transferTx': 4096, 'private_key': KEY},
+        {'id': '42', 'connected': False, 'transferRx': 2048, 'transferTx': 8192, 'public_key': KEY},
+    ]
+    monkeypatch.setattr(app, 'wg_session', lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=rows)), base_url='http://controller'))
     phone_login(app, client)
     result = client.get('/routing/status').json()
     assert set(result['devices']) == {'1'}
+    assert result['devices']['1']['connected'] is True
+    assert result['devices']['1']['download'] == 4096
+    assert result['devices']['1']['upload'] == 1024
     assert result['exits'] == {}
+    assert KEY not in json.dumps(result)
     assert client.get('/routing/status?admin_view=true').status_code == 403
     admin_login(app, client)
     result = client.get('/routing/status?admin_view=true').json()
     assert set(result['devices']) == {'1','2'}
+    assert result['devices']['2']['connected'] is False
     assert KEY not in json.dumps(result)
+    unknown = app.device_live_state({'native_enabled': 1, 'operation': 'applied', 'client_id': '41'},
+                                    {'41': {'id': '41'}}, observed_at=1000)
+    assert unknown == {'connected': None, 'connection': 'Нет данных', 'download': None,
+                       'upload': None, 'observed_at': 1000}
 
 
 def test_saved_exit_editor_roundtrip_and_access(portal):
