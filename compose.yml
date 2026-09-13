@@ -64,7 +64,7 @@ services:
       storage-init:
         condition: service_completed_successfully
       awg2:
-        condition: service_healthy
+        condition: service_started
         restart: true
     network_mode: service:awg2
     volumes:
