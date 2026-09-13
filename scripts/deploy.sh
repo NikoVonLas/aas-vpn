@@ -39,6 +39,27 @@ backup_dir=
 reference_path=$(mktemp)
 declare -a image_pins=()
 declare -a image_references=()
+declare -a build_services=()
+
+source_changed() {
+  local relative=$1
+  [[ -e "$target_dir/$relative" ]] || return 0
+  ! diff -qr "$target_dir/$relative" "$source_dir/$relative" >/dev/null
+}
+
+plan_build() {
+  if [[ ! -f "$target_dir/compose.yml" ]]; then
+    build_services=(portal awg2 awg-controller sing-box)
+    return
+  fi
+  if source_changed portal || source_changed awg/model.py; then build_services+=(portal); fi
+  if source_changed awg/Dockerfile || source_changed awg/dataplane.sh; then
+    build_services+=(awg2 awg-controller)
+  elif source_changed awg; then
+    build_services+=(awg-controller)
+  fi
+  if source_changed router || source_changed portal/routing.py; then build_services+=(sing-box); fi
+}
 
 pin_running_images() {
   local container image reference pin index=0
@@ -84,10 +105,16 @@ restore_on_error() {
 trap restore_on_error ERR
 trap cleanup_image_pins EXIT
 pin_running_images
-# Build before stopping the live stack. Pins keep the actual running image IDs
+plan_build
+# Build only changed data planes. Pins keep the actual running image IDs
 # addressable while Compose replaces their ordinary tags.
 if [[ "${AAS_USE_PREBUILT_IMAGES:-}" != 1 ]]; then
-  docker compose --env-file "$server_env" -f compose.yml build --pull
+  if (( ${#build_services[@]} )); then
+    printf 'Building changed services: %s\n' "${build_services[*]}"
+    docker compose --env-file "$server_env" -f compose.yml build --pull "${build_services[@]}"
+  else
+    echo 'No application image changes detected.'
+  fi
 fi
 if [[ -f "$target_dir/.env" && -f "$target_dir/compose.yml" ]]; then
   cd "$target_dir"
@@ -99,7 +126,8 @@ if [[ -f "$target_dir/.env" && -f "$target_dir/compose.yml" ]]; then
     docker cp aas-portal:/data/native-reference.json "$reference_path"
     docker exec aas-portal python -c "from pathlib import Path; Path('/data/native-reference.json').unlink()"
   fi
-  AAS_BACKUP_ROOT="$target_dir" AAS_BACKUP_KEEP_STOPPED=1 AAS_BACKUP_RESULT_FILE="$backup_result" bash "$source_dir/scripts/backup.sh"
+  AAS_BACKUP_ROOT="$target_dir" AAS_BACKUP_MODE=online AAS_BACKUP_KEEP_MAINTENANCE=1 \
+    AAS_BACKUP_RESULT_FILE="$backup_result" bash "$source_dir/scripts/backup.sh"
   read -r backup_dir < "$backup_result"
   if [[ "$migration_required" == 1 ]]; then install -m 0600 "$reference_path" "$backup_dir/client-configs.json"; fi
   cd "$source_dir"
@@ -149,8 +177,8 @@ if [[ "$migration_required" == 1 ]]; then
   docker compose --profile migration run --rm --no-deps -v "$backup_dir/client-configs.json:/reference.json:ro" migrate-native python migrate_native.py --reference
   docker compose --profile migration run --rm --no-deps -v "$backup_dir/client-configs.json:/reference.json:ro" migrate-native python migrate_native.py --reference --apply
   docker compose run --rm --no-deps storage-init
-elif ! docker compose run --rm --no-deps --entrypoint python awg2 bootstrap.py --check; then
-  docker compose run --rm --no-deps --entrypoint python awg2 bootstrap.py --endpoint "$VPN_DOMAIN" --public-port "${AWG_PORT:-443}" \
+elif ! docker compose --profile tools run --rm --no-deps awg-bootstrap bootstrap.py --check; then
+  docker compose --profile tools run --rm --no-deps awg-bootstrap bootstrap.py --endpoint "$VPN_DOMAIN" --public-port "${AWG_PORT:-443}" \
     --network "${VPN_CLIENT_CIDR:-10.19.0.0/24}" --dns "${AWG_CLIENT_DNS:-10.42.42.44}"
 fi
 for unit in systemd/*.service systemd/*.timer; do
@@ -167,18 +195,19 @@ sysctl --system >/dev/null
 systemctl daemon-reload
 systemctl enable --now docker
 docker compose run --rm --no-deps --entrypoint python portal -c "from pathlib import Path; Path('/data/maintenance').touch()"
-# Stop old AWG first; new AWG waits until the persistent host guard is ready.
-docker compose stop awg2 sing-box
+# Compose recreates only services whose image or runtime configuration changed.
 docker compose up -d --no-build --pull never --remove-orphans
 # Wait for the native controller and router before re-enabling automatic recovery.
 health_format='{{.State.Health.Status}}'
 for _attempt in $(seq 1 60); do
   if docker inspect --format "$health_format" awg2 | grep -qx healthy &&
+     docker inspect --format "$health_format" awg-controller | grep -qx healthy &&
      docker inspect --format "$health_format" sing-box | grep -qx healthy &&
      docker exec sing-box python -c "import json; s=json.load(open('/routing-status/status.json')); assert s['running'] and s['state']=='applied'"; then break; fi
   sleep 2
 done
 docker inspect --format "$health_format" awg2 | grep -qx healthy
+docker inspect --format "$health_format" awg-controller | grep -qx healthy
 docker inspect --format "$health_format" sing-box | grep -qx healthy
 docker exec sing-box python -c "import json; s=json.load(open('/routing-status/status.json')); assert s['running'] and s['state']=='applied'"
 if [[ "${AAS_KEEP_MAINTENANCE:-0}" != 1 ]]; then

@@ -14,8 +14,19 @@ router_healthy() {
   return $?
 }
 
+awg_dataplane_healthy() {
+  docker inspect --format '{{.State.Health.Status}}' awg2 2>/dev/null | grep -qx healthy
+  return $?
+}
+
+awg_controller_healthy() {
+  docker inspect --format '{{.State.Health.Status}}' awg-controller 2>/dev/null | grep -qx healthy
+  return $?
+}
+
 healthy() {
-  docker inspect --format '{{.State.Health.Status}}' awg2 2>/dev/null | grep -qx healthy &&
+  awg_dataplane_healthy &&
+  awg_controller_healthy &&
   docker inspect --format "$running_format" adguard-home 2>/dev/null | grep -qx true &&
   router_healthy &&
   docker inspect --format "$running_format" aas-caddy 2>/dev/null | grep -qx true &&
@@ -39,8 +50,14 @@ logger -t aas-vpn-watchdog "health check failed ($failures)"
 if ! router_healthy; then
   docker compose restart sing-box || true
 fi
-if ! docker inspect --format '{{.State.Health.Status}}' awg2 2>/dev/null | grep -qx healthy; then
-  docker compose restart awg2 || true
+if ! awg_dataplane_healthy; then
+  # A data-plane replacement necessarily changes its network namespace; rejoin
+  # the controller afterwards. This is the exceptional path that interrupts UDP.
+  docker compose up -d --no-deps --force-recreate awg2 || true
+  docker compose up -d --no-deps --force-recreate awg-controller || true
+elif ! awg_controller_healthy; then
+  # Recreate only the controller; wg0 and all active handshakes remain in awg2.
+  docker compose up -d --no-deps --force-recreate awg-controller || true
 fi
 timeout 90 docker compose up -d --pull never --remove-orphans || true
 sleep 10

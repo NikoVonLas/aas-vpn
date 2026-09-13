@@ -21,6 +21,7 @@ GUARD = Path('/routing-status/status.json')
 APPLY_LOCK = threading.Lock()
 STOP = threading.Event()
 STATE = {'state': 'starting', 'updated_at': 0}
+DATAPLANE_MARKER = CONTROL / 'dataplane-netns'
 
 
 def atomic(path, content, mode=0o600):
@@ -38,6 +39,17 @@ def guard_ready():
         state = json.loads(GUARD.read_text())
         return state['boot_id'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip() and time.time() - state['updated_at'] < 45
     except (OSError, ValueError, KeyError):
+        return False
+
+
+def network_namespace():
+    return os.readlink('/proc/self/ns/net')
+
+
+def dataplane_ready():
+    try:
+        return DATAPLANE_MARKER.read_text().strip() == network_namespace()
+    except OSError:
         return False
 
 
@@ -66,6 +78,8 @@ def apply():
         server, _, clients, revision = STORE.snapshot()
         network = str(ipaddress.IPv4Network(server['ipv4_cidr'], strict=False))
         atomic(NETWORK / 'wg-network.json', json.dumps({'cidrs': [network], 'mtus': {network: server['mtu']}}), 0o640)
+        if not dataplane_ready():
+            return {'state': 'waiting', 'revision': revision}
         if not guard_ready():
             return {'state': 'waiting', 'revision': revision}
         candidate = server_config(server, clients)
@@ -98,6 +112,7 @@ def reconcile():
         except (OSError, RuntimeError, ValueError, KeyError, sqlite3.Error):
             STATE = {'state': 'error'}
         STATE['updated_at'] = int(time.time())
+        STATE['netns'] = network_namespace()
         atomic(CONTROL / 'status.json', json.dumps({key: value for key, value in STATE.items() if key != 'digest'}), 0o640)
         STOP.wait(1)
 
