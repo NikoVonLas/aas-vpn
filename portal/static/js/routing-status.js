@@ -19,8 +19,14 @@ function updateDeviceState(node, state) {
   const id = node.dataset.deviceState;
   const connected = state.connected === true;
   const known = connected || state.connected === false;
-  connection.textContent = connected ? 'Подключён' : (known ? 'Не подключён' : 'Нет данных');
-  node.dataset.connected = connected ? 'true' : (known ? 'false' : 'unknown');
+  let connectionText = 'Нет данных';
+  let connectedValue = 'unknown';
+  if (known) {
+    connectionText = connected ? 'Подключён' : 'Не подключён';
+    connectedValue = connected ? 'true' : 'false';
+  }
+  connection.textContent = connectionText;
+  node.dataset.connected = connectedValue;
   const current = {connected, download: Number(state.download), upload: Number(state.upload), at: Number(state.observed_at)};
   const previous = deviceTraffic.get(id);
   if (!known) {
@@ -55,5 +61,5 @@ async function refreshRoutingStatus() {
     });
   } catch { /* Keep the last displayed status; retry on the next interval. */ }
 }
-refreshRoutingStatus();
+setTimeout(refreshRoutingStatus, 0);
 setInterval(refreshRoutingStatus, 3000);

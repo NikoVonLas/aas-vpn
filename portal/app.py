@@ -504,7 +504,7 @@ async def process_device_operations():
 
 async def reconcile_native_clients():
     async with wg_session() as client:
-        response = await client.get('/clients')
+        response = await client.get(WG_CLIENT_PATH)
         response.raise_for_status()
     records = response.json()
     if not isinstance(records, list):
@@ -841,7 +841,10 @@ def device_live_state(device, clients=None, observed_at=None):
             connected = peer.get('connected') is True
             download = safe_counter(peer.get('transferTx'))
             upload = safe_counter(peer.get('transferRx'))
-    return {'connected': connected, 'connection': 'Подключён' if connected else ('Не подключён' if connected is False else 'Нет данных'),
+    connection = 'Нет данных'
+    if connected is not None:
+        connection = 'Подключён' if connected else 'Не подключён'
+    return {'connected': connected, 'connection': connection,
             'download': download, 'upload': upload, 'observed_at': observed_at}
 
 
@@ -852,7 +855,7 @@ def safe_counter(value):
 async def native_client_states():
     try:
         async with wg_session() as client:
-            response = await client.get('/clients')
+            response = await client.get(WG_CLIENT_PATH)
             response.raise_for_status()
         rows = response.json()
         if not isinstance(rows, list):

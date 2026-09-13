@@ -146,16 +146,19 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError('Invalid name')
         return name
 
+    def list_clients(self):
+        try:
+            stats = client_stats()
+        except RuntimeError:
+            stats = None
+        self.respond(200, STORE.list_clients(stats))
+
     def route(self):
         if self.path == '/health' and self.command == 'GET':
             self.respond(200, {key: value for key, value in STATE.items() if key != 'digest'})
             return
         if self.path == '/clients' and self.command == 'GET':
-            try:
-                stats = client_stats()
-            except RuntimeError:
-                stats = None
-            self.respond(200, STORE.list_clients(stats))
+            self.list_clients()
             return
         match = re.fullmatch(r'/clients/([a-zA-Z0-9-]{1,64})(/configuration)?', self.path)
         if not match:
