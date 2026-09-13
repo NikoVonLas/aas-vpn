@@ -6,7 +6,10 @@ COPY portal/*.py ./
 COPY awg/model.py ./awg/model.py
 COPY portal/static ./static
 COPY portal/templates ./templates
-RUN mkdir -p /data /ru-configs /auth && chown 65532:65532 /data /ru-configs /auth && \
+# Source files may be checked out with a restrictive umask; the runtime user
+# still needs to read the application modules and bundled assets.
+RUN chmod -R a+rX /app && \
+    mkdir -p /data /ru-configs /auth && chown 65532:65532 /data /ru-configs /auth && \
     chmod 0770 /data && chmod 0700 /ru-configs /auth
 USER 65532:65532
 EXPOSE 8080
