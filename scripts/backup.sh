@@ -38,8 +38,10 @@ if images:
 PY
 declare -a paused_containers=()
 declare -A archived_volumes=()
+declare -A available_volumes=()
 maintenance_container=
 maintenance_created=0
+backup_container=
 
 unpause_all() {
   local container index
@@ -55,10 +57,17 @@ clear_maintenance() {
   docker exec "$maintenance_container" sh -c 'rm -f /data/maintenance' >/dev/null 2>&1 || true
 }
 
+stop_archiver() {
+  [[ -n "$backup_container" ]] || return
+  docker kill "$backup_container" >/dev/null 2>&1 || true
+  backup_container=
+}
+
 # Restart or unpause on failure; a migration can retain a successful stopped snapshot.
 finish_backup() {
   local backup_status=$?
   unpause_all
+  stop_archiver
   if [[ "$backup_status" != 0 || "${AAS_BACKUP_KEEP_MAINTENANCE:-0}" != 1 ]]; then
     clear_maintenance
   fi
@@ -69,26 +78,36 @@ finish_backup() {
 trap finish_backup EXIT
 
 archive_volumes() {
-  local key volume
-  local -a keys=() docker_args=(run --rm --network none)
+  local key
+  local -a keys=()
   for key in "$@"; do
     [[ -z "${archived_volumes[$key]:-}" ]] || continue
-    volume=$(jq -r --arg key "$key" '.volumes[$key].name // empty' "$backup_dir/compose-resolved.json")
-    [[ -n "$volume" ]] || continue
-    docker volume inspect "$volume" >/dev/null 2>&1 || continue
+    [[ -n "${available_volumes[$key]:-}" ]] || continue
     keys+=("$key")
-    docker_args+=(-v "$volume:/volumes/$key:ro")
   done
   (( ${#keys[@]} )) || return 0
   # shellcheck disable=SC2016 # $key belongs to the Alpine shell below.
-  docker_args+=(-v "$backup_dir:/backup" alpine:3.22 sh -c '
+  docker exec "$backup_container" sh -c '
     for key do
       cd "/volumes/$key"
       tar --exclude="./maintenance" -czf "/backup/volume-$key.tar.gz" .
     done
-  ' sh "${keys[@]}")
-  docker "${docker_args[@]}"
+  ' sh "${keys[@]}"
   for key in "${keys[@]}"; do archived_volumes[$key]=1; done
+}
+
+start_archiver() {
+  local key volume
+  local -a docker_args=(run -d --rm --network none -v "$backup_dir:/backup")
+  while IFS= read -r key; do
+    volume=$(jq -r --arg key "$key" '.volumes[$key].name // empty' "$backup_dir/compose-resolved.json")
+    [[ -n "$volume" ]] || continue
+    docker volume inspect "$volume" >/dev/null 2>&1 || continue
+    available_volumes[$key]=1
+    docker_args+=(-v "$volume:/volumes/$key:ro")
+  done < <(jq -r '.volumes | keys[]' "$backup_dir/compose-resolved.json")
+  docker_args+=(alpine:3.22 sleep 300)
+  backup_container=$(docker "${docker_args[@]}")
 }
 
 snapshot_service() {
@@ -115,6 +134,7 @@ snapshot_service() {
 }
 
 tar --exclude='./backups' --exclude='./.git' -czf "$backup_dir/project.tar.gz" .
+start_archiver
 if [[ "$backup_mode" == online ]]; then
   maintenance_container=$(docker compose ps -q portal)
   if [[ -n "$maintenance_container" ]] && ! docker exec "$maintenance_container" test -e /data/maintenance; then
