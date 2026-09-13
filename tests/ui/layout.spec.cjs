@@ -10,6 +10,12 @@ async function login(page) {
   await expect(page).toHaveURL(/\/admin$/);
 }
 
+async function stable(page) {
+  const liveState = page.locator('[data-device-state]');
+  if (await liveState.count()) await expect(liveState.first()).toHaveAttribute('data-live-ready', 'true');
+  await page.evaluate(() => document.fonts.ready);
+}
+
 for (const [name, path, active] of [
   ['users', '/admin', 'Пользователи'],
   ['exits', '/admin/ru-exits', 'Альтернативные выходы'],
@@ -21,7 +27,7 @@ for (const [name, path, active] of [
   test(`${name} layout`, async ({ page }) => {
     await login(page);
     await page.goto(path);
-    await page.evaluate(() => document.fonts.ready);
+    await stable(page);
     await expect(page.getByRole('link', { name: 'Без владельца', exact: true })).toHaveCount(0);
     await expect(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -132,6 +138,7 @@ test('device has one save action for both fields', async ({ page }) => {
   await expect(exit).toHaveCSS('background-position', 'calc(100% - 12px) 50%');
   await exit.selectOption('2');
   await exit.focus();
+  await stable(page);
   await expect(form).toHaveScreenshot('device-form-focus.png');
   await name.fill('Совместное сохранение');
   await exit.selectOption('2');
@@ -153,6 +160,7 @@ for (const [phone, allowed] of [['+79990000001', true], ['+79990000002', false]]
   test(`cabinet layout with exit permission ${allowed}`, async ({ page }) => {
     await page.goto('/fixture/phone-login/' + phone);
     await expect(page).toHaveURL(/\/cabinet$/);
+    await stable(page);
     await expect(page).toHaveScreenshot(`cabinet-${allowed ? 'exit' : 'name'}.png`, { fullPage: true });
     const form = page.locator('.device-card form').first();
     await expect(form.locator('.btn-primary')).toHaveText('Сохранить');

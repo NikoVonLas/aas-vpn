@@ -12,6 +12,7 @@ PARAMS = {'Jc': 'j_c', 'Jmin': 'j_min', 'Jmax': 'j_max', **{f'S{i}': f's{i}' for
           **{f'H{i}': f'h{i}' for i in range(1, 5)}, **{f'I{i}': f'i{i}' for i in range(1, 6)}}
 CLIENT_QUERY = 'SELECT * FROM clients WHERE id=?'
 PUBLIC = ('id', 'name', 'ipv4_address', 'enabled', 'expires_at', 'created_at')
+CONNECTED_WINDOW = 180
 
 
 def run(*args, input=None):
@@ -47,6 +48,26 @@ def active(client, now=None):
     if expiry.tzinfo is None:
         expiry = expiry.replace(tzinfo=timezone.utc)
     return expiry.timestamp() > (datetime.now(timezone.utc).timestamp() if now is None else now)
+
+
+def wireguard_stats(dump, now):
+    """Parse public peer counters from ``awg show wg0 dump`` output."""
+    result = {}
+    for line in dump.splitlines()[1:]:
+        fields = line.split('\t')
+        if len(fields) < 8:
+            continue
+        try:
+            handshake, received, sent = map(int, fields[4:7])
+        except ValueError:
+            continue
+        result[fields[0]] = {
+            'connected': handshake > 0 and 0 <= now - handshake < CONNECTED_WINDOW,
+            'latestHandshakeAt': handshake or None,
+            'transferRx': max(0, received),
+            'transferTx': max(0, sent),
+        }
+    return result
 
 
 def client_config(server, defaults, client):
@@ -170,9 +191,17 @@ class Store:
                 con.execute('UPDATE clients SET deleted=1,revision=? WHERE id=?', (revision, client_id))
             return self.result(con, con.execute(CLIENT_QUERY, (client_id,)).fetchone())
 
-    def list_clients(self):
+    def list_clients(self, stats=None):
         with self.db() as con:
-            return [self.result(con, row) for row in con.execute('SELECT * FROM clients WHERE deleted=0 ORDER BY id')]
+            clients = []
+            for row in con.execute('SELECT * FROM clients WHERE deleted=0 ORDER BY id'):
+                client = self.result(con, row)
+                if stats is not None:
+                    client.update(stats.get(row['public_key'], {
+                        'connected': False, 'latestHandshakeAt': None, 'transferRx': 0, 'transferTx': 0,
+                    }))
+                clients.append(client)
+            return clients
 
     def configure(self, client_id, settings):
         if not isinstance(settings, dict) or not settings or not set(settings) <= {'enabled', 'expires_at'}:

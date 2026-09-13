@@ -13,6 +13,8 @@ async function login(page) {
 async function stable(page) {
   await page.locator('code').filter({ hasText: '/login/oidc/callback' }).evaluateAll(nodes => nodes.forEach(node => { node.textContent = 'https://vpn.example.test/login/oidc/callback'; }));
   await page.locator('form[action="/security/sessions/revoke"] p').evaluateAll(nodes => nodes.forEach(node => { node.textContent = 'Текущая сессия'; }));
+  const liveState = page.locator('[data-device-state]');
+  if (await liveState.count()) await expect(liveState.first()).toHaveAttribute('data-live-ready', 'true');
   await page.evaluate(() => document.fonts.ready);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
@@ -50,6 +52,7 @@ for (const name of ['qr', 'delete', 'connect', 'connect-error', 'connect-loading
     if (name === 'connect') await expect(page.locator('#connect-ready')).toBeVisible();
     if (name === 'connect-error') await expect(page.locator('#connect-retry')).toBeVisible();
     if (name === 'qr') await expect(page.locator('#qr-image')).toHaveJSProperty('complete', true);
+    await stable(page);
     await expect(page).toHaveScreenshot(name + '-dialog.png');
   });
 }
@@ -87,6 +90,7 @@ test('screen restricted navigation and maintenance error', async ({ page }) => {
   await page.request.get('/fixture/state/maintenance');
   await page.locator('.device-card').first().getByRole('button', { name: 'Сохранить' }).click();
   await expect(page.getByRole('alert')).toContainText('Сервис обновляется');
+  await stable(page);
   await expect(page).toHaveScreenshot('maintenance.png', { fullPage: true });
 });
 test('screen menu and increased text', async ({ page }) => {
@@ -118,6 +122,7 @@ test('screen login and account field errors', async ({ page }) => {
   await device.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await expect(page.getByRole('alert')).toBeVisible();
   await expect(page.locator('form[action="/device/2/update"] [name=name]')).toHaveValue('Телефон с длинным названием устройства');
+  await stable(page);
   await expect(page).toHaveScreenshot('device-error.png', { fullPage: true });
 });
 

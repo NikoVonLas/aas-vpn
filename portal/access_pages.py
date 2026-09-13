@@ -155,7 +155,7 @@ class AccessPages:
         names = {str(node['id']): node['name'] for node in exits}
         chain = 'Альтернативный выход аккаунта: ' + names.get(str(account_default), 'Глобальный выход') + ' → Глобальный: ' + names.get(default, '—')
         status = self.p.routing_status()
-        actual = self.p.device_state_labels(resource, {int(k): v for k, v in names.items()}, account_default or int(default), status) if scope == 'device' else ''
+        actual = ''
         inherited_sources = [('Аккаунт', values(inherited))] if scope == 'device' else []
         inherited_sources.append(('Глобальные правила', values(global_rules)))
         crumbs = [('Пользователи', ACCOUNTS_PATH), (account['name'], f"/accounts/{resource['account_id']}/edit")] if managed else [('Мои устройства', '/cabinet')]
