@@ -194,7 +194,9 @@ EOF
 sysctl --system >/dev/null
 systemctl daemon-reload
 systemctl enable --now docker
-docker compose run --rm --no-deps --entrypoint python portal -c "from pathlib import Path; Path('/data/maintenance').touch()"
+# The portal has a fixed Compose address, so a second `compose run portal`
+# cannot join the production network while the live portal still owns it.
+docker compose run --rm --no-deps --entrypoint python storage-init -c "from pathlib import Path; Path('/data/maintenance').touch()"
 # Compose recreates only services whose image or runtime configuration changed.
 docker compose up -d --no-build --pull never --remove-orphans
 # Wait for the native controller and router before re-enabling automatic recovery.
