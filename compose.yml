@@ -24,20 +24,17 @@ services:
     restart: "no"
 
   awg2:
-    image: aas-vpn-awg:3.0.20260805
+    image: aas-vpn-awg-dataplane:3.0.20260805
     build:
       context: .
       dockerfile: awg/Dockerfile
+      target: dataplane
     container_name: awg2
     depends_on:
       storage-init:
         condition: service_completed_successfully
     volumes:
-      - awg_data:/awg-data
       - awg_control:/awg-control
-      - awg_network:/awg-network
-      - /lib/modules:/lib/modules:ro
-      - routing_status:/routing-status:ro
     ports:
       - "${AWG_PORT:-443}:1234/udp"
       - "${AWG_FALLBACK_PORT:-1234}:1234/udp"
@@ -45,17 +42,60 @@ services:
       vpn:
         ipv4_address: 10.42.42.45
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       net.ipv4.ip_forward: "1"
       net.ipv6.conf.all.disable_ipv6: "1"
       net.ipv6.conf.default.disable_ipv6: "1"
     healthcheck:
-      test: ["CMD", "python", "-c", "import json,time; s=json.load(open('/awg-control/status.json')); assert s['state']=='applied' and time.time()-s['updated_at']<15"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "python", "-c", "import os,pathlib; assert pathlib.Path('/awg-control/dataplane-netns').read_text().strip()==os.readlink('/proc/self/ns/net')"]
+      interval: 5s
+      timeout: 3s
       retries: 3
     restart: unless-stopped
+
+  awg-controller:
+    image: aas-vpn-awg-controller:3.0.20260805
+    build:
+      context: .
+      dockerfile: awg/Dockerfile
+      target: controller
+    container_name: awg-controller
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+      awg2:
+        condition: service_healthy
+        restart: true
+    network_mode: service:awg2
+    volumes:
+      - awg_data:/awg-data
+      - awg_control:/awg-control
+      - awg_network:/awg-network
+      - /lib/modules:/lib/modules:ro
+      - routing_status:/routing-status:ro
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,os,time; s=json.load(open('/awg-control/status.json')); assert s['state']=='applied' and s['netns']==os.readlink('/proc/self/ns/net') and time.time()-s['updated_at']<15"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  awg-bootstrap:
+    profiles: [tools]
+    image: aas-vpn-awg-controller:3.0.20260805
+    build:
+      context: .
+      dockerfile: awg/Dockerfile
+      target: controller
+    entrypoint: [python]
+    command: [bootstrap.py]
+    network_mode: none
+    volumes:
+      - awg_data:/awg-data
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
 
   adguard-home:
     image: adguard/adguardhome:latest
@@ -176,7 +216,7 @@ services:
       - caddy_config:/config
     networks:
       - vpn
-    depends_on: [awg2, portal]
+    depends_on: [awg2, awg-controller, portal]
     restart: unless-stopped
 
 networks:

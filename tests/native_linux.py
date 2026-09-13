@@ -19,6 +19,7 @@ from awg.model import Store
 IMAGE = os.getenv('AWG_TEST_IMAGE', 'aas-vpn-awg:native-test')
 NETWORK = 'aas-native-check'
 SERVER = 'aas-native-check-server'
+CONTROLLER = 'aas-native-check-controller'
 CLIENTS = ['aas-native-check-one', 'aas-native-check-two']
 CAPS = ['/usr/sbin/capsh', '--inh=cap_net_admin,cap_net_raw', '--addamb=cap_net_admin,cap_net_raw', '--shell=/bin/sh', '--', '-c']
 
@@ -70,11 +71,21 @@ class Check:
             except (OSError, RuntimeError):
                 pass
             time.sleep(1)
-        raise RuntimeError('Native Linux acceptance check timed out')
+        status = (self.root/'control/status.json')
+        detail = status.read_text() if status.exists() else 'missing controller status'
+        raise RuntimeError(f'Native Linux acceptance check timed out: {detail}')
 
     def ping(self, client, success=True):
         result = docker('exec', client, *CAPS, 'exec ping -c 1 -W 2 10.91.0.1', check=False)
         return (result.returncode == 0) == success
+
+    def start_controller(self):
+        docker(
+            'run', '-d', '--name', CONTROLLER, '--network', f'container:{SERVER}',
+            '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_RAW',
+            '-v', f'{self.root}/data:/awg-data', '-v', f'{self.root}/control:/awg-control',
+            '-v', f'{self.root}/network:/awg-network', '-v', f'{self.root}/guard:/routing-status:ro', IMAGE,
+        )
 
     def start(self):
         for directory in ['data', 'control', 'network', 'guard']:
@@ -86,9 +97,11 @@ class Check:
         self.guard()
         docker('run', '--rm', '--network', 'none', '-v', f'{self.root}/data:/awg-data', '--entrypoint', 'python', IMAGE,
                'bootstrap.py', '--endpoint', SERVER, '--public-port', '1234', '--network', '10.91.0.0/24', '--dns', '192.0.2.53')
-        docker('run', '-d', '--name', SERVER, '--network', NETWORK, '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_RAW',
-               '-v', f'{self.root}/data:/awg-data', '-v', f'{self.root}/control:/awg-control',
-               '-v', f'{self.root}/network:/awg-network', '-v', f'{self.root}/guard:/routing-status:ro', IMAGE)
+        docker(
+            'run', '-d', '--name', SERVER, '--network', NETWORK, '--cap-drop', 'ALL',
+            '-v', f'{self.root}/control:/awg-control', '--entrypoint', '/usr/local/bin/awg-dataplane', IMAGE,
+        )
+        self.start_controller()
         self.until(lambda: self.api('GET', '/health')['state'] == 'applied')
         docker('run', '--rm', '--network', 'none', '--cap-drop', 'ALL', '--user', '65532:65532',
                '-v', f'{self.root}/control:/awg-control:ro', '--entrypoint', 'python',
@@ -110,6 +123,12 @@ class Check:
         print('Two independent native AWG clients: passed', flush=True)
 
     def checks(self):
+        docker('rm', '-f', CONTROLLER)
+        assert all(self.ping(client) for client in CLIENTS)
+        self.start_controller()
+        self.until(lambda: self.api('GET', '/health')['state'] == 'applied')
+        assert all(self.ping(client) for client in CLIENTS)
+        print('Controller replacement retains kernel tunnel traffic: passed', flush=True)
         with self.store.db() as con:
             original = self.store.setting(con, 'server')
             broken = {**original, 'h1':'invalid-header'}
@@ -125,13 +144,15 @@ class Check:
         self.api('DELETE', '/clients/test-0')
         self.until(lambda: self.api('DELETE', '/clients/test-0')['applied'])
         assert self.ping(CLIENTS[0], False) and self.ping(CLIENTS[1])
-        docker('restart', SERVER)
+        docker('restart', CONTROLLER)
         self.until(lambda: self.api('GET', '/health')['state'] == 'applied')
         self.until(lambda: self.ping(CLIENTS[1]))
         assert self.ping(CLIENTS[0], False)
         print('Deletion and controller restart preserve peer state: passed', flush=True)
         self.guard(False)
+        docker('rm', '-f', CONTROLLER)
         docker('restart', SERVER)
+        self.start_controller()
         time.sleep(3)
         assert self.ping(CLIENTS[1], False)
         self.until(lambda: self.api('GET', '/health')['state'] == 'applied')
@@ -140,7 +161,7 @@ class Check:
 
 
 def main():
-    for name in [SERVER, *CLIENTS]:
+    for name in [SERVER, CONTROLLER, *CLIENTS]:
         if docker('inspect', name, check=False).returncode == 0:
             raise SystemExit('A test container already exists; inspect it before rerunning')
     root = Path(tempfile.mkdtemp(prefix='aas-native-linux-'))
@@ -149,7 +170,7 @@ def main():
         check.start()
         check.checks()
     finally:
-        for name in [SERVER, *CLIENTS]:
+        for name in [SERVER, CONTROLLER, *CLIENTS]:
             docker('rm', '-f', name, check=False)
         docker('network', 'rm', NETWORK, check=False)
         shutil.rmtree(root)
