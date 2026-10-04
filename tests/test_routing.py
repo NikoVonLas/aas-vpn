@@ -190,3 +190,18 @@ def test_global_rules_do_not_scale_with_device_count(tmp_path):
         devices = [{'id': n, 'vpn_ip': str(ipaddress.IPv4Address('10.0.0.1') + n), 'ru_exit_id': 2} for n in range(size)]
         return compile_config(base, exits, devices, rules, 1, {'1': True, '2': True}, 'br-test', tmp_path)
     assert len(compile(1)['route']['rules']) == len(compile(1000)['route']['rules'])
+
+
+def test_live_policies_are_independent_of_exit_availability(tmp_path):
+    base = json.loads((ROOT / 'config/sing-box.json').read_text())
+    exits = [{'id': n, 'legacy': True} for n in [1, 2, 3]]
+    devices = [{'id': 1, 'vpn_ip': '10.8.0.2', 'ru_exit_id': 3, 'account_ru_exit_id': 2}]
+    rules = [{'target': 'ru', 'kind': 'suffix', 'value': 'ru'}]
+    configs = [compile_config(base, exits, devices, rules, 1, health, 'br-test', tmp_path, live_selectors=True)
+               for health in [{'1': True, '2': True, '3': True}, {'1': False, '2': False, '3': False}]]
+    assert configs[0] == configs[1]
+    assert route(configs[0], '10.8.0.2', 'example.ru') == 'ru-policy-3-2-1'
+    assert route(configs[0], '10.8.0.9', 'example.ru') == 'ru-policy-1'
+    policies = {x['tag']: x for x in configs[0]['outbounds'] if x['type'] == 'selector'}
+    assert policies['ru-policy-3-2-1']['outbounds'] == ['ru-3', 'ru-2', 'ru-1', 'ru-unavailable']
+    assert all(x['default'] == 'ru-unavailable' for x in policies.values())
