@@ -328,6 +328,13 @@ def compile_config(base, exits, devices, rules, default, health, bridge, config_
     fallback = policy_tag(policy_chain(None, default)) if live_selectors else effective_exit(None, default, health)
     if live_selectors:
         add_live_selectors(config, generated, devices, default)
+    emit_scoped_rules(generated, devices, rules, default, health, fallback, live_selectors)
+    config['route']['rules'] = generated
+    config['route']['final'] = 'eu-direct'
+    return config
+
+
+def emit_scoped_rules(generated, devices, rules, default, health, fallback, live_selectors):
     for scope in ('device', 'account', 'global'):
         level = [dict(rule) for rule in rules if rule.get('scope', 'global') == scope]
         # Equal rules across owners share one source-IP list. Global rules are
@@ -341,10 +348,6 @@ def compile_config(base, exits, devices, rules, default, health, bridge, config_
                 if str(device.get('id' if scope == 'device' else 'account_id')) in owners]
             emit_rule(generated, {'target': target, 'kind': kind, 'value': value},
                       selected, default, health, fallback, scope == 'global', live_selectors)
-    config['route']['rules'] = generated
-    config['route']['final'] = 'eu-direct'
-    return config
-
 
 def emit_rule(generated, rule, devices, default, health, fallback, global_scope, live_selectors=False):
     field = {'domain': 'domain', 'suffix': 'domain_suffix', 'ip': 'ip_cidr'}[rule['kind']]

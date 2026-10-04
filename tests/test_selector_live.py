@@ -77,7 +77,7 @@ def test_live_failover_preserves_tcp_udp_and_rejects_unavailable(tmp_path, monke
     if not binary:
         pytest.skip('Set SING_BOX_BINARY for live selector test')
     api, inbound, reject = free_ports(3)
-    monkeypatch.setattr(controller, 'CONTROL_ADDRESS', f'127.0.0.1:{api}')
+    monkeypatch.setattr(controller, 'CONTROL_URL', f'http://127.0.0.1:{api}')
     secret = 'ephemeral-test-control-secret'
     config = {'log': {'level': 'error'}, 'inbounds': [
         {'type': 'socks', 'tag': 'client', 'listen': '127.0.0.1', 'listen_port': inbound},
@@ -135,8 +135,9 @@ def test_live_failover_preserves_tcp_udp_and_rejects_unavailable(tmp_path, monke
             assert datagrams.recvfrom(4096)[0].endswith(payload)
             assert process.poll() is None
             if not any(health.values()):
+                destination = tcp.getsockname()[1]
                 with pytest.raises(ConnectionError):
-                    socks_request(inbound, tcp.getsockname()[1])
+                    socks_request(inbound, destination)
             else:
                 fresh, _ = socks_request(inbound, tcp.getsockname()[1])
                 with fresh:

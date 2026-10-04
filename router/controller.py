@@ -26,6 +26,7 @@ VPN_CIDR = os.getenv('VPN_CLIENT_CIDR', '')
 process = None
 stopping = False
 CONTROL_ADDRESS = '127.0.0.1:19090'
+CONTROL_URL = 'http://127.0.0.1:19090'
 
 
 def event(name, **fields):
@@ -47,13 +48,13 @@ def configure_control_api(config):
     os.chmod(path, 0o600)
     config.setdefault('experimental', {}).setdefault('clash_api', {}).update({
         'external_controller': CONTROL_ADDRESS, 'secret': secret,
-        'access_control_allow_origin': [f'http://{CONTROL_ADDRESS}'],
+        'access_control_allow_origin': ['http://127.0.0.1'],
         'access_control_allow_private_network': False})
     return secret
 
 
 def select_outbound(tag, target, secret):
-    request = urllib.request.Request(f'http://{CONTROL_ADDRESS}/proxies/{tag}',
+    request = urllib.request.Request(f'{CONTROL_URL}/proxies/{tag}',
         data=json.dumps({'name': target}).encode(), method='PUT',
         headers={'Authorization': f'Bearer {secret}', 'Content-Type': 'application/json'})
     # The controller must always talk to the loopback API, never an env proxy.
