@@ -265,12 +265,21 @@ def effective_exit(assigned, default, health, account_default=None):
                  if node is not None and health.get(str(node), False)), None)
 
 
-def device_choices(devices, default, health):
+def policy_chain(assigned, default, account_default=None):
+    return tuple(node for node in dict.fromkeys((assigned, account_default, default)) if node is not None)
+
+
+def policy_tag(chain):
+    return 'ru-policy-' + '-'.join(map(str, chain))
+
+
+def device_choices(devices, default, health, live_selectors=False):
     choices = {}
     for device in devices:
         if device['vpn_ip']:
             ip = str(ipaddress.IPv4Address(device['vpn_ip'])) + '/32'
-            chosen = effective_exit(device['ru_exit_id'], default, health, device.get('account_ru_exit_id'))
+            chosen = (policy_tag(policy_chain(device['ru_exit_id'], default, device.get('account_ru_exit_id')))
+                      if live_selectors else effective_exit(device['ru_exit_id'], default, health, device.get('account_ru_exit_id')))
             choices.setdefault(chosen, []).append(ip)
     return choices
 
@@ -290,7 +299,21 @@ def add_exit_endpoints(config, base, exits, generated, config_dir):
         generated.append({'inbound': f"probe-{node['id']}", 'action': 'route', 'outbound': tag})
 
 
-def compile_config(base, exits, devices, rules, default, health, bridge, config_dir):
+def add_live_selectors(config, generated, devices, default):
+    # Selectors cannot target a reject action directly, so a loopback SOCKS
+    # inbound supplies an explicit reject target without a direct fallback.
+    config['inbounds'].append({'type': 'socks', 'tag': 'ru-reject', 'listen': '127.0.0.1', 'listen_port': 19000})
+    generated.insert(0, {'inbound': 'ru-reject', 'action': 'reject'})
+    config['outbounds'].append({'type': 'socks', 'tag': 'ru-unavailable', 'server': '127.0.0.1', 'server_port': 19000})
+    chains = {policy_chain(None, default)}
+    chains.update(policy_chain(d['ru_exit_id'], default, d.get('account_ru_exit_id')) for d in devices)
+    for chain in sorted(chains):
+        config['outbounds'].append({'type': 'selector', 'tag': policy_tag(chain),
+            'outbounds': [f'ru-{node}' for node in chain] + ['ru-unavailable'],
+            'default': 'ru-unavailable', 'interrupt_exist_connections': False})
+
+
+def compile_config(base, exits, devices, rules, default, health, bridge, config_dir, live_selectors=False):
     """Device, account, global; specificity only compares rules within a level."""
     config = json.loads(json.dumps(base))
     config['endpoints'] = []
@@ -302,7 +325,16 @@ def compile_config(base, exits, devices, rules, default, health, bridge, config_
     generated = [r for r in base['route']['rules'] if r.get('action') in {'sniff', 'hijack-dns'}]
     add_exit_endpoints(config, base, exits, generated, config_dir)
     devices = [dict(device) for device in devices]
-    fallback = effective_exit(None, default, health)
+    fallback = policy_tag(policy_chain(None, default)) if live_selectors else effective_exit(None, default, health)
+    if live_selectors:
+        add_live_selectors(config, generated, devices, default)
+    emit_scoped_rules(generated, devices, rules, default, health, fallback, live_selectors)
+    config['route']['rules'] = generated
+    config['route']['final'] = 'eu-direct'
+    return config
+
+
+def emit_scoped_rules(generated, devices, rules, default, health, fallback, live_selectors):
     for scope in ('device', 'account', 'global'):
         level = [dict(rule) for rule in rules if rule.get('scope', 'global') == scope]
         # Equal rules across owners share one source-IP list. Global rules are
@@ -315,16 +347,12 @@ def compile_config(base, exits, devices, rules, default, health, bridge, config_
             selected = devices if scope == 'global' else [device for device in devices
                 if str(device.get('id' if scope == 'device' else 'account_id')) in owners]
             emit_rule(generated, {'target': target, 'kind': kind, 'value': value},
-                      selected, default, health, fallback, scope == 'global')
-    config['route']['rules'] = generated
-    config['route']['final'] = 'eu-direct'
-    return config
+                      selected, default, health, fallback, scope == 'global', live_selectors)
 
-
-def emit_rule(generated, rule, devices, default, health, fallback, global_scope):
+def emit_rule(generated, rule, devices, default, health, fallback, global_scope, live_selectors=False):
     field = {'domain': 'domain', 'suffix': 'domain_suffix', 'ip': 'ip_cidr'}[rule['kind']]
     match = {'inbound': 'vpn-clients', field: [rule['value']]}
-    choices = device_choices(devices, default, health)
+    choices = device_choices(devices, default, health, live_selectors)
     if rule['target'] == 'direct':
         ips = sorted({ip for group in choices.values() for ip in group})
         if global_scope or ips:
@@ -339,4 +367,6 @@ def emit_rule(generated, rule, devices, default, health, fallback, global_scope)
 
 
 def exit_action(chosen):
+    if isinstance(chosen, str):
+        return {'action': 'route', 'outbound': chosen}
     return {'action': 'route', 'outbound': f'ru-{chosen}'} if chosen else {'action': 'reject'}

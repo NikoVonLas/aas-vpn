@@ -99,13 +99,14 @@ def test_endpoint_mtu_uses_link_and_preserves_explicit_value(monkeypatch):
     controller.endpoint_transport.cache_clear()
 
 
-def test_supervisor_only_recompiles_changed_model_or_health(tmp_path, monkeypatch):
+def test_supervisor_health_changes_do_not_recompile_or_restart(tmp_path, monkeypatch):
     monkeypatch.setattr(controller, 'WORK', tmp_path)
     monkeypatch.setattr(controller, 'process', SimpleNamespace(poll=lambda: None))
     monkeypatch.setattr(controller, 'bind_endpoint_interfaces', lambda *args: None)
-    monkeypatch.setattr(controller, 'apply', lambda config: None)
+    starts = []
+    monkeypatch.setattr(controller, 'apply', lambda config: starts.append(config))
     builds = []
-    def compile(*args):
+    def compile(*args, **kwargs):
         builds.append(args)
         return {'route': {'rules': []}}
     monkeypatch.setattr(controller, 'compile_config', compile)
@@ -115,10 +116,11 @@ def test_supervisor_only_recompiles_changed_model_or_health(tmp_path, monkeypatc
         supervisor.install({}, model, {'1': {'healthy': True}})
     assert len(builds) == 1
     supervisor.install({}, model, {'1': {'healthy': False}})
-    assert len(builds) == 2
+    assert len(builds) == 1
+    assert len(starts) == 1
     model['revision'] = 2
     supervisor.install({}, model, {'1': {'healthy': False}})
-    assert len(builds) == 3
+    assert len(builds) == 2
 
 
 def test_dns_change_reconnects_with_same_underlay_and_retains_address_on_failure(tmp_path, monkeypatch):
@@ -140,7 +142,7 @@ def test_dns_change_reconnects_with_same_underlay_and_retains_address_on_failure
     monkeypatch.setattr(controller, 'run', lambda *a, **k: SimpleNamespace(
         stdout=b'[{"dev":"eth0","metrics":[{"mtu":1500}]}]'))
     compiled = {'endpoints': [{'peers': [{'address': 'exit.example', 'port': 41495}]}]}
-    monkeypatch.setattr(controller, 'compile_config', lambda *args: compiled)
+    monkeypatch.setattr(controller, 'compile_config', lambda *args, **kwargs: compiled)
     monkeypatch.setattr(controller, 'apply', lambda config: applied.append(config))
     supervisor = controller.Supervisor('br-test')
     model = {'revision': 1, 'exits': [], 'devices': [], 'rules': [], 'default': 1}
@@ -185,3 +187,30 @@ def test_failed_initial_dns_resolution_recovers_and_removed_peers_are_discarded(
     monkeypatch.setattr(controller, 'endpoint_transport', lambda *args: path)
     controller.bind_endpoint_interfaces(config, bindings)
     assert config['endpoints'][0]['peers'][0]['address'] == '192.0.2.8'
+
+
+def test_selector_failover_recovery_and_rejection_preserve_other_policies(monkeypatch):
+    config = {'outbounds': [
+        {'type': 'selector', 'tag': 'ru-policy-2-1', 'outbounds': ['ru-2', 'ru-1', 'ru-unavailable']},
+        {'type': 'selector', 'tag': 'ru-policy-3', 'outbounds': ['ru-3', 'ru-unavailable']}]}
+    calls, selected = [], {}
+    monkeypatch.setattr(controller, 'select_outbound', lambda tag, target, secret: calls.append((tag, target)))
+    controller.sync_selectors(config, {'1': True, '2': True, '3': True}, selected, 'test-secret')
+    calls.clear()
+    controller.sync_selectors(config, {'1': True, '2': False, '3': True}, selected, 'test-secret')
+    assert calls == [('ru-policy-2-1', 'ru-1')]
+    calls.clear()
+    controller.sync_selectors(config, {'1': False, '2': False, '3': True}, selected, 'test-secret')
+    assert calls == [('ru-policy-2-1', 'ru-unavailable')]
+    calls.clear()
+    controller.sync_selectors(config, {'1': True, '2': True, '3': True}, selected, 'test-secret')
+    assert calls == [('ru-policy-2-1', 'ru-2')]
+
+
+def test_failed_selector_update_remains_retryable(monkeypatch):
+    config = {'outbounds': [{'type': 'selector', 'tag': 'ru-policy-1', 'outbounds': ['ru-1', 'ru-unavailable']}]}
+    selected = {}
+    monkeypatch.setattr(controller, 'select_outbound', lambda *args: (_ for _ in ()).throw(OSError('unavailable')))
+    with pytest.raises(OSError):
+        controller.sync_selectors(config, {'1': True}, selected, 'test-secret')
+    assert not selected

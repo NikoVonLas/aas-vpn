@@ -7,9 +7,11 @@ import json
 import os
 from pathlib import Path
 import signal
+import secrets
 import sqlite3
 import subprocess
 import time
+import urllib.request
 
 from routing import atomic_json, compile_config, effective_exit
 
@@ -23,6 +25,55 @@ DOCKER_CIDR = str(ipaddress.IPv4Network(os.environ['VPN_DOCKER_CIDR']))
 VPN_CIDR = os.getenv('VPN_CLIENT_CIDR', '')
 process = None
 stopping = False
+CONTROL_ADDRESS = '127.0.0.1:19090'
+CONTROL_URL = 'http://127.0.0.1:19090'
+
+
+def event(name, **fields):
+    # Only caller-supplied IDs/state are logged, never configs or subprocess output.
+    print(json.dumps({'time': int(time.time()), 'event': name, **fields}), flush=True)
+
+
+def configure_control_api(config):
+    path = WORK / 'controller-api-secret'
+    try:
+        secret = path.read_text().strip()
+        if len(secret) != 64 or any(c not in '0123456789abcdef' for c in secret):
+            raise ValueError('invalid controller API secret')
+    except FileNotFoundError:
+        secret = secrets.token_hex(32)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(secret)
+    os.chmod(path, 0o600)
+    config.setdefault('experimental', {}).setdefault('clash_api', {}).update({
+        'external_controller': CONTROL_ADDRESS, 'secret': secret,
+        'access_control_allow_origin': ['http://127.0.0.1'],
+        'access_control_allow_private_network': False})
+    return secret
+
+
+def select_outbound(tag, target, secret):
+    request = urllib.request.Request(f'{CONTROL_URL}/proxies/{tag}',
+        data=json.dumps({'name': target}).encode(), method='PUT',
+        headers={'Authorization': f'Bearer {secret}', 'Content-Type': 'application/json'})
+    # The controller must always talk to the loopback API, never an env proxy.
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=3) as response:
+        if response.status != 204:
+            raise RuntimeError('selector update failed')
+
+
+def sync_selectors(config, health, selected, secret):
+    for outbound in config.get('outbounds', []):
+        if outbound.get('type') != 'selector' or not outbound['tag'].startswith('ru-policy-'):
+            continue
+        target = next((tag for tag in outbound['outbounds'] if tag.startswith('ru-')
+                       and health.get(tag[3:], False)), 'ru-unavailable')
+        tag = outbound['tag']
+        if selected.get(tag, 'ru-unavailable') != target:
+            select_outbound(tag, target, secret)
+            event('selector_changed', selector=tag, previous=selected.get(tag, 'ru-unavailable'), target=target)
+            selected[tag] = target
 
 
 def run(*args, **kwargs):
@@ -116,12 +167,14 @@ def start_child(path):
     time.sleep(1)
     if process.poll() is not None:
         raise RuntimeError('start failed')
+    event('router_started', pid=process.pid)
 
 
 def apply(config):
     candidate, good = WORK / 'candidate.json', WORK / 'working.json'
     atomic_json(candidate, config)
     run('sing-box', 'check', '-c', str(candidate))
+    event('router_reconfigure')
     stop_child()
     try:
         start_child(candidate)
@@ -211,6 +264,7 @@ class Supervisor:
         self.active_base = None
         self.installed_health = {}
         self.endpoint_bindings = {}
+        self.selected = {}
         self.model_path = WORK / 'working-model.json'
         self.last_probe = 0
         try:
@@ -234,7 +288,10 @@ class Supervisor:
             results = list(pool.map(probe, [node['id'] for node in nodes]))
         for node, ok in zip(nodes, results):
             key = str(node['id'])
-            self.health[key] = advance(self.health.get(key, {}), ok)
+            previous = self.health.get(key, {})
+            self.health[key] = advance(previous, ok)
+            if previous.get('healthy') != self.health[key].get('healthy'):
+                event('exit_health_changed', exit_id=node['id'], healthy=self.health[key].get('healthy', False))
 
     def candidate_health(self, desired):
         result = {}
@@ -246,16 +303,19 @@ class Supervisor:
 
     def install(self, base, model, health):
         healthy = {key: value.get('healthy', False) for key, value in health.items()}
-        key = (model['revision'], json.dumps(base, sort_keys=True), tuple(sorted(healthy.items())), self.bridge)
+        key = (model['revision'], json.dumps(base, sort_keys=True), self.bridge)
         if key != self.compiled_key:
-            self.compiled = compile_config(base, model['exits'], model['devices'], model['rules'], model['default'], healthy, self.bridge, CONFIGS)
+            self.compiled = compile_config(base, model['exits'], model['devices'], model['rules'], model['default'], healthy, self.bridge, CONFIGS, live_selectors=True)
             self.compiled_key = key
         config = json.loads(json.dumps(self.compiled))
         bind_endpoint_interfaces(config, self.endpoint_bindings)
+        secret = configure_control_api(config)
         digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
         if digest != self.signature or not process or process.poll() is not None:
             apply(config)
             self.signature = digest
+            self.selected.clear()
+        sync_selectors(config, healthy, self.selected, secret)
         self.installed_health = healthy
 
     def restore(self):
@@ -280,7 +340,8 @@ class Supervisor:
             self.fingerprints = self.config_fingerprints(self.active)
             atomic_json(self.model_path, {'snapshot': self.active, 'base': self.active_base})
             return 'applied'
-        except APPLY_ERRORS:
+        except APPLY_ERRORS as error:
+            event('reconcile_failed', error_type=type(error).__name__)
             self.restore()
             return 'error' if self.active or desired else 'pending'
 
