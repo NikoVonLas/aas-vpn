@@ -36,13 +36,13 @@
       retry.hidden = false;
     }
   }
-  document.addEventListener('click', event => {
+  document.addEventListener('click', async event => {
     const button = event.target.closest('.connect-device');
     if (!button) return;
     source = button;
     document.getElementById('connect-title').textContent = 'AmneziaVPN: ' + button.dataset.deviceName;
     bootstrap.Modal.getOrCreateInstance(dialog).show();
-    prepare();
+    await prepare();
   });
   retry.addEventListener('click', prepare);
   copy.addEventListener('click', async () => {
