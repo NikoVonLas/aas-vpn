@@ -51,8 +51,8 @@ if (callForm) {
     clearTimeout(timer);
     controller?.abort();
   });
-  window.addEventListener('pageshow', event => {
-    if (event.persisted) { stopped = false; poll(); }
+  window.addEventListener('pageshow', async event => {
+    if (event.persisted) { stopped = false; await poll(); }
   });
   await poll();
 }
