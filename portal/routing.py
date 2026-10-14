@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 DEFAULT_RULES = {
-    'ru': '.ru .рф .yandex.net .yastatic.net .app-analytics-services.com .2gis.com .pcb-solutions.com',
+    'ru': '.ru .рф .yandex.net .yastatic.net .app-analytics-services.com .2gis.com .pcb-solutions.com .avito.st',
     'direct': '.tiktok.com .tiktokv.com .tiktokcdn.com .byteoversea.com .ibytedtos.com .ibyteimg.com .muscdn.com .musical.ly',
 }
 
